@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import {
   ShieldCheck, Lock, Ban, CheckCircle, LogOut, Loader2, Eye, EyeOff,
   RefreshCw, KeyRound, Crown, Users, Shield, Plus, Trash2, Save, Sparkles,
-  QrCode, Smartphone, User,
+  QrCode, Smartphone, User, Monitor, Trash,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
@@ -646,6 +646,101 @@ function PanelMiPerfil() {
           </div>
         )}
       </div>
+
+      {/* Sesiones activas */}
+      <SesionesActivas />
+    </div>
+  )
+}
+
+function SesionesActivas() {
+  const [sessions, setSessions]     = useState([])
+  const [curJti,   setCurJti]       = useState(null)
+  const [loading,  setLoading]      = useState(false)
+  const [revoking, setRevoking]     = useState(null)
+
+  function parseUA(ua) {
+    if (!ua) return 'Dispositivo desconocido'
+    if (/mobile|android/i.test(ua)) return 'Móvil'
+    if (/windows/i.test(ua)) return 'Windows'
+    if (/mac/i.test(ua)) return 'Mac'
+    if (/linux/i.test(ua)) return 'Linux'
+    return 'Navegador'
+  }
+
+  async function cargar() {
+    setLoading(true)
+    try {
+      const r = await apiFetch('/api/auth/me/sessions')
+      if (r.ok) { const j = await r.json(); setSessions(j.data ?? []); if (j.current) setCurJti(j.current) }
+      else toast.error('Error al cargar sesiones.')
+    } catch { toast.error('Error de conexión') }
+    finally { setLoading(false) }
+  }
+
+  async function revocar(jti) {
+    setRevoking(jti)
+    try {
+      const r = await apiFetch(`/api/auth/me/sessions/${jti}`, { method: 'DELETE' })
+      if (r.status === 204) { toast.success('Sesión cerrada.'); setSessions(s => s.filter(x => x.jti !== jti)) }
+      else toast.error((await r.json()).error)
+    } catch { toast.error('Error de conexión') }
+    finally { setRevoking(null) }
+  }
+
+  useEffect(() => { cargar() }, [])
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider flex items-center gap-2">
+          <Monitor size={13} />Dispositivos Conectados
+        </p>
+        <button onClick={cargar} className="text-slate-600 hover:text-slate-400 transition-colors">
+          <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+      {loading && sessions.length === 0
+        ? <div className="flex items-center gap-2 text-slate-600 text-xs py-2 font-mono"><Loader2 size={13} className="animate-spin" />Cargando...</div>
+        : sessions.length === 0
+        ? <p className="text-xs text-slate-600 font-mono py-2">Sin sesiones activas.</p>
+        : (
+          <div className="space-y-2">
+            {sessions.map(s => {
+              const isCurrent = s.jti === curJti
+              return (
+                <div key={s.jti} className={`flex items-center gap-3 p-3 rounded-lg border transition-colors ${
+                  isCurrent ? 'bg-blue-600/10 border-blue-600/30' : 'bg-slate-800/30 border-slate-700/30'
+                }`}>
+                  <Monitor size={15} className={isCurrent ? 'text-blue-400' : 'text-slate-500'} />
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className={`text-xs font-semibold truncate ${isCurrent ? 'text-blue-300' : 'text-slate-300'}`}>
+                        {parseUA(s.userAgent)}
+                      </p>
+                      {isCurrent && (
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-400 border border-blue-600/30 flex-shrink-0">
+                          Actual
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-600 font-mono mt-0.5 truncate" title={s.userAgent}>
+                      {new Date(s.createdAt).toLocaleString('es-DO')} · exp {new Date(s.expiresAt).toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' })}
+                    </p>
+                  </div>
+                  {!isCurrent && (
+                    <button onClick={() => revocar(s.jti)} disabled={revoking === s.jti}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-600/30 text-[11px] font-medium transition-colors disabled:opacity-40 flex-shrink-0">
+                      {revoking === s.jti ? <Loader2 size={11} className="animate-spin" /> : <Trash size={11} />}
+                      Cerrar
+                    </button>
+                  )}
+                </div>
+              )
+            })}
+          </div>
+        )
+      }
     </div>
   )
 }

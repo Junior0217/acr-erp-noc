@@ -506,13 +506,13 @@ app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
 
 app.get('/api/auth/2fa/setup', verificarJWT, async (req, res) => {
   try {
-    const secret      = authenticator.generateSecret()
-    const encrypted   = encryptTOTP(secret)
-    const otpauthUrl  = authenticator.keyuri(req.user.nombre, 'ACR Networks ERP', secret)
-    const qrCode      = await QRCode.toDataURL(otpauthUrl)
+    const secret     = authenticator.generateSecret()
+    const encrypted  = encryptTOTP(secret)
+    const otpauthUrl = authenticator.keyuri(req.user.nombre, 'ACR Networks ERP', secret)
+    const qrCode     = await QRCode.toDataURL(otpauthUrl)
     await prisma.empleado.update({ where: { id: req.user.sub }, data: { twoFactorSecret: encrypted } })
     res.json({ qrCode, secret })
-  } catch { res.status(500).json({ error: 'Error generando 2FA.' }) }
+  } catch (e) { console.error('[2fa/setup]', e); res.status(500).json({ error: 'Error generando 2FA.' }) }
 })
 
 app.post('/api/auth/2fa/enable', verificarJWT, async (req, res) => {
@@ -569,6 +569,29 @@ app.patch('/api/auth/me/password', verificarJWT, async (req, res) => {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.errors[0]?.message ?? 'Datos inválidos.' })
     res.status(500).json({ error: 'Error interno.' })
   }
+})
+
+app.get('/api/auth/me/sessions', verificarJWT, async (req, res) => {
+  try {
+    const sessions = await prisma.sessionToken.findMany({
+      where: { empleadoId: req.user.sub, expiresAt: { gt: new Date() } },
+      select: { jti: true, userAgent: true, createdAt: true, expiresAt: true },
+      orderBy: { createdAt: 'desc' },
+    })
+    res.json({ data: sessions, current: req.user.jti })
+  } catch { res.status(500).json({ error: 'Error obteniendo sesiones.' }) }
+})
+
+app.delete('/api/auth/me/sessions/:jti', verificarJWT, async (req, res) => {
+  const { jti } = req.params
+  if (!jti) return res.status(400).json({ error: 'JTI requerido.' })
+  try {
+    const session = await prisma.sessionToken.findUnique({ where: { jti } })
+    if (!session || session.empleadoId !== req.user.sub) return res.status(404).json({ error: 'Sesión no encontrada.' })
+    await prisma.sessionToken.delete({ where: { jti } })
+    auditReq('auth:session_revoked', req, { jti })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error cerrando sesión.' }) }
 })
 
 // ─── Empleados ────────────────────────────────────────────────────────────────
@@ -645,11 +668,20 @@ app.delete('/api/empleados/:id', verificarJWT, protegerPropietario, async (req, 
 
 // ─── Asistencia ───────────────────────────────────────────────────────────────
 
-app.get('/api/asistencia', async (req, res) => {
+function puedeGestionarAsistencia(req) {
+  const perms = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+  return perms.includes('sistema:owner') || perms.includes('rrhh:asistencia')
+}
+
+app.get('/api/asistencia', verificarJWT, async (req, res) => {
   try {
     const { empleadoId, mes, anio } = req.query;
     const where = {};
-    if (empleadoId) { const eid = parseInt(empleadoId); if (eid > 0) where.empleadoId = eid; }
+    if (!puedeGestionarAsistencia(req)) {
+      where.empleadoId = req.user.sub
+    } else if (empleadoId) {
+      const eid = parseInt(empleadoId); if (eid > 0) where.empleadoId = eid;
+    }
     if (mes && anio) {
       const m = parseInt(mes); const y = parseInt(anio);
       where.fechaHora = { gte: new Date(y, m - 1, 1), lt: new Date(y, m, 1) };
@@ -664,9 +696,12 @@ app.get('/api/asistencia', async (req, res) => {
   }
 });
 
-app.post('/api/asistencia', async (req, res) => {
+app.post('/api/asistencia', verificarJWT, async (req, res) => {
   try {
     const data = asistenciaSchema.parse(req.body);
+    if (!puedeGestionarAsistencia(req) && data.empleadoId !== req.user.sub) {
+      return res.status(403).json({ error: 'Solo puedes registrar tu propia asistencia.' })
+    }
     const registro = await prisma.asistencia.create({
       data,
       include: { empleado: { select: { id: true, nombre: true } } },
