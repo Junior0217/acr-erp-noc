@@ -63,14 +63,16 @@ model Rol {
 }
 
 model Empleado {
-  id             Int                @id @default(autoincrement())
-  nombre         String
-  cargo          String
-  email          String             @unique
-  passwordHash   String             @default("")
-  bloqueado      Boolean            @default(false)
-  permisosExtra  Json               @default("[]")
-  creadoEn       DateTime           @default(now())
+  id               Int                @id @default(autoincrement())
+  nombre           String
+  cargo            String
+  email            String             @unique
+  passwordHash     String             @default("")
+  bloqueado        Boolean            @default(false)
+  permisosExtra    Json               @default("[]")
+  twoFactorSecret  String?
+  twoFactorEnabled Boolean            @default(false)
+  creadoEn         DateTime           @default(now())
   asistencias    Asistencia[]
   ordenes        OrdenInstalacion[]
   sessions       SessionToken[]

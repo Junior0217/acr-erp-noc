@@ -19,6 +19,8 @@
     "jose": "^6.2.3",
     "jsonwebtoken": "^9.0.3",
     "lru-cache": "^11.3.6",
+    "otplib": "^13.4.0",
+    "qrcode": "^1.5.4",
     "zod": "^4.4.3"
   },
   "devDependencies": {

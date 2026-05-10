@@ -9,10 +9,13 @@ const jwt          = require('jsonwebtoken');
 const bcrypt       = require('bcryptjs');
 const cookieParser = require('cookie-parser');
 const crypto       = require('crypto');
+const { authenticator } = require('otplib');
+const QRCode       = require('qrcode');
 const PERMISSIONS_MAP = require('./shared/permissions.map.js');
 
 // ─── JWE-equivalent: AES-256-GCM wrapper (opaque cookie, RFC 7516 semantics) ──
-const jweKey = crypto.createHash('sha256').update(process.env.JWT_SECRET || '').digest()
+const jweKey  = crypto.createHash('sha256').update(process.env.JWT_SECRET || '').digest()
+const totpKey = crypto.createHash('sha256').update((process.env.JWT_SECRET || '') + ':totp').digest()
 
 function wrapJWT(jwtStr) {
   const iv  = crypto.randomBytes(12)
@@ -29,6 +32,26 @@ function unwrapJWT(token) {
   dec.setAuthTag(Buffer.from(parts[1], 'base64url'))
   return Buffer.concat([dec.update(Buffer.from(parts[2], 'base64url')), dec.final()]).toString('utf8')
 }
+
+function encryptTOTP(secret) {
+  const iv  = crypto.randomBytes(12)
+  const cip = crypto.createCipheriv('aes-256-gcm', totpKey, iv)
+  const enc = Buffer.concat([cip.update(secret, 'utf8'), cip.final()])
+  const tag = cip.getAuthTag()
+  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${enc.toString('base64url')}`
+}
+
+function decryptTOTP(stored) {
+  const p = stored.split('.')
+  if (p.length !== 3) throw new Error('invalid totp')
+  const dec = crypto.createDecipheriv('aes-256-gcm', totpKey, Buffer.from(p[0], 'base64url'))
+  dec.setAuthTag(Buffer.from(p[1], 'base64url'))
+  return Buffer.concat([dec.update(Buffer.from(p[2], 'base64url')), dec.final()]).toString('utf8')
+}
+
+// ─── 2FA temp token store (TTL 5 min, one-time use) ──────────────────────────
+const twoFAStore = new Map()
+setInterval(() => { const n = Date.now(); for (const [k,v] of twoFAStore) if (v.exp < n) twoFAStore.delete(k) }, 5 * 60_000)
 
 // ─── Dashboard cache (in-memory, 60 s TTL) ────────────────────────────────────
 let dashCache    = null
@@ -71,7 +94,7 @@ app.use(cookieParser(process.env.COOKIE_SECRET));
 const corsOptions = {
   origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token'],
   credentials: true,
   optionsSuccessStatus: 200
 };
@@ -87,11 +110,33 @@ app.use('/api/', limiter);
 
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 5,
   message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
   skipSuccessfulRequests: true,
 });
+
+const totpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: { error: 'Demasiados intentos de PIN. Intente en 15 minutos.' },
+  skipSuccessfulRequests: true,
+});
+
 app.use(express.json());
+
+// ─── CSRF Double-Submit Cookie ────────────────────────────────────────────────
+const CSRF_SKIP = new Set(['/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout'])
+function csrfMiddleware(req, res, next) {
+  const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
+  if (!mutating || CSRF_SKIP.has(req.path)) return next()
+  const header = req.headers['x-csrf-token']
+  const cookie = req.cookies?.csrf
+  if (!header || !cookie || header !== cookie) {
+    return res.status(403).json({ error: 'CSRF token inválido.' })
+  }
+  next()
+}
+app.use(csrfMiddleware);
 
 // ─── Zod Helpers ─────────────────────────────────────────────────────────────
 
@@ -101,14 +146,25 @@ const optIdent  = (max = 20) => z.string().min(1).max(max).or(emptyStr).optional
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
+const passwordSchema = z.string()
+  .min(8, 'Mínimo 8 caracteres.')
+  .regex(/[!@#$%^&*]/, 'Requiere al menos un símbolo especial (!@#$%^&*).');
+
 const empleadoSchema = z.object({
-  nombre:  z.string().min(2).max(100),
-  cargo:   z.string().max(200).default('Técnico'),
-  email:   z.string().email().trim(),
-  roleIds: z.array(z.number().int().positive()).optional().default([]),
+  nombre:   z.string().min(2).max(100),
+  cargo:    z.string().max(200).default('Técnico'),
+  email:    z.string().email().trim(),
+  roleIds:  z.array(z.number().int().positive()).optional().default([]),
+  password: passwordSchema,
 });
 
-const empleadoUpdateSchema = empleadoSchema.partial();
+const empleadoUpdateSchema = z.object({
+  nombre:   z.string().min(2).max(100).optional(),
+  cargo:    z.string().max(200).optional(),
+  email:    z.string().email().trim().optional(),
+  roleIds:  z.array(z.number().int().positive()).optional(),
+  password: passwordSchema.optional(),
+});
 
 const asistenciaSchema = z.object({
   empleadoId: z.number().int().positive(),
@@ -298,6 +354,26 @@ async function protegerPropietario(req, res, next) {
   } catch { next(); }
 }
 
+// ─── Auth Helpers ─────────────────────────────────────────────────────────────
+
+function completarLogin(empleado, req, res) {
+  const jti       = crypto.randomUUID()
+  const ua        = req.headers['user-agent'] || ''
+  const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000)
+  return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt } }).then(() => {
+    const permisos = [...new Set([
+      ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
+      ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
+    ])]
+    const jwtStr = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua }, process.env.JWT_SECRET, { expiresIn: '8h' })
+    const token  = wrapJWT(jwtStr)
+    const csrf   = crypto.randomBytes(32).toString('hex')
+    res.cookie('csrf', csrf, { httpOnly: false, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 8 * 60 * 60 * 1000 })
+    res.cookie('token', token, { httpOnly: true, signed: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 8 * 60 * 60 * 1000 })
+    return { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos }
+  })
+}
+
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
 app.get('/api/auth/challenge', async (req, res) => {
@@ -354,27 +430,27 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Credenciales inválidas.' });
     }
 
-    const jti       = crypto.randomUUID();
-    const ua        = req.headers['user-agent'] || '';
-    const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000);
+    // Detect suspicious IP (new location vs last known)
+    const currentIP = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
+    const lastLogin = await prisma.auditLog.findFirst({
+      where: { evento: 'auth:login_success', usuarioId: empleado.id },
+      orderBy: { creadoEn: 'desc' },
+    })
+    if (lastLogin?.ip && lastLogin.ip !== currentIP) {
+      auditReq('auth:suspicious_location', req, { knownIP: lastLogin.ip, newIP: currentIP }, { userId: empleado.id, userName: empleado.nombre })
+    }
 
-    await prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt } });
-
-    const permisos = [...new Set([
-      ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
-      ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
-    ])];
-    const jwtStr   = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua }, process.env.JWT_SECRET, { expiresIn: '8h' });
-    const token    = wrapJWT(jwtStr);
-
-    res.cookie('token', token, {
-      httpOnly: true, signed: true, sameSite: 'strict',
-      secure: process.env.NODE_ENV === 'production',
-      maxAge: 8 * 60 * 60 * 1000,
-    });
+    // If 2FA enabled, return temp token — full session deferred until TOTP verified
+    if (empleado.twoFactorEnabled) {
+      const tempToken = crypto.randomUUID()
+      twoFAStore.set(tempToken, { empleadoId: empleado.id, exp: Date.now() + 5 * 60_000 })
+      auditReq('auth:2fa_challenge', req, { email: empleado.email }, { userId: empleado.id, userName: empleado.nombre })
+      return res.json({ requires2FA: true, tempToken })
+    }
 
     auditReq('auth:login_success', req, { email: empleado.email }, { userId: empleado.id, userName: empleado.nombre });
-    res.json({ id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos });
+    const payload = await completarLogin(empleado, req, res);
+    res.json(payload);
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' });
     res.status(500).json({ error: 'Error interno.' });
@@ -394,23 +470,97 @@ app.post('/api/auth/logout', verificarJWT, async (req, res) => {
   auditReq('auth:logout', req);
   await prisma.sessionToken.deleteMany({ where: { jti: req.user.jti } });
   res.clearCookie('token');
+  res.clearCookie('csrf');
   res.status(204).end();
 });
+
+// ─── 2FA Endpoints ────────────────────────────────────────────────────────────
+
+app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
+  try {
+    const { tempToken, totp } = z.object({ tempToken: z.string().uuid(), totp: z.string().length(6) }).parse(req.body)
+    const entry = twoFAStore.get(tempToken)
+    if (!entry || entry.exp < Date.now()) return res.status(400).json({ error: 'Token expirado. Vuelve a iniciar sesión.' })
+    twoFAStore.delete(tempToken)
+    const empleado = await prisma.empleado.findUnique({
+      where: { id: entry.empleadoId },
+      include: { roles: { where: { activo: true } } },
+    })
+    if (!empleado || !empleado.twoFactorSecret) return res.status(400).json({ error: 'Error de configuración 2FA.' })
+    const secret = decryptTOTP(empleado.twoFactorSecret)
+    if (!authenticator.verify({ token: totp, secret })) {
+      auditReq('auth:2fa_fail', req, {}, { userId: empleado.id, userName: empleado.nombre })
+      return res.status(401).json({ error: 'PIN inválido.' })
+    }
+    auditReq('auth:login_success', req, { via: '2fa' }, { userId: empleado.id, userName: empleado.nombre })
+    const payload = await completarLogin(empleado, req, res)
+    res.json(payload)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.get('/api/auth/2fa/setup', verificarJWT, async (req, res) => {
+  try {
+    const secret      = authenticator.generateSecret()
+    const encrypted   = encryptTOTP(secret)
+    const otpauthUrl  = authenticator.keyuri(req.user.nombre, 'ACR Networks ERP', secret)
+    const qrCode      = await QRCode.toDataURL(otpauthUrl)
+    await prisma.empleado.update({ where: { id: req.user.sub }, data: { twoFactorSecret: encrypted } })
+    res.json({ qrCode, secret })
+  } catch { res.status(500).json({ error: 'Error generando 2FA.' }) }
+})
+
+app.post('/api/auth/2fa/enable', verificarJWT, async (req, res) => {
+  try {
+    const { totp } = z.object({ totp: z.string().length(6) }).parse(req.body)
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorSecret: true, twoFactorEnabled: true } })
+    if (!emp?.twoFactorSecret) return res.status(400).json({ error: 'Genera el QR primero.' })
+    if (emp.twoFactorEnabled) return res.status(400).json({ error: '2FA ya está activo.' })
+    const secret = decryptTOTP(emp.twoFactorSecret)
+    if (!authenticator.verify({ token: totp, secret })) return res.status(401).json({ error: 'PIN inválido.' })
+    await prisma.empleado.update({ where: { id: req.user.sub }, data: { twoFactorEnabled: true } })
+    auditReq('auth:2fa_enabled', req)
+    res.status(204).end()
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'PIN de 6 dígitos requerido.' })
+    res.status(500).json({ error: 'Error al activar 2FA.' })
+  }
+})
+
+app.post('/api/auth/2fa/disable', verificarJWT, async (req, res) => {
+  try {
+    const { totp } = z.object({ totp: z.string().length(6) }).parse(req.body)
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorSecret: true, twoFactorEnabled: true } })
+    if (!emp?.twoFactorEnabled) return res.status(400).json({ error: '2FA no está activo.' })
+    const secret = decryptTOTP(emp.twoFactorSecret)
+    if (!authenticator.verify({ token: totp, secret })) return res.status(401).json({ error: 'PIN inválido.' })
+    await prisma.empleado.update({ where: { id: req.user.sub }, data: { twoFactorEnabled: false, twoFactorSecret: null } })
+    auditReq('auth:2fa_disabled', req)
+    res.status(204).end()
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'PIN de 6 dígitos requerido.' })
+    res.status(500).json({ error: 'Error al desactivar 2FA.' })
+  }
+})
 
 // ─── Empleados ────────────────────────────────────────────────────────────────
 
 app.post('/api/empleados', verificarJWT, requerirPermiso('rrhh:editar'), async (req, res) => {
   try {
-    const { roleIds, ...data } = empleadoSchema.parse(req.body);
+    const { roleIds, password, ...data } = empleadoSchema.parse(req.body);
+    const passwordHash = await bcrypt.hash(password, 12);
     const e = await prisma.empleado.create({
-      data: { ...data, roles: { connect: roleIds.map(id => ({ id })) } },
+      data: { ...data, passwordHash, roles: { connect: roleIds.map(id => ({ id })) } },
       select: { id: true, nombre: true, cargo: true, email: true, bloqueado: true, creadoEn: true, roles: { select: { id: true, nombre: true } } },
     });
     auditReq('rrhh:empleado_creado', req, { nombre: e.nombre });
     res.status(201).json(e);
   } catch (error) {
+    if (error instanceof z.ZodError) return res.status(400).json({ error: error.issues[0]?.message ?? 'Datos inválidos.' });
     if (error.code === 'P2002') return res.status(409).json({ error: 'El email ya está registrado.' });
-    res.status(400).json({ error: 'Datos inválidos' });
+    res.status(400).json({ error: 'Datos inválidos.' });
   }
 });
 
@@ -1328,7 +1478,7 @@ app.get('/api/admin/empleados', verificarJWT, requerirPermiso('sistema:admin'), 
     const empleados = await prisma.empleado.findMany({
       select: {
         id: true, nombre: true, cargo: true, email: true, bloqueado: true, creadoEn: true,
-        permisosExtra: true,
+        permisosExtra: true, twoFactorEnabled: true,
         roles: { select: { id: true, nombre: true, activo: true, permisos: true } },
       },
       orderBy: { nombre: 'asc' },
@@ -1340,6 +1490,8 @@ app.get('/api/admin/empleados', verificarJWT, requerirPermiso('sistema:admin'), 
 app.patch('/api/admin/empleados/:id/roles', verificarJWT, requerirPermiso('sistema:admin'), protegerPropietario, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
+  // Anti-self-escalation
+  if (id === req.user.sub) return res.status(403).json({ error: 'No puedes modificar tus propios roles.' });
   try {
     const { roleIds } = z.object({ roleIds: z.array(z.number().int().positive()) }).parse(req.body);
     const current = await prisma.empleado.findUnique({ where: { id }, include: { roles: { select: { permisos: true } } } });
@@ -1348,6 +1500,16 @@ app.patch('/api/admin/empleados/:id/roles', verificarJWT, requerirPermiso('siste
       const rolesToAssign = await prisma.rol.findMany({ where: { id: { in: roleIds } } });
       const merged = [...new Set(rolesToAssign.flatMap(r => Array.isArray(r.permisos) ? r.permisos : []))];
       if (!merged.includes('sistema:owner')) return res.status(403).json({ error: 'El propietario debe conservar un rol con sistema:owner.' });
+    }
+    // Anti-privilege-escalation: non-owner can only assign roles whose perms are a subset of their own
+    if (!req.user.permisos?.includes('sistema:owner')) {
+      const callerPerms = new Set(Array.isArray(req.user.permisos) ? req.user.permisos : [])
+      const rolesToAssign = await prisma.rol.findMany({ where: { id: { in: roleIds } } })
+      for (const rol of rolesToAssign) {
+        const rolPerms = Array.isArray(rol.permisos) ? rol.permisos : []
+        const escalated = rolPerms.find(p => !callerPerms.has(p))
+        if (escalated) return res.status(403).json({ error: `No puedes asignar el rol "${rol.nombre}": contiene permiso "${escalated}" que tú no posees.` })
+      }
     }
     const newRoles     = await prisma.rol.findMany({ where: { id: { in: roleIds } } });
     const newRolePerms = new Set(newRoles.flatMap(r => Array.isArray(r.permisos) ? r.permisos : []));
@@ -1457,18 +1619,22 @@ app.patch('/api/admin/empleados/:id/password', verificarJWT, requerirPermiso('si
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
-    const { password } = z.object({ password: z.string().min(8) }).parse(req.body);
+    const { password } = z.object({ password: passwordSchema }).parse(req.body);
     const passwordHash = await bcrypt.hash(password, 12);
     await prisma.empleado.update({ where: { id }, data: { passwordHash } });
     await prisma.sessionToken.deleteMany({ where: { empleadoId: id } });
     auditReq('admin:password_change', req, { targetId: id });
     res.status(204).end();
-  } catch { res.status(400).json({ error: 'Contraseña debe tener mínimo 8 caracteres.' }); }
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Contraseña inválida.' });
+    res.status(400).json({ error: 'Error al cambiar contraseña.' });
+  }
 });
 
 app.patch('/api/admin/empleados/:id/bloquear', verificarJWT, requerirPermiso('sistema:admin'), protegerPropietario, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
+  if (id === req.user.sub) return res.status(403).json({ error: 'No puedes bloquear tu propia cuenta.' });
   try {
     const { bloqueado } = z.object({ bloqueado: z.boolean() }).parse(req.body);
     await prisma.empleado.update({ where: { id }, data: { bloqueado } });

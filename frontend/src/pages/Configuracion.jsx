@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import {
   ShieldCheck, Lock, Ban, CheckCircle, LogOut, Loader2, Eye, EyeOff,
   RefreshCw, KeyRound, Crown, Users, Shield, Plus, Trash2, Save, Sparkles,
+  QrCode, Smartphone,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
@@ -253,6 +254,45 @@ function PanelUsuario({ empleado, roles, permGroups, onUpdated }) {
   const [savingBlock,  setSavingBlock]  = useState(false)
   const [savingLogout, setSavingLogout] = useState(false)
 
+  // 2FA state (only shown for self)
+  const [qrCode,       setQrCode]       = useState(null)
+  const [totpPin,      setTotpPin]      = useState('')
+  const [saving2FA,    setSaving2FA]    = useState(false)
+  const [loading2FA,   setLoading2FA]   = useState(false)
+  const [twoFAEnabled, setTwoFAEnabled] = useState(empleado.twoFactorEnabled ?? false)
+
+  async function setup2FA() {
+    setLoading2FA(true)
+    try {
+      const r = await apiFetch('/api/auth/2fa/setup')
+      if (r.ok) { const j = await r.json(); setQrCode(j.qrCode) }
+      else toast.error((await r.json()).error)
+    } catch { toast.error('Error de conexión') }
+    finally { setLoading2FA(false) }
+  }
+
+  async function enable2FA() {
+    if (totpPin.length !== 6) { toast.error('PIN de 6 dígitos requerido.'); return }
+    setSaving2FA(true)
+    try {
+      const r = await apiFetch('/api/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ totp: totpPin }) })
+      if (r.status === 204) { toast.success('2FA activado.'); setTwoFAEnabled(true); setQrCode(null); setTotpPin('') }
+      else toast.error((await r.json()).error)
+    } catch { toast.error('Error de conexión') }
+    finally { setSaving2FA(false) }
+  }
+
+  async function disable2FA() {
+    if (totpPin.length !== 6) { toast.error('PIN de 6 dígitos requerido.'); return }
+    setSaving2FA(true)
+    try {
+      const r = await apiFetch('/api/auth/2fa/disable', { method: 'POST', body: JSON.stringify({ totp: totpPin }) })
+      if (r.status === 204) { toast.success('2FA desactivado.'); setTwoFAEnabled(false); setTotpPin('') }
+      else toast.error((await r.json()).error)
+    } catch { toast.error('Error de conexión') }
+    finally { setSaving2FA(false) }
+  }
+
   useEffect(() => {
     setSelectedRoleIds(empleado.roles?.map(r => r.id) ?? [])
     const inh = new Set((empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []))
@@ -464,6 +504,78 @@ function PanelUsuario({ empleado, roles, permGroups, onUpdated }) {
           </button>
         </div>
       </div>
+
+      {/* 2FA — only for the logged-in user themselves */}
+      {isSelf && (
+        <div>
+          <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
+            <Smartphone size={13} />Autenticación en 2 Pasos (TOTP)
+          </p>
+
+          {twoFAEnabled ? (
+            /* ── Desactivar 2FA ── */
+            <div className="rounded-xl border border-emerald-600/30 bg-emerald-600/5 p-4 space-y-3 max-w-sm">
+              <div className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
+                <p className="text-sm font-semibold text-emerald-400">2FA Activo</p>
+              </div>
+              <p className="text-xs text-slate-500">Para desactivar, confirma con tu app autenticadora.</p>
+              <div className="flex gap-2">
+                <input
+                  type="text" inputMode="numeric" maxLength={6}
+                  value={totpPin} onChange={e => setTotpPin(e.target.value.replace(/\D/g,'').slice(0,6))}
+                  placeholder="000000"
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-center text-lg tracking-[0.4em] text-slate-100 placeholder-slate-700 focus:outline-none focus:border-red-500/50 transition-colors font-mono"
+                />
+                <button onClick={disable2FA} disabled={saving2FA || totpPin.length !== 6}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-600/30 text-sm font-medium transition-colors disabled:opacity-40">
+                  {saving2FA ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />}
+                  Desactivar
+                </button>
+              </div>
+            </div>
+          ) : qrCode ? (
+            /* ── Confirmar activación con PIN ── */
+            <div className="rounded-xl border border-cyan-600/30 bg-cyan-600/5 p-4 space-y-3 max-w-sm">
+              <p className="text-xs font-semibold text-cyan-400 flex items-center gap-1.5"><QrCode size={13} />Escanea con tu app autenticadora</p>
+              <div className="flex justify-center">
+                <img src={qrCode} alt="QR 2FA" className="w-40 h-40 rounded-xl border border-slate-700 bg-white p-1" />
+              </div>
+              <p className="text-xs text-slate-500 text-center">Google Authenticator · Authy · etc.</p>
+              <p className="text-xs text-slate-400">Ingresa el PIN generado para confirmar activación:</p>
+              <div className="flex gap-2">
+                <input
+                  type="text" inputMode="numeric" maxLength={6}
+                  value={totpPin} onChange={e => setTotpPin(e.target.value.replace(/\D/g,'').slice(0,6))}
+                  placeholder="000000" autoFocus
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-center text-lg tracking-[0.4em] text-slate-100 placeholder-slate-700 focus:outline-none focus:border-cyan-500/50 transition-colors font-mono"
+                />
+                <button onClick={enable2FA} disabled={saving2FA || totpPin.length !== 6}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-cyan-600/80 hover:bg-cyan-600 text-white text-sm font-semibold transition-colors disabled:opacity-40">
+                  {saving2FA ? <Loader2 size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                  Activar
+                </button>
+              </div>
+              <button onClick={() => { setQrCode(null); setTotpPin('') }} className="text-xs text-slate-600 hover:text-slate-400 transition-colors w-full text-center">
+                Cancelar
+              </button>
+            </div>
+          ) : (
+            /* ── Activar 2FA ── */
+            <div className="rounded-xl border border-slate-700/40 bg-slate-800/20 p-4 space-y-3 max-w-sm">
+              <p className="text-xs text-slate-500 leading-relaxed">
+                Protege tu cuenta con una app TOTP (Google Authenticator, Authy). Al activar,
+                se requerirá un código temporal en cada inicio de sesión.
+              </p>
+              <button onClick={setup2FA} disabled={loading2FA}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 text-blue-400 border border-blue-600/30 text-sm font-medium transition-colors disabled:opacity-40">
+                {loading2FA ? <Loader2 size={13} className="animate-spin" /> : <QrCode size={13} />}
+                Configurar 2FA
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

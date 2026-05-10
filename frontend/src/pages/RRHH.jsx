@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
   Plus, Pencil, Trash2, X, Loader2, RefreshCw,
-  Users, LogIn, LogOut, Clock, Calendar, Search, ShieldOff,
+  Users, LogIn, LogOut, Clock, Calendar, Search, ShieldOff, Eye, EyeOff,
 } from 'lucide-react'
 import { useDebounce } from '../hooks/useDebounce'
 import { useAuth } from '../contexts/AuthContext'
@@ -19,14 +19,16 @@ const fmtTime = d => new Date(d).toLocaleTimeString('es-DO', { hour: '2-digit', 
 // ─── Modal Formulario Empleado ────────────────────────────────────────────────
 
 function FormularioEmpleado({ empleado, onClose, onSaved }) {
-  const [nombre, setNombre]       = useState(empleado?.nombre ?? '')
-  const [email,  setEmail]        = useState(empleado?.email  ?? '')
-  const [roles,  setRoles]        = useState([])
+  const [nombre,   setNombre]   = useState(empleado?.nombre ?? '')
+  const [email,    setEmail]    = useState(empleado?.email  ?? '')
+  const [password, setPassword] = useState('')
+  const [showPwd,  setShowPwd]  = useState(false)
+  const [roles,    setRoles]    = useState([])
   const [selectedRoleIds, setSelectedRoleIds] = useState(
     empleado?.roles?.map(r => r.id) ?? []
   )
   const [loadingRoles, setLoadingRoles] = useState(false)
-  const [saving, setSaving]       = useState(false)
+  const [saving, setSaving]     = useState(false)
 
   useEffect(() => {
     setLoadingRoles(true)
@@ -43,12 +45,14 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
 
   async function guardar() {
     if (!selectedRoleIds.length) { toast.error('Asigna al menos un rol.'); return }
+    if (!empleado && !password) { toast.error('La contraseña inicial es requerida.'); return }
     setSaving(true)
     try {
       const cargo  = roles.filter(r => selectedRoleIds.includes(r.id)).map(r => r.nombre).join(' / ') || 'Técnico'
       const path   = empleado ? `/api/empleados/${empleado.id}` : '/api/empleados'
       const method = empleado ? 'PUT' : 'POST'
-      const r    = await apiFetch(path, { method, body: JSON.stringify({ nombre, email, cargo, roleIds: selectedRoleIds }) })
+      const body   = { nombre, email, cargo, roleIds: selectedRoleIds, ...(password ? { password } : {}) }
+      const r    = await apiFetch(path, { method, body: JSON.stringify(body) })
       const json = await r.json()
       if (!r.ok) { toast.error(json.error ?? 'Error al guardar'); return }
       toast.success(empleado ? 'Técnico actualizado.' : 'Técnico creado.')
@@ -57,7 +61,7 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
     finally { setSaving(false) }
   }
 
-  const canSave = nombre.trim() && email.trim()
+  const canSave = nombre.trim() && email.trim() && (!(!empleado) || password.length >= 8)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -75,6 +79,20 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
           <div>
             <label className={LABEL}>Email</label>
             <input type="email" className={INPUT} value={email} onChange={e => setEmail(e.target.value)} placeholder="tecnico@empresa.do" />
+          </div>
+          <div>
+            <label className={LABEL}>{empleado ? 'Nueva Contraseña (opcional)' : 'Contraseña Inicial *'}</label>
+            <div className="relative">
+              <input type={showPwd ? 'text' : 'password'} className={INPUT + ' pr-9'} value={password}
+                onChange={e => setPassword(e.target.value)}
+                placeholder={empleado ? 'Dejar vacío para no cambiar' : 'Mín 8 chars + 1 símbolo (!@#$%^&*)'}
+              />
+              <button type="button" onClick={() => setShowPwd(v => !v)}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
+                {showPwd ? <EyeOff size={13} /> : <Eye size={13} />}
+              </button>
+            </div>
+            {!empleado && <p className="text-[10px] text-slate-600 mt-1 font-mono">Requiere símbolo especial: ! @ # $ % ^ &amp; *</p>}
           </div>
           <div>
             <label className={LABEL}>Rol(es) Asignado(s)</label>
