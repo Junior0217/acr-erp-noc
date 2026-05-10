@@ -1,0 +1,351 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum TipoAsistencia {
+  Entrada
+  Salida
+}
+
+enum TipoMovimiento {
+  Entrada
+  Salida
+}
+
+enum TipoServicio {
+  WISP
+  CCTV
+  Redes
+  CercoElectrico
+  VentaDirecta
+  Mixto
+  SoporteTecnico
+  Reparacion
+  ProyectoCCTV
+}
+
+enum EstadoServicio {
+  Pendiente
+  EnInstalacion
+  Activo
+  Suspendido
+  Cancelado
+}
+
+enum TipoOrden {
+  Instalacion
+  Retiro
+  ServicioTecnico
+  Mantenimiento
+}
+
+// ─── RRHH ─────────────────────────────────────────────────────────────────────
+
+model Rol {
+  id          Int        @id @default(autoincrement())
+  nombre      String     @unique
+  descripcion String?
+  permisos    Json       @default("[]")
+  activo      Boolean    @default(true)
+  empleados   Empleado[]
+  createdAt   DateTime   @default(now())
+  updatedAt   DateTime   @updatedAt
+
+  @@index([activo])
+  @@index([nombre])
+}
+
+model Empleado {
+  id             Int                @id @default(autoincrement())
+  nombre         String
+  cargo          String
+  email          String             @unique
+  passwordHash   String             @default("")
+  bloqueado      Boolean            @default(false)
+  permisosExtra  Json               @default("[]")
+  creadoEn       DateTime           @default(now())
+  asistencias    Asistencia[]
+  ordenes        OrdenInstalacion[]
+  sessions       SessionToken[]
+  roles          Rol[]
+
+  @@index([nombre])
+}
+
+model SessionToken {
+  id         String   @id @default(uuid())
+  jti        String   @unique
+  empleadoId Int
+  userAgent  String   @default("")
+  empleado   Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+
+  @@index([empleadoId])
+  @@index([jti])
+}
+
+model Asistencia {
+  id         Int            @id @default(autoincrement())
+  empleadoId Int
+  fechaHora  DateTime       @default(now())
+  tipo       TipoAsistencia
+  empleado   Empleado       @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  @@index([empleadoId])
+}
+
+// ─── Inventario ───────────────────────────────────────────────────────────────
+
+model Categoria {
+  id        Int        @id @default(autoincrement())
+  nombre    String     @unique
+  productos Producto[]
+}
+
+model Producto {
+  id               Int                    @id @default(autoincrement())
+  sku              String                 @unique
+  nombre           String
+  precio           Decimal                @db.Decimal(12, 2)
+  stockActual      Int                    @default(0)
+  categoriaId      Int
+  categoria        Categoria              @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+  movimientos      MovimientoInventario[]
+  plantillaEquipos PlantillaEquipo[]
+  detallesOrden    DetalleOrden[]
+
+  @@index([categoriaId])
+  @@index([nombre])
+  @@index([stockActual])
+}
+
+model MovimientoInventario {
+  id                 Int               @id @default(autoincrement())
+  productoId         Int
+  tipo               TipoMovimiento
+  cantidad           Int
+  fecha              DateTime          @default(now())
+  ordenInstalacionId String?
+  producto           Producto          @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  orden              OrdenInstalacion? @relation(fields: [ordenInstalacionId], references: [id], onDelete: SetNull)
+
+  @@index([productoId])
+  @@index([ordenInstalacionId])
+  @@index([fecha])
+  @@index([productoId, fecha])
+}
+
+// ─── Catálogo de Servicios ────────────────────────────────────────────────────
+
+model Plan {
+  id                String            @id @default(uuid())
+  nombre            String
+  tipo              TipoServicio
+  precioMensualBase Decimal           @default(0) @db.Decimal(12, 2)
+  precioInstalBase  Decimal           @default(0) @db.Decimal(12, 2)
+  activo            Boolean           @default(true)
+  plantillaEquipos  PlantillaEquipo[]
+  servicios         Servicio[]
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([tipo])
+  @@index([activo])
+  @@index([nombre])
+  @@index([createdAt])
+}
+
+model PlantillaEquipo {
+  id         Int      @id @default(autoincrement())
+  planId     String
+  productoId Int
+  cantidad   Int
+  plan       Plan     @relation(fields: [planId], references: [id], onDelete: Cascade)
+  producto   Producto @relation(fields: [productoId], references: [id], onDelete: Restrict)
+
+  @@unique([planId, productoId])
+  @@index([planId])
+}
+
+// ─── Clientes ─────────────────────────────────────────────────────────────────
+
+model Cliente {
+  id                  String     @id @default(uuid())
+  noCliente           String     @unique
+  razonSocial         String
+  nombreComercial     String?
+  rnc                 String?    @unique
+  registroMercantil   String?
+  tipoEmpresa         String
+  fechaInicio         DateTime   @default(now())
+  nombreContacto      String
+  apellidoContacto    String?
+  cedula              String?
+  cargo               String?
+  direccion           String
+  sector              String
+  provincia           String
+  latitud             String?
+  longitud            String?
+  telefonoPrincipal   String
+  telefonoAlternativo String?
+  email               String
+  website             String?
+  tipoCliente         String
+  itbis               Boolean    @default(true)
+  promHorasMes        Int?
+  activo              Boolean    @default(true)
+  fechaInactivo       DateTime?
+  limiteCredito       Decimal    @default(0.00) @db.Decimal(12, 2)
+  diasCredito         Int        @default(0)
+  tipoNcf             String     @default("Consumidor Final")
+  servicios           Servicio[]
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  @@index([rnc])
+  @@index([activo])
+  @@index([razonSocial])
+  @@index([createdAt])
+}
+
+// ─── Servicios ────────────────────────────────────────────────────────────────
+
+model Servicio {
+  id                   String             @id @default(uuid())
+  clienteId            String
+  planId               String
+  estado               EstadoServicio     @default(Pendiente)
+  precioMensual        Decimal            @default(0) @db.Decimal(12, 2)
+  precioInstalacion    Decimal            @default(0) @db.Decimal(12, 2)
+  notasTecnicas        String?
+  direccionInstalacion String?
+  latitud              String?
+  longitud             String?
+  cliente              Cliente            @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  plan                 Plan               @relation(fields: [planId], references: [id], onDelete: Restrict)
+  ordenes              OrdenInstalacion[]
+  createdAt            DateTime           @default(now())
+  updatedAt            DateTime           @updatedAt
+
+  @@index([clienteId])
+  @@index([planId])
+  @@index([estado])
+  @@index([createdAt])
+}
+
+// ─── Órdenes de Instalación ───────────────────────────────────────────────────
+
+model OrdenInstalacion {
+  id           String                 @id @default(uuid())
+  servicioId   String
+  tipo         TipoOrden
+  estado       String                 @default("Pendiente")
+  tecnicoId    Int
+  notas        String?
+  diagnostico  String?
+  solucion     String?
+  garantiaDias Int?
+  completadaEn DateTime?
+  servicio     Servicio               @relation(fields: [servicioId], references: [id], onDelete: Restrict)
+  tecnico      Empleado               @relation(fields: [tecnicoId], references: [id], onDelete: Restrict)
+  detalles     DetalleOrden[]
+  movimientos  MovimientoInventario[]
+  createdAt    DateTime               @default(now())
+  updatedAt    DateTime               @updatedAt
+
+  @@index([servicioId])
+  @@index([tecnicoId])
+  @@index([estado])
+  @@index([createdAt])
+}
+
+model DetalleOrden {
+  id         Int              @id @default(autoincrement())
+  ordenId    String
+  productoId Int
+  cantidad   Int
+  orden      OrdenInstalacion @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  producto   Producto         @relation(fields: [productoId], references: [id], onDelete: Restrict)
+
+  @@unique([ordenId, productoId])
+  @@index([ordenId])
+}
+
+// ─── Suplidores ───────────────────────────────────────────────────────────────
+
+model Suplidor {
+  id                String    @id @default(uuid())
+  noSuplidor        String    @unique
+  razonSocial       String
+  nombreComercial   String?
+  rnc               String?   @unique
+  direccion         String
+  sector            String
+  provincia         String
+  latitud           String?
+  longitud          String?
+  nombreContacto    String
+  cedula            String?
+  cargo             String?
+  telefonoPrincipal String
+  telefonoAlt       String?
+  email             String?
+  contactoAlt       String?
+  actividad         String
+  camposUsuario     String?
+  fechaInicio       DateTime  @default(now())
+  activo            Boolean   @default(true)
+  fechaInactivo     DateTime?
+  limiteCredito     Decimal   @default(0.00) @db.Decimal(12, 2)
+  diasCredito       Int       @default(0)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([rnc])
+  @@index([activo])
+}
+
+// ─── Audit Log ───────────────────────────────────────────────────────────────
+
+model AuditLog {
+  id        Int      @id @default(autoincrement())
+  evento    String
+  usuarioId Int?
+  userName  String?
+  ip        String?
+  ua        String?
+  meta      Json?
+  creadoEn  DateTime @default(now())
+
+  @@index([usuarioId])
+  @@index([evento])
+  @@index([creadoEn])
+  @@index([usuarioId, creadoEn])
+}
+
+// ─── Prospectos ───────────────────────────────────────────────────────────────
+
+model Prospecto {
+  id                 String   @id @default(uuid())
+  nombre             String
+  telefono           String
+  servicioInteresado String
+  origen             String   @default("WhatsApp")
+  notas              String?
+  latitud            String?
+  longitud           String?
+  estado             String   @default("Nuevo")
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  @@index([estado])
+}

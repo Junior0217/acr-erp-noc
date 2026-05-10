@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Test-Path *)",
+      "Bash(npx prisma *)",
+      "Bash(Get-ChildItem *)",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\crosario.SERVICORP\\\\Documents\\\\erp-acr\\\\frontend\\\\src\\\\pages\" -File | ForEach-Object { $_.Name })",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\crosario.SERVICORP\\\\Documents\\\\erp-acr\\\\frontend\\\\src\\\\components\" -File | ForEach-Object { $_.Name })",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\crosario.SERVICORP\\\\Documents\\\\erp-acr\\\\frontend\\\\src\\\\layouts\" -File | ForEach-Object { $_.Name })",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\crosario.SERVICORP\\\\Documents\\\\erp-acr\\\\frontend\\\\src\\\\components\" -Recurse | ForEach-Object { $_.FullName -replace [regex]::Escape\\(\"C:\\\\Users\\\\crosario.SERVICORP\\\\Documents\\\\erp-acr\\\\frontend\\\\src\\\\components\"\\), \"components\" })",
+      "PowerShell(Get-ChildItem -Path \"C:\\\\Users\\\\crosario.SERVICORP\\\\Documents\\\\erp-acr\\\\frontend\\\\src\\\\components\" -Directory | ForEach-Object { $_.Name })",
+      "Bash(npm install *)"
+    ]
+  }
+}
