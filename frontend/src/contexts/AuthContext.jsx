@@ -17,7 +17,7 @@ export function AuthProvider({ children }) {
     return () => window.removeEventListener('auth:logout', handler)
   }, [])
 
-  async function login(email, password) {
+  async function login(email, password, rememberMe = false) {
     const chalRes = await fetch(`${BASE}/api/auth/challenge`, { credentials: 'include' })
     if (!chalRes.ok) throw new Error('Error obteniendo challenge de autenticación.')
     const { cid, publicKey: pubKeyB64 } = await chalRes.json()
@@ -32,7 +32,7 @@ export function AuthProvider({ children }) {
     const r    = await fetch(`${BASE}/api/auth/login`, {
       method: 'POST', credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email, cid, ciphertext }),
+      body: JSON.stringify({ email, cid, ciphertext, rememberMe }),
     })
     const json = await r.json()
     if (!r.ok) throw new Error(json.error ?? 'Error al iniciar sesión')

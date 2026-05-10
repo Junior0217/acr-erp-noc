@@ -31,13 +31,14 @@ function LogoContenedor() {
 }
 
 export default function Login() {
-  const [email,     setEmail]     = useState('')
-  const [password,  setPassword]  = useState('')
-  const [showPwd,   setShowPwd]   = useState(false)
-  const [totp,      setTotp]      = useState('')
-  const [tempToken, setTempToken] = useState(null)
-  const [loading,   setLoading]   = useState(false)
-  const [error,     setError]     = useState('')
+  const [email,      setEmail]      = useState('')
+  const [password,   setPassword]   = useState('')
+  const [showPwd,    setShowPwd]    = useState(false)
+  const [rememberMe, setRememberMe] = useState(false)
+  const [totp,       setTotp]       = useState('')
+  const [tempToken,  setTempToken]  = useState(null)
+  const [loading,    setLoading]    = useState(false)
+  const [error,      setError]      = useState('')
   const { login, verifyTOTP }     = useAuth()
   const navigate                  = useNavigate()
 
@@ -51,7 +52,7 @@ export default function Login() {
         await verifyTOTP(tempToken, totp)
         navigate('/', { replace: true })
       } else {
-        const result = await login(email, password)
+        const result = await login(email, password, rememberMe)
         if (result?.requires2FA) {
           setTempToken(result.tempToken)
         } else {
@@ -175,6 +176,22 @@ export default function Login() {
                   </button>
                 </div>
               </div>
+
+              <label className="flex items-center gap-2.5 cursor-pointer select-none group">
+                <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${
+                  rememberMe ? 'bg-blue-600 border-blue-500' : 'bg-slate-800 border-slate-600 group-hover:border-slate-500'
+                }`} onClick={() => setRememberMe(v => !v)}>
+                  {rememberMe && (
+                    <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
+                      <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  )}
+                </div>
+                <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} className="sr-only" />
+                <span className="text-xs text-slate-500 group-hover:text-slate-400 transition-colors font-mono">
+                  Mantener sesión iniciada <span className="text-slate-700">(30 días)</span>
+                </span>
+              </label>
 
               {error && (
                 <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-900/20 border border-red-700/30 text-xs text-red-400 font-mono">

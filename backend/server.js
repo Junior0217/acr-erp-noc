@@ -356,20 +356,22 @@ async function protegerPropietario(req, res, next) {
 
 // ─── Auth Helpers ─────────────────────────────────────────────────────────────
 
-function completarLogin(empleado, req, res) {
+function completarLogin(empleado, req, res, rememberMe = false) {
   const jti       = crypto.randomUUID()
   const ua        = req.headers['user-agent'] || ''
-  const expiresAt = new Date(Date.now() + 8 * 60 * 60 * 1000)
+  const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000
+  const jwtTTL    = rememberMe ? '30d' : '8h'
+  const expiresAt = new Date(Date.now() + ttl)
   return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt } }).then(() => {
     const permisos = [...new Set([
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
       ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
     ])]
-    const jwtStr = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua }, process.env.JWT_SECRET, { expiresIn: '8h' })
+    const jwtStr = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua }, process.env.JWT_SECRET, { expiresIn: jwtTTL })
     const token  = wrapJWT(jwtStr)
     const csrf   = crypto.randomBytes(32).toString('hex')
-    res.cookie('csrf', csrf, { httpOnly: false, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 8 * 60 * 60 * 1000 })
-    res.cookie('token', token, { httpOnly: true, signed: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 8 * 60 * 60 * 1000 })
+    res.cookie('csrf', csrf, { httpOnly: false, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: ttl })
+    res.cookie('token', token, { httpOnly: true, signed: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: ttl })
     return { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos }
   })
 }
@@ -395,11 +397,12 @@ const loginSchema = z.object({
   email:      z.string().email(),
   cid:        z.string().uuid(),
   ciphertext: z.string().min(1),
+  rememberMe: z.boolean().optional().default(false),
 });
 
 app.post('/api/auth/login', loginLimiter, async (req, res) => {
   try {
-    const { email, cid, ciphertext } = loginSchema.parse(req.body);
+    const { email, cid, ciphertext, rememberMe } = loginSchema.parse(req.body);
 
     const challenge = challengeStore.get(cid);
     if (!challenge || challenge.exp < Date.now()) {
@@ -443,13 +446,13 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     // If 2FA enabled, return temp token — full session deferred until TOTP verified
     if (empleado.twoFactorEnabled) {
       const tempToken = crypto.randomUUID()
-      twoFAStore.set(tempToken, { empleadoId: empleado.id, exp: Date.now() + 5 * 60_000 })
+      twoFAStore.set(tempToken, { empleadoId: empleado.id, exp: Date.now() + 5 * 60_000, rememberMe })
       auditReq('auth:2fa_challenge', req, { email: empleado.email }, { userId: empleado.id, userName: empleado.nombre })
       return res.json({ requires2FA: true, tempToken })
     }
 
     auditReq('auth:login_success', req, { email: empleado.email }, { userId: empleado.id, userName: empleado.nombre });
-    const payload = await completarLogin(empleado, req, res);
+    const payload = await completarLogin(empleado, req, res, rememberMe);
     res.json(payload);
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' });
@@ -496,7 +499,7 @@ app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
       return res.status(401).json({ error: 'PIN inválido.' })
     }
     auditReq('auth:login_success', req, { via: '2fa' }, { userId: empleado.id, userName: empleado.nombre })
-    const payload = await completarLogin(empleado, req, res)
+    const payload = await completarLogin(empleado, req, res, entry.rememberMe ?? false)
     res.json(payload)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })

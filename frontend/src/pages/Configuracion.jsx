@@ -648,7 +648,9 @@ function PanelMiPerfil() {
       </div>
 
       {/* Sesiones activas */}
-      <SesionesActivas />
+      <div className="pt-2 border-t border-slate-800">
+        <SesionesActivas />
+      </div>
     </div>
   )
 }
