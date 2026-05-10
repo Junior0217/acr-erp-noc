@@ -309,7 +309,7 @@ async function verificarJWT(req, res, next) {
     const jwtStr  = unwrapJWT(wrapped);
     const payload = jwt.verify(jwtStr, process.env.JWT_SECRET);
     const ua      = req.headers['user-agent'] || '';
-    if (payload.ua !== ua) {
+    if (payload.ua != null && payload.ua !== ua) {
       auditReq('session:ua_mismatch', req, { jti: payload.jti }, { userId: payload.sub });
       await prisma.sessionToken.deleteMany({ where: { jti: payload.jti } });
       res.clearCookie('token');
@@ -457,10 +457,13 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
   }
 });
 
-app.get('/api/auth/me', verificarJWT, (req, res) => {
-  const permisos = Array.isArray(req.user.permisos) ? req.user.permisos : [];
-  res.json({ id: req.user.sub, nombre: req.user.nombre, permisos });
-});
+app.get('/api/auth/me', verificarJWT, async (req, res) => {
+  try {
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorEnabled: true } })
+    const permisos = Array.isArray(req.user.permisos) ? req.user.permisos : []
+    res.json({ id: req.user.sub, nombre: req.user.nombre, permisos, twoFactorEnabled: emp?.twoFactorEnabled ?? false })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
 
 app.get('/api/auth/permissions', verificarJWT, (req, res) => {
   res.json(PERMISSIONS_MAP);
@@ -542,6 +545,29 @@ app.post('/api/auth/2fa/disable', verificarJWT, async (req, res) => {
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'PIN de 6 dígitos requerido.' })
     res.status(500).json({ error: 'Error al desactivar 2FA.' })
+  }
+})
+
+app.patch('/api/auth/me/password', verificarJWT, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = z.object({
+      currentPassword: z.string().min(1, 'Contraseña actual requerida.'),
+      newPassword: passwordSchema,
+    }).parse(req.body)
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { passwordHash: true } })
+    if (!emp) return res.status(404).json({ error: 'Usuario no encontrado.' })
+    const valid = await bcrypt.compare(currentPassword, emp.passwordHash)
+    if (!valid) return res.status(401).json({ error: 'Contraseña actual incorrecta.' })
+    const newHash = await bcrypt.hash(newPassword, 12)
+    await prisma.$transaction([
+      prisma.empleado.update({ where: { id: req.user.sub }, data: { passwordHash: newHash } }),
+      prisma.sessionToken.deleteMany({ where: { empleadoId: req.user.sub, NOT: { jti: req.user.jti } } }),
+    ])
+    auditReq('auth:self_password_change', req)
+    res.status(204).end()
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.errors[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
   }
 })
 

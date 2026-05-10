@@ -40,7 +40,7 @@ const navItems = [
   { to: '/crm',          label: 'CRM',            icon: Handshake,       sub: 'Clientes · Suplidores',      permiso: 'crm:ver'        },
   { to: '/mapa',         label: 'Mapa NOC',       icon: Globe,           sub: 'Cobertura · Geo',            permiso: 'mapa:ver'       },
   { to: '/reportes',     label: 'Reportes',       icon: BarChart2,       sub: 'KPIs · Exportar',            permiso: 'reportes:ver'   },
-  { to: '/configuracion',label: 'Configuración',  icon: Settings,        sub: 'Sistema · Usuarios',         permiso: 'sistema:admin'  },
+  { to: '/configuracion',label: 'Configuración',  icon: Settings,        sub: 'Perfil · Seguridad',         permiso: null             },
 ]
 
 function SidebarContent({ onClose }) {
