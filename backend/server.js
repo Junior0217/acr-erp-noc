@@ -359,10 +359,11 @@ async function protegerPropietario(req, res, next) {
 function completarLogin(empleado, req, res, rememberMe = false) {
   const jti       = crypto.randomUUID()
   const ua        = req.headers['user-agent'] || ''
+  const ip        = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
   const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000
   const jwtTTL    = rememberMe ? '30d' : '8h'
   const expiresAt = new Date(Date.now() + ttl)
-  return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt } }).then(() => {
+  return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } }).then(() => {
     const permisos = [...new Set([
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
       ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
@@ -578,7 +579,7 @@ app.get('/api/auth/me/sessions', verificarJWT, async (req, res) => {
   try {
     const sessions = await prisma.sessionToken.findMany({
       where: { empleadoId: req.user.sub, expiresAt: { gt: new Date() } },
-      select: { jti: true, userAgent: true, createdAt: true, expiresAt: true },
+      select: { jti: true, userAgent: true, createdAt: true, expiresAt: true, ip: true },
       orderBy: { createdAt: 'desc' },
     })
     res.json({ data: sessions, current: req.user.jti })
@@ -593,6 +594,34 @@ app.delete('/api/auth/me/sessions/:jti', verificarJWT, async (req, res) => {
     if (!session || session.empleadoId !== req.user.sub) return res.status(404).json({ error: 'Sesión no encontrada.' })
     await prisma.sessionToken.delete({ where: { jti } })
     auditReq('auth:session_revoked', req, { jti })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error cerrando sesión.' }) }
+})
+
+// ─── Admin — Global Session Management (Owner only) ──────────────────────────
+
+app.get('/api/admin/sessions', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const sessions = await prisma.sessionToken.findMany({
+      where: { expiresAt: { gt: new Date() } },
+      select: {
+        jti: true, userAgent: true, createdAt: true, expiresAt: true, ip: true,
+        empleado: { select: { id: true, nombre: true, cargo: true } },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    res.json({ data: sessions, current: req.user.jti })
+  } catch { res.status(500).json({ error: 'Error obteniendo sesiones.' }) }
+})
+
+app.delete('/api/admin/sessions/:jti', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  const { jti } = req.params
+  try {
+    const session = await prisma.sessionToken.findUnique({ where: { jti }, include: { empleado: { select: { id: true } } } })
+    if (!session) return res.status(404).json({ error: 'Sesión no encontrada.' })
+    if (session.jti === req.user.jti) return res.status(400).json({ error: 'Usa /logout para cerrar tu propia sesión.' })
+    await prisma.sessionToken.delete({ where: { jti } })
+    auditReq('auth:session_force_revoked', req, { jti, targetEmpleadoId: session.empleado.id })
     res.status(204).end()
   } catch { res.status(500).json({ error: 'Error cerrando sesión.' }) }
 })

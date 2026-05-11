@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import {
   ShieldCheck, Lock, Ban, CheckCircle, LogOut, Loader2, Eye, EyeOff,
   RefreshCw, KeyRound, Crown, Users, Shield, Plus, Trash2, Save, Sparkles,
-  QrCode, Smartphone, User, Monitor, Trash,
+  QrCode, Smartphone, User, Monitor, Trash, Globe, MapPin,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
@@ -661,15 +661,6 @@ function SesionesActivas() {
   const [loading,  setLoading]      = useState(false)
   const [revoking, setRevoking]     = useState(null)
 
-  function parseUA(ua) {
-    if (!ua) return 'Dispositivo desconocido'
-    if (/mobile|android/i.test(ua)) return 'Móvil'
-    if (/windows/i.test(ua)) return 'Windows'
-    if (/mac/i.test(ua)) return 'Mac'
-    if (/linux/i.test(ua)) return 'Linux'
-    return 'Navegador'
-  }
-
   async function cargar() {
     setLoading(true)
     try {
@@ -716,13 +707,18 @@ function SesionesActivas() {
                 }`}>
                   <Monitor size={15} className={isCurrent ? 'text-blue-400' : 'text-slate-500'} />
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className={`text-xs font-semibold truncate ${isCurrent ? 'text-blue-300' : 'text-slate-300'}`}>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className={`text-xs font-semibold ${isCurrent ? 'text-blue-300' : 'text-slate-300'}`}>
                         {parseUA(s.userAgent)}
                       </p>
                       {isCurrent && (
                         <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-blue-600/20 text-blue-400 border border-blue-600/30 flex-shrink-0">
                           Actual
+                        </span>
+                      )}
+                      {s.ip && (
+                        <span className="flex items-center gap-0.5 text-[10px] text-slate-600 font-mono flex-shrink-0">
+                          <MapPin size={9} />{s.ip}
                         </span>
                       )}
                     </div>
@@ -747,9 +743,130 @@ function SesionesActivas() {
   )
 }
 
+function parseUA(ua) {
+  if (!ua) return 'Dispositivo desconocido'
+  if (/mobile|android/i.test(ua)) return 'Móvil'
+  if (/windows/i.test(ua)) return 'Windows'
+  if (/mac/i.test(ua)) return 'Mac'
+  if (/linux/i.test(ua)) return 'Linux'
+  return 'Navegador'
+}
+
+function PanelSesionesGlobales() {
+  const [sessions, setSessions] = useState([])
+  const [curJti,   setCurJti]   = useState(null)
+  const [loading,  setLoading]  = useState(false)
+  const [revoking, setRevoking] = useState(null)
+
+  async function cargar() {
+    setLoading(true)
+    try {
+      const r = await apiFetch('/api/admin/sessions')
+      if (r.ok) { const j = await r.json(); setSessions(j.data ?? []); if (j.current) setCurJti(j.current) }
+      else toast.error('Error al cargar sesiones globales.')
+    } catch { toast.error('Error de conexión') }
+    finally { setLoading(false) }
+  }
+
+  async function revocar(jti) {
+    setRevoking(jti)
+    try {
+      const r = await apiFetch(`/api/admin/sessions/${jti}`, { method: 'DELETE' })
+      if (r.status === 204) { toast.success('Sesión terminada.'); setSessions(s => s.filter(x => x.jti !== jti)) }
+      else toast.error((await r.json()).error)
+    } catch { toast.error('Error de conexión') }
+    finally { setRevoking(null) }
+  }
+
+  useEffect(() => { cargar() }, [])
+
+  const byEmployee = sessions.reduce((acc, s) => {
+    const key = s.empleado?.id ?? 'unknown'
+    if (!acc[key]) acc[key] = { empleado: s.empleado, sessions: [] }
+    acc[key].sessions.push(s)
+    return acc
+  }, {})
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <p className="text-sm font-bold text-amber-400 flex items-center gap-2">
+            <Globe size={15} />Ojo de Dios — Sesiones Activas
+          </p>
+          <p className="text-xs text-slate-600 mt-0.5 font-mono">{sessions.length} sesión{sessions.length !== 1 ? 'es' : ''} activa{sessions.length !== 1 ? 's' : ''} en el sistema</p>
+        </div>
+        <button onClick={cargar} className="text-slate-600 hover:text-slate-400 transition-colors">
+          <RefreshCw size={13} className={loading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      {loading && sessions.length === 0
+        ? <div className="flex items-center gap-2 text-slate-600 text-xs py-4 font-mono"><Loader2 size={13} className="animate-spin" />Cargando...</div>
+        : sessions.length === 0
+        ? <p className="text-xs text-slate-600 font-mono py-4">Sin sesiones activas en el sistema.</p>
+        : (
+          <div className="space-y-4">
+            {Object.values(byEmployee).map(({ empleado, sessions: empSessions }) => (
+              <div key={empleado?.id ?? 'unknown'} className="rounded-xl border border-slate-700/40 bg-slate-800/20 overflow-hidden">
+                <div className="px-4 py-2.5 bg-slate-800/40 border-b border-slate-700/40 flex items-center gap-2">
+                  <User size={13} className="text-slate-400" />
+                  <span className="text-xs font-semibold text-slate-300">{empleado?.nombre ?? 'Desconocido'}</span>
+                  <span className="text-[10px] text-slate-600 font-mono">· {empleado?.cargo}</span>
+                  <span className="ml-auto text-[10px] font-mono text-slate-600 bg-slate-800 px-1.5 py-0.5 rounded border border-slate-700">
+                    {empSessions.length} sesión{empSessions.length !== 1 ? 'es' : ''}
+                  </span>
+                </div>
+                <div className="divide-y divide-slate-800/60">
+                  {empSessions.map(s => {
+                    const isCurrent = s.jti === curJti
+                    return (
+                      <div key={s.jti} className={`flex items-center gap-3 px-4 py-3 ${isCurrent ? 'bg-amber-600/5' : ''}`}>
+                        <Monitor size={14} className={isCurrent ? 'text-amber-400' : 'text-slate-500'} />
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className={`text-xs font-semibold ${isCurrent ? 'text-amber-300' : 'text-slate-300'}`}>
+                              {parseUA(s.userAgent)}
+                            </span>
+                            {isCurrent && (
+                              <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-amber-600/20 text-amber-400 border border-amber-600/30">
+                                Tu sesión
+                              </span>
+                            )}
+                            {s.ip && (
+                              <span className="flex items-center gap-0.5 text-[10px] text-slate-500 font-mono">
+                                <MapPin size={9} />{s.ip}
+                              </span>
+                            )}
+                          </div>
+                          <p className="text-[10px] text-slate-600 font-mono mt-0.5">
+                            Inicio: {new Date(s.createdAt).toLocaleString('es-DO')} · Exp: {new Date(s.expiresAt).toLocaleString('es-DO')}
+                          </p>
+                        </div>
+                        {!isCurrent && (
+                          <button onClick={() => revocar(s.jti)} disabled={revoking === s.jti}
+                            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-600/30 text-[11px] font-medium transition-colors disabled:opacity-40 flex-shrink-0">
+                            {revoking === s.jti ? <Loader2 size={11} className="animate-spin" /> : <Trash size={11} />}
+                            Terminar
+                          </button>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )
+      }
+    </div>
+  )
+}
+
 export default function Configuracion() {
   const { tienePermiso } = useAuth()
   const isAdmin = tienePermiso('sistema:admin')
+  const isOwner = tienePermiso('sistema:owner')
   const [activeTab,  setActiveTab]  = useState(isAdmin ? 'usuarios' : 'mi-perfil')
   const [permGroups, setPermGroups] = useState([])
   const [empleados,  setEmpleados]  = useState([])
@@ -819,6 +936,14 @@ export default function Configuracion() {
             <Icon size={14} />{label}
           </button>
         ))}
+        {isOwner && (
+          <button onClick={() => setActiveTab('sesiones')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'sesiones' ? 'bg-amber-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'
+            }`}>
+            <Globe size={14} />Sesiones
+          </button>
+        )}
       </div>
 
       {/* ── Tab: Mi Perfil ──────────────────────────────────────────────────── */}
@@ -864,6 +989,13 @@ export default function Configuracion() {
               : <p className="text-sm text-slate-600 text-center py-8">Selecciona un usuario</p>
             }
           </div>
+        </div>
+      )}
+
+      {/* ── Tab: Sesiones Globales (Owner) ──────────────────────────────────── */}
+      {activeTab === 'sesiones' && isOwner && (
+        <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
+          <PanelSesionesGlobales />
         </div>
       )}
 

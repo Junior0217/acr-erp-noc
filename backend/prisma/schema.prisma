@@ -86,6 +86,7 @@ model SessionToken {
   jti        String   @unique
   empleadoId Int
   userAgent  String   @default("")
+  ip         String?
   empleado   Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
   createdAt  DateTime @default(now())
   expiresAt  DateTime
