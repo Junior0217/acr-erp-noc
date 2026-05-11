@@ -457,9 +457,16 @@ function completarLogin(empleado, req, res, rememberMe = false) {
     ])]
     const jwtStr = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua }, process.env.JWT_SECRET, { expiresIn: jwtTTL })
     const token  = wrapJWT(jwtStr)
-    const csrf   = crypto.randomBytes(32).toString('hex')
-    res.cookie('csrf', csrf, { httpOnly: false, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: ttl })
-    res.cookie('token', token, { httpOnly: true, signed: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: ttl })
+    const csrf    = crypto.randomBytes(32).toString('hex')
+    const isProd  = process.env.NODE_ENV === 'production'
+    const cookieBase = {
+      secure:   isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      maxAge:   ttl,
+      ...(isProd ? { partitioned: true } : {}),
+    }
+    res.cookie('csrf',  csrf,  { ...cookieBase, httpOnly: false })
+    res.cookie('token', token, { ...cookieBase, httpOnly: true, signed: true })
     return { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos }
   })
 }
