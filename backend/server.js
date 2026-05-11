@@ -2225,6 +2225,108 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
   }
 })
 
+// ─── Manual / POS Invoice ────────────────────────────────────────────────────
+
+const CONSUMIDOR_FINAL_NO = 'CF-0001'
+
+const facturaManualSchema = z.object({
+  clienteId: z.string().uuid().optional(),
+  itbis:     z.boolean().optional().default(true),
+  diasVence: z.number().int().min(0).max(365).optional().default(30),
+  lineas: z.array(z.object({
+    concepto:       z.string().min(1).max(300),
+    cantidad:       z.number().positive(),
+    precioUnitario: z.number().positive(),
+  })).min(1, 'Se requiere al menos una línea.'),
+})
+
+app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
+  try {
+    const { clienteId: inputClienteId, itbis: applyItbis, diasVence, lineas } = facturaManualSchema.parse(req.body)
+
+    const factura = await prisma.$transaction(async (tx) => {
+      // 1. Resolve client — upsert Consumidor Final if none provided
+      let cliente
+      if (inputClienteId) {
+        cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
+        if (!cliente) throw Object.assign(new Error('Cliente no encontrado.'), { status: 404 })
+      } else {
+        cliente = await tx.cliente.upsert({
+          where:  { noCliente: CONSUMIDOR_FINAL_NO },
+          update: {},
+          create: {
+            noCliente:         CONSUMIDOR_FINAL_NO,
+            razonSocial:       'Consumidor Final',
+            nombreContacto:    'Consumidor Final',
+            tipoCliente:       'Residencial',
+            tipoEmpresa:       'Residencial',
+            telefonoPrincipal: '000-000-0000',
+            email:             'consumidor@acr.do',
+            direccion:         'N/A',
+            sector:            'N/A',
+            provincia:         'Santo Domingo',
+            itbis:             false,
+            tipoNcf:           'Consumidor Final',
+            activo:            true,
+          },
+        })
+      }
+
+      // 2. Determine NCF type
+      const tipoNcf = cliente.tipoNcf ?? 'Consumidor Final'
+      const ncfKey  = tipoNcf === 'Fiscal' ? 'Fiscal' : 'Consumidor Final'
+
+      // 3. Atomic NCF sequence increment
+      const rows = await tx.$queryRaw`
+        UPDATE "ConfiguracionNCF"
+        SET    "secuenciaActual" = "secuenciaActual" + 1
+        WHERE  "tipoNcf"         = ${ncfKey}
+          AND  "activo"          = true
+          AND  "secuenciaActual" < "limite"
+          AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
+        RETURNING *
+      `
+      if (!rows || rows.length === 0)
+        throw Object.assign(new Error(`Sin secuencia NCF disponible para "${ncfKey}". Verifica Configuración NCF.`), { status: 422 })
+
+      // 4. Build NCF + noFactura
+      const seq       = String(rows[0].secuenciaActual).padStart(8, '0')
+      const ncf       = `${rows[0].prefijo}${seq}`
+      const noFactura = `FAC${new Date().getFullYear()}${seq}`
+
+      // 5. Totals
+      const subtotal  = Math.round(lineas.reduce((s, l) => s + l.precioUnitario * l.cantidad, 0) * 100) / 100
+      const itbisAmt  = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+      const total     = Math.round((subtotal + itbisAmt) * 100) / 100
+
+      // 6. Create Factura (no ordenId — manual/POS mode)
+      const f = await tx.factura.create({
+        data: {
+          noFactura,
+          clienteId:  cliente.id,
+          estado:     'Emitida',
+          subtotal,
+          itbis:      itbisAmt,
+          total,
+          ncf,
+          tipoNcf:    ncfKey,
+          notas:      `Factura manual POS — ${lineas.length} línea(s)`,
+          fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
+        },
+      })
+
+      return { ...f, cliente, lineas }
+    })
+
+    auditReq('factura:manual', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length })
+    res.status(201).json(factura)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
+    console.error('[FACTURA MANUAL]', e.message)
+    res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error al generar la factura.' })
+  }
+})
+
 app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   try {
     const { estado, clienteId, limit = '50', offset = '0' } = req.query
