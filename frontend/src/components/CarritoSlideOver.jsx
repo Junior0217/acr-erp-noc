@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt } from 'lucide-react'
+import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useDebounce } from '../hooks/useDebounce'
@@ -172,8 +172,10 @@ function LineaRow({ linea, onUpdate, onRemove }) {
 
 export default function CarritoSlideOver() {
   const { carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout } = useCart()
-  const [tipoNcf, setTipoNcf]         = useState('')
+  const [tipoNcf, setTipoNcf]           = useState('')
   const [nombreWalkIn, setNombreWalkIn] = useState('')
+  const [descTipo, setDescTipo]         = useState('pct')
+  const [descValor, setDescValor]       = useState(0)
 
   if (!open) return null
 
@@ -181,14 +183,29 @@ export default function CarritoSlideOver() {
   const totales  = carrito?.totales ?? { subtotal: 0, itbis: 0, total: 0 }
   const cliente  = carrito?.cliente ?? null
 
+  const subtotalBruto = totales.subtotal
+  const descuentoAmt = descValor > 0
+    ? (descTipo === 'pct'
+        ? Math.round(subtotalBruto * (descValor / 100) * 100) / 100
+        : Math.min(descValor, subtotalBruto))
+    : 0
+  const subtotalNeto = Math.max(0, Math.round((subtotalBruto - descuentoAmt) * 100) / 100)
+  const itbisDisplay  = carrito?.applyItbis ? Math.round(subtotalNeto * 0.18 * 100) / 100 : 0
+  const totalDisplay  = Math.round((subtotalNeto + itbisDisplay) * 100) / 100
+
   async function handleCheckout(esCotizacion) {
     if (!lineas.length) { toast.warning('El carrito está vacío.'); return }
     const nombre = !cliente && nombreWalkIn.trim() ? nombreWalkIn.trim() : undefined
     const ncf    = tipoNcf || undefined
-    const f = await checkout(esCotizacion, ncf, nombre)
+    const descuento = descValor > 0
+      ? (descTipo === 'pct' ? { descuentoGlobalPct: descValor } : { descuentoGlobalMonto: descValor })
+      : {}
+    const f = await checkout(esCotizacion, ncf, nombre, descuento)
     if (f) {
       setTipoNcf('')
       setNombreWalkIn('')
+      setDescValor(0)
+      setDescTipo('pct')
       setOpen(false)
     }
   }
@@ -266,6 +283,39 @@ export default function CarritoSlideOver() {
               <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${carrito?.applyItbis ? 'translate-x-5' : 'translate-x-0.5'}`} />
             </button>
           </div>
+
+          {/* Global discount */}
+          <div className="pt-1">
+            <div className="flex items-center justify-between mb-1.5">
+              <label className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
+                <Tag size={11} /> Descuento Global
+              </label>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => { setDescTipo('pct'); setDescValor(0) }}
+                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${descTipo === 'pct' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                >
+                  %
+                </button>
+                <button
+                  onClick={() => { setDescTipo('monto'); setDescValor(0) }}
+                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${descTipo === 'monto' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                >
+                  RD$
+                </button>
+              </div>
+            </div>
+            <input
+              type="number"
+              min="0"
+              max={descTipo === 'pct' ? 100 : undefined}
+              step="0.01"
+              value={descValor || ''}
+              onChange={e => setDescValor(Math.max(0, parseFloat(e.target.value) || 0))}
+              placeholder={descTipo === 'pct' ? '0.00 %' : '0.00 RD$'}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+            />
+          </div>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -286,17 +336,23 @@ export default function CarritoSlideOver() {
             <div className="px-4 py-3 space-y-1 bg-slate-900/60">
               <div className="flex justify-between text-sm text-slate-400">
                 <span>Subtotal</span>
-                <span className="tabular-nums">RD$ {fmt(totales.subtotal)}</span>
+                <span className="tabular-nums">RD$ {fmt(subtotalBruto)}</span>
               </div>
+              {descuentoAmt > 0 && (
+                <div className="flex justify-between text-sm text-red-400">
+                  <span>Descuento {descTipo === 'pct' ? `(${descValor}%)` : ''}</span>
+                  <span className="tabular-nums">−RD$ {fmt(descuentoAmt)}</span>
+                </div>
+              )}
               {carrito?.applyItbis && (
                 <div className="flex justify-between text-sm text-slate-400">
                   <span>ITBIS (18%)</span>
-                  <span className="tabular-nums">RD$ {fmt(totales.itbis)}</span>
+                  <span className="tabular-nums">RD$ {fmt(itbisDisplay)}</span>
                 </div>
               )}
               <div className="flex justify-between text-base font-bold text-slate-100 pt-1 border-t border-slate-800">
                 <span>Total</span>
-                <span className="tabular-nums text-blue-300">RD$ {fmt(totales.total)}</span>
+                <span className="tabular-nums text-blue-300">RD$ {fmt(totalDisplay)}</span>
               </div>
             </div>
 

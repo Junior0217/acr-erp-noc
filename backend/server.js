@@ -2305,7 +2305,7 @@ const facturaManualSchema = z.object({
 })
 
 // Shared transaction: used by /api/facturas/manual and /api/carrito/checkout
-async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal }) {
+async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0 }) {
   return prisma.$transaction(async (tx) => {
     // 1. Resolve client
     let cliente
@@ -2360,7 +2360,11 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
                precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon,
                _tipoItem: p.tipoItem }
     })
-    const subtotal = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
+    const subtotalBruto = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
+    const globalDesc    = descuentoGlobalPct > 0
+      ? Math.round(subtotalBruto * (descuentoGlobalPct / 100) * 100) / 100
+      : Math.min(descuentoGlobalMonto, subtotalBruto)
+    const subtotal = Math.round((subtotalBruto - globalDesc) * 100) / 100
     const itbisAmt = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
     const total    = Math.round((subtotal + itbisAmt) * 100) / 100
 
@@ -2550,12 +2554,14 @@ app.delete('/api/carrito', verificarJWT, async (req, res) => {
 
 app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
   const schema = z.object({
-    esCotizacion:    z.boolean().optional().default(false),
-    tipoNcfOverride: z.string().optional(),
-    nombreTemporal:  z.string().max(100).optional(),
+    esCotizacion:       z.boolean().optional().default(false),
+    tipoNcfOverride:    z.string().optional(),
+    nombreTemporal:     z.string().max(100).optional(),
+    descuentoGlobalPct: z.number().min(0).max(100).optional().default(0),
+    descuentoGlobalMonto: z.number().min(0).optional().default(0),
   })
   try {
-    const { esCotizacion, tipoNcfOverride, nombreTemporal } = schema.parse(req.body)
+    const { esCotizacion, tipoNcfOverride, nombreTemporal, descuentoGlobalPct, descuentoGlobalMonto } = schema.parse(req.body)
     const carrito = await prisma.carritoTemp.findUnique({
       where: { empleadoId: req.user.sub },
       include: { lineas: true },
@@ -2576,6 +2582,8 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
       lineas,
       tipoNcfOverride,
       nombreTemporal,
+      descuentoGlobalPct,
+      descuentoGlobalMonto,
     })
     await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
     auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })

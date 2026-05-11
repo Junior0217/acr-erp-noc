@@ -61,6 +61,60 @@ function MovBadge({ tipo }) {
   )
 }
 
+// ─── Modal Vista Producto (read mode) ─────────────────────────────────────────
+
+function ModalVistaProducto({ producto, onClose, onEdit }) {
+  const esServicio = producto.tipoItem === 'SERVICIO'
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-2">
+            {esServicio ? <Wrench size={16} className="text-purple-400" /> : <Package size={16} className="text-blue-400" />}
+            <h2 className="font-semibold text-slate-100 truncate">{producto.nombre}</h2>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors flex-shrink-0"><X size={18} /></button>
+        </div>
+        <div className="p-5 space-y-4">
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">SKU</p>
+              <p className="text-sm font-mono text-slate-200 mt-0.5">{producto.sku}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Categoría</p>
+              <p className="text-sm text-slate-200 mt-0.5">{producto.categoria?.nombre ?? '—'}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Precio</p>
+              <p className="text-lg font-bold text-emerald-400 mt-0.5">RD$ {fmt(producto.precio)}</p>
+            </div>
+            {!esServicio && (
+              <div>
+                <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Stock Actual</p>
+                <div className="mt-1"><StockBadge stock={producto.stockActual} /></div>
+              </div>
+            )}
+            <div className={!esServicio ? 'col-span-2' : ''}>
+              <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider">Tipo</p>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium mt-0.5 ${esServicio ? 'bg-purple-600/10 text-purple-400 border border-purple-600/30' : 'bg-blue-600/10 text-blue-400 border border-blue-600/30'}`}>
+                {esServicio ? <Wrench size={9} /> : <Package size={9} />} {esServicio ? 'Servicio' : 'Artículo Físico'}
+              </span>
+            </div>
+          </div>
+        </div>
+        <div className="flex justify-end gap-2 px-5 pb-5">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">Cerrar</button>
+          <button onClick={onEdit} className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors">
+            <Pencil size={13} /> Editar
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ─── Tab: Catálogo (Artículos o Servicios) ────────────────────────────────────
 
 function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
@@ -72,6 +126,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
   const [page, setPage]       = useState(1)
   const [loading, setLoading] = useState(false)
   const [modal, setModal]     = useState(null)
+  const [viewModal, setViewModal] = useState(null)
   const debouncedSearch       = useDebounce(search, 400)
 
   const esServicio = tipoItem === 'SERVICIO'
@@ -176,7 +231,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
               <tr><td colSpan={esServicio ? 5 : 6} className="px-4 py-8 text-center text-sm text-slate-600">Sin {esServicio ? 'servicios' : 'artículos'}.</td></tr>
             )}
             {rows.map(p => (
-              <tr key={p.id} className="hover:bg-slate-800/40 transition-colors">
+              <tr key={p.id} onClick={() => setViewModal(p)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
                 <td className={TD + ' font-mono text-xs text-slate-400'}>{p.sku}</td>
                 <td className={TD + ' font-medium text-slate-200'}>{p.nombre}</td>
                 <td className={TD}>
@@ -188,7 +243,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
                 {!esServicio && (
                   <td className="px-4 py-3 text-right"><StockBadge stock={p.stockActual} /></td>
                 )}
-                <td className="px-4 py-3">
+                <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                   <div className="flex items-center justify-end gap-1">
                     <button
                       onClick={() => addItem(p.id, 1)}
@@ -220,6 +275,13 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
           tipoItemDefault={tipoItem}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); fetch_(page, debouncedSearch, catFiltro); toast.success('Guardado.') }}
+        />
+      )}
+      {viewModal && (
+        <ModalVistaProducto
+          producto={viewModal}
+          onClose={() => setViewModal(null)}
+          onEdit={() => { setModal(viewModal); setViewModal(null) }}
         />
       )}
     </div>

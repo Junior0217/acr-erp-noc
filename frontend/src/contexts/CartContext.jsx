@@ -78,12 +78,14 @@ export function CartProvider({ children }) {
     } catch {}
   }
 
-  async function checkout(esCotizacion = false, tipoNcfOverride, nombreTemporal) {
+  async function checkout(esCotizacion = false, tipoNcfOverride, nombreTemporal, descuentoGlobal = {}) {
     setLoading(true)
     try {
       const body = { esCotizacion }
       if (tipoNcfOverride) body.tipoNcfOverride = tipoNcfOverride
       if (nombreTemporal)  body.nombreTemporal  = nombreTemporal
+      if (descuentoGlobal.descuentoGlobalPct   > 0) body.descuentoGlobalPct   = descuentoGlobal.descuentoGlobalPct
+      if (descuentoGlobal.descuentoGlobalMonto > 0) body.descuentoGlobalMonto = descuentoGlobal.descuentoGlobalMonto
       const r = await apiFetch('/api/carrito/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

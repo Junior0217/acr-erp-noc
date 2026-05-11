@@ -18,6 +18,7 @@ import Reportes from './pages/Reportes'
 import Configuracion from './pages/Configuracion'
 import Servicios from './pages/Servicios'
 import Login from './pages/Login'
+import CustomerPortal from './pages/CustomerPortal'
 
 function AppRoutes() {
   const { user } = useAuth()
@@ -34,6 +35,7 @@ function AppRoutes() {
     return (
       <Routes>
         <Route path="/login" element={<Login />} />
+        <Route path="/portal" element={<CustomerPortal />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     )
@@ -42,6 +44,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<Navigate to="/" replace />} />
+      <Route path="/portal" element={<CustomerPortal />} />
       <Route path="/" element={<AdminLayout />}>
         <Route index element={<Dashboard />} />
         <Route path="ventas" element={<Ventas />} />

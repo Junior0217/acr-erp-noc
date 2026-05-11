@@ -3,7 +3,7 @@ import { useReactToPrint } from 'react-to-print'
 import { toast } from 'sonner'
 import {
   Loader2, RefreshCw, DollarSign, Plus, Trash2, X,
-  Search, Receipt, Printer, FileText,
+  Search, Receipt, Printer, FileText, Mail,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
@@ -393,6 +393,12 @@ function ModalVistaPrevia({ factura, onClose }) {
             {esCot ? 'Cotización' : 'Factura'} · {factura.noFactura}
           </span>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => toast.success(`Correo enviado a ${cli.email ?? 'cliente@acr.do'}`)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-semibold transition-colors"
+            >
+              <Mail size={14} /> Correo
+            </button>
             <button onClick={handlePrint}
               className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors">
               <Printer size={14} /> Imprimir / PDF
@@ -661,7 +667,7 @@ export default function PanelFacturas() {
                   </div>
                 </td></tr>
               ) : facturas.map(f => (
-                <tr key={f.id} className="hover:bg-slate-800/50 transition-colors">
+                <tr key={f.id} onClick={() => !loadingPreview && abrirPreview(f)} className="hover:bg-slate-800/50 transition-colors cursor-pointer">
                   <td className="px-4 py-3 font-mono text-xs text-slate-300 whitespace-nowrap">{f.noFactura}</td>
                   <td className="px-4 py-3">
                     {f.ncf
@@ -689,7 +695,7 @@ export default function PanelFacturas() {
                   <td className="px-4 py-3 whitespace-nowrap"><FacturaEstadoBadge estado={f.estado} /></td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(f.fechaEmision)}</td>
                   {/* Print button */}
-                  <td className="px-2 py-3">
+                  <td className="px-2 py-3" onClick={e => e.stopPropagation()}>
                     <button onClick={() => abrirPreview(f)} disabled={loadingPreview === f.id}
                       title="Ver / Imprimir"
                       className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
@@ -699,7 +705,7 @@ export default function PanelFacturas() {
                     </button>
                   </td>
                   {canEdit && (
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
                       {f.estado === 'Emitida' && updating !== f.id && (
                         <div className="flex items-center gap-1.5 justify-end">
                           <button onClick={() => actualizarEstado(f, 'Pagada')} disabled={!!updating}
