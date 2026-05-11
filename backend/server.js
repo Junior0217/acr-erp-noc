@@ -2230,22 +2230,23 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
 const CONSUMIDOR_FINAL_NO = 'CF-0001'
 
 const facturaManualSchema = z.object({
-  clienteId: z.string().uuid().optional(),
-  itbis:     z.boolean().optional().default(true),
-  diasVence: z.number().int().min(0).max(365).optional().default(30),
+  clienteId:    z.string().uuid().optional(),
+  itbis:        z.boolean().optional().default(true),
+  diasVence:    z.number().int().min(0).max(365).optional().default(30),
+  esCotizacion: z.boolean().optional().default(false),
   lineas: z.array(z.object({
-    concepto:       z.string().min(1).max(300),
-    cantidad:       z.number().positive(),
-    precioUnitario: z.number().positive(),
+    productoId:     z.number().int().positive(),
+    cantidad:       z.number().int().positive(),
+    precioUnitario: z.number().positive().optional(),
   })).min(1, 'Se requiere al menos una línea.'),
 })
 
 app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
   try {
-    const { clienteId: inputClienteId, itbis: applyItbis, diasVence, lineas } = facturaManualSchema.parse(req.body)
+    const { clienteId: inputClienteId, itbis: applyItbis, diasVence, esCotizacion, lineas } = facturaManualSchema.parse(req.body)
 
     const factura = await prisma.$transaction(async (tx) => {
-      // 1. Resolve client — upsert Consumidor Final if none provided
+      // 1. Resolve client
       let cliente
       if (inputClienteId) {
         cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
@@ -2255,76 +2256,127 @@ app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('
           where:  { noCliente: CONSUMIDOR_FINAL_NO },
           update: {},
           create: {
-            noCliente:         CONSUMIDOR_FINAL_NO,
-            razonSocial:       'Consumidor Final',
-            nombreContacto:    'Consumidor Final',
-            tipoCliente:       'Residencial',
-            tipoEmpresa:       'Residencial',
-            telefonoPrincipal: '000-000-0000',
-            email:             'consumidor@acr.do',
-            direccion:         'N/A',
-            sector:            'N/A',
-            provincia:         'Santo Domingo',
-            itbis:             false,
-            tipoNcf:           'Consumidor Final',
-            activo:            true,
+            noCliente: CONSUMIDOR_FINAL_NO, razonSocial: 'Consumidor Final', nombreContacto: 'Consumidor Final',
+            tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', telefonoPrincipal: '000-000-0000',
+            email: 'consumidor@acr.do', direccion: 'N/A', sector: 'N/A', provincia: 'Santo Domingo',
+            itbis: false, tipoNcf: 'Consumidor Final', activo: true,
           },
         })
       }
 
-      // 2. Determine NCF type
-      const tipoNcf = cliente.tipoNcf ?? 'Consumidor Final'
-      const ncfKey  = tipoNcf === 'Fiscal' ? 'Fiscal' : 'Consumidor Final'
+      // 2. Load all products in one query (no N+1)
+      const productoIds = [...new Set(lineas.map(l => l.productoId))]
+      const productos = await tx.producto.findMany({
+        where: { id: { in: productoIds } },
+        select: { id: true, nombre: true, sku: true, stockActual: true, precio: true },
+      })
+      const pMap = Object.fromEntries(productos.map(p => [p.id, p]))
 
-      // 3. Atomic NCF sequence increment
-      const rows = await tx.$queryRaw`
-        UPDATE "ConfiguracionNCF"
-        SET    "secuenciaActual" = "secuenciaActual" + 1
-        WHERE  "tipoNcf"         = ${ncfKey}
-          AND  "activo"          = true
-          AND  "secuenciaActual" < "limite"
-          AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
-        RETURNING *
-      `
-      if (!rows || rows.length === 0)
-        throw Object.assign(new Error(`Sin secuencia NCF disponible para "${ncfKey}". Verifica Configuración NCF.`), { status: 422 })
+      for (const l of lineas) {
+        if (!pMap[l.productoId]) throw Object.assign(new Error(`Producto ID ${l.productoId} no encontrado.`), { status: 404 })
+      }
 
-      // 4. Build NCF + noFactura
-      const seq       = String(rows[0].secuenciaActual).padStart(8, '0')
-      const ncf       = `${rows[0].prefijo}${seq}`
-      const noFactura = `FAC${new Date().getFullYear()}${seq}`
+      // 3. Stock check — only for real invoices, not quotes
+      if (!esCotizacion) {
+        const cantPorProducto = {}
+        for (const l of lineas) cantPorProducto[l.productoId] = (cantPorProducto[l.productoId] || 0) + l.cantidad
+        for (const [pid, cant] of Object.entries(cantPorProducto)) {
+          const p = pMap[Number(pid)]
+          if (p.stockActual < cant)
+            throw Object.assign(new Error(`Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${cant}.`), { status: 400 })
+        }
+      }
 
-      // 5. Totals
-      const subtotal  = Math.round(lineas.reduce((s, l) => s + l.precioUnitario * l.cantidad, 0) * 100) / 100
-      const itbisAmt  = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
-      const total     = Math.round((subtotal + itbisAmt) * 100) / 100
+      // 4. Build enriched lines + totals
+      const lineasEnriquecidas = lineas.map(l => {
+        const p   = pMap[l.productoId]
+        const pu  = l.precioUnitario ?? Number(p.precio)
+        return { productoId: l.productoId, descripcion: p.nombre, cantidad: l.cantidad, precioUnitario: pu }
+      })
+      const subtotal = Math.round(lineasEnriquecidas.reduce((s, l) => s + l.precioUnitario * l.cantidad, 0) * 100) / 100
+      const itbisAmt = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+      const total    = Math.round((subtotal + itbisAmt) * 100) / 100
 
-      // 6. Create Factura (no ordenId — manual/POS mode)
+      let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
+
+      if (esCotizacion) {
+        noFactura = `COT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
+        estado    = 'Borrador'
+      } else {
+        // 5. Smart NCF: PYME/Empresa → Fiscal (B01); Residencial/CF → Consumidor Final (B02)
+        tipoNcf = ['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final'
+
+        // 6. Atomic NCF increment (row lock prevents duplicates)
+        const rows = await tx.$queryRaw`
+          UPDATE "ConfiguracionNCF"
+          SET    "secuenciaActual" = "secuenciaActual" + 1
+          WHERE  "tipoNcf"         = ${tipoNcf}
+            AND  "activo"          = true
+            AND  "secuenciaActual" < "limite"
+            AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
+          RETURNING *
+        `
+        if (!rows || rows.length === 0)
+          throw Object.assign(new Error(`Sin secuencia NCF disponible para "${tipoNcf}". Verifica Configuración NCF.`), { status: 422 })
+
+        const seq = String(rows[0].secuenciaActual).padStart(8, '0')
+        ncf       = `${rows[0].prefijo}${seq}`
+        noFactura = `FAC${new Date().getFullYear()}${seq}`
+        estado    = 'Emitida'
+      }
+
+      // 7. Create Factura + LineaFactura in one nested write
       const f = await tx.factura.create({
         data: {
-          noFactura,
-          clienteId:  cliente.id,
-          estado:     'Emitida',
-          subtotal,
-          itbis:      itbisAmt,
-          total,
-          ncf,
-          tipoNcf:    ncfKey,
-          notas:      `Factura manual POS — ${lineas.length} línea(s)`,
+          noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
+          ncf, tipoNcf, esCotizacion,
+          notas:     esCotizacion ? `Cotización POS — ${lineas.length} línea(s)` : `Factura manual POS — ${lineas.length} línea(s)`,
           fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
+          lineas: { createMany: { data: lineasEnriquecidas } },
+        },
+        include: {
+          cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
+          lineas:  { include: { producto: { select: { id: true, nombre: true, sku: true } } } },
         },
       })
 
-      return { ...f, cliente, lineas }
+      // 8. Deduct stock + Kardex (real invoices only)
+      if (!esCotizacion) {
+        const cantPorProducto = {}
+        for (const l of lineas) cantPorProducto[l.productoId] = (cantPorProducto[l.productoId] || 0) + l.cantidad
+        await Promise.all(
+          Object.entries(cantPorProducto).flatMap(([pid, cant]) => [
+            tx.producto.update({ where: { id: Number(pid) }, data: { stockActual: { decrement: cant } } }),
+            tx.movimientoInventario.create({ data: { productoId: Number(pid), tipo: 'Salida', cantidad: cant } }),
+          ])
+        )
+      }
+
+      return f
     })
 
-    auditReq('factura:manual', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length })
+    auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:manual', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length })
     res.status(201).json(factura)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
     console.error('[FACTURA MANUAL]', e.message)
     res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error al generar la factura.' })
   }
+})
+
+app.get('/api/facturas/:id', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+  try {
+    const f = await prisma.factura.findUnique({
+      where: { id: req.params.id },
+      include: {
+        cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
+        lineas:  { include: { producto: { select: { id: true, nombre: true, sku: true } } } },
+        orden:   { select: { id: true, tipoOT: true } },
+      },
+    })
+    if (!f) return res.status(404).json({ error: 'Factura no encontrada.' })
+    res.json(f)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
 app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
