@@ -11,6 +11,8 @@ const cookieParser = require('cookie-parser');
 const crypto       = require('crypto');
 const { authenticator } = require('otplib');
 const QRCode       = require('qrcode');
+const cron         = require('node-cron');
+const PDFDocument  = require('pdfkit');
 const PERMISSIONS_MAP = require('./shared/permissions.map.js');
 
 // ─── JWE-equivalent: AES-256-GCM wrapper (opaque cookie, RFC 7516 semantics) ──
@@ -129,7 +131,7 @@ const billingLimiter = rateLimit({
   message: { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
 });
 
-app.use(express.json());
+app.use(express.json({ limit: '50kb' }));
 
 // ─── CSRF Double-Submit Cookie ────────────────────────────────────────────────
 const CSRF_SKIP = new Set(['/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout'])
@@ -2076,6 +2078,209 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
     res.json(factura)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
+
+// ─── PDF Fiscal ───────────────────────────────────────────────────────────────
+
+app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+  try {
+    const factura = await prisma.factura.findUnique({
+      where: { id: req.params.id },
+      include: {
+        cliente: true,
+        orden: { include: { lineas: { include: { itemCatalogo: { select: { nombre: true } } } } } },
+      },
+    })
+    if (!factura) return res.status(404).json({ error: 'Factura no encontrada.' })
+
+    const doc = new PDFDocument({ size: 'A4', margin: 50 })
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="factura-${factura.noFactura}.pdf"`)
+    doc.pipe(res)
+
+    const fmtMoney = n => `RD$ ${Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })}`
+    const fmtDate  = d => d ? new Date(d).toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
+    const W = 495
+
+    // ── Header ────────────────────────────────────────────────────────────────
+    doc.fontSize(20).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 50, 50)
+    doc.fontSize(9).font('Helvetica').fillColor('#555').text('Proveedor WISP · CCTV · Redes · Seguridad Electrónica', 50, 74)
+
+    // NCF box
+    doc.roundedRect(370, 45, 175, 40, 5).fillAndStroke('#1e3a5f', '#1e3a5f')
+    doc.fontSize(8).font('Helvetica').fillColor('#fff').text('COMPROBANTE FISCAL', 378, 51, { width: 160, align: 'center' })
+    doc.fontSize(12).font('Helvetica-Bold').fillColor('#fff').text(factura.ncf ?? 'N/A', 378, 63, { width: 160, align: 'center' })
+
+    // Divider
+    doc.moveTo(50, 96).lineTo(545, 96).strokeColor('#1e3a5f').lineWidth(2).stroke()
+
+    // Doc type + numbers
+    doc.y = 108
+    doc.fontSize(14).font('Helvetica-Bold').fillColor('#1e3a5f').text('FACTURA', 50, 108)
+    doc.fontSize(9).font('Helvetica').fillColor('#333')
+      .text(`No. Factura: ${factura.noFactura}`, 50, 126)
+      .text(`Emisión: ${fmtDate(factura.fechaEmision)}`, 50, 140)
+      .text(`Vence: ${fmtDate(factura.fechaVence)}`, 50, 154)
+      .text(`Estado: ${factura.estado}`, 50, 168)
+
+    // Client box
+    doc.roundedRect(280, 108, 265, 70, 4).fillAndStroke('#f4f7fb', '#dde5ef')
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#1e3a5f').text('CLIENTE', 292, 116)
+    doc.font('Helvetica').fillColor('#222')
+      .text(factura.cliente.razonSocial, 292, 128, { width: 240 })
+      .text(`RNC: ${factura.cliente.rnc ?? '—'}`, 292, 140)
+      .text(factura.cliente.direccion ?? '', 292, 152, { width: 240 })
+      .text(`Tel: ${factura.cliente.telefonoPrincipal}`, 292, 164)
+
+    // ── Lines table ───────────────────────────────────────────────────────────
+    const tableTop = 200
+    doc.moveTo(50, tableTop).lineTo(545, tableTop).strokeColor('#1e3a5f').lineWidth(1.5).stroke()
+    doc.rect(50, tableTop, W, 18).fill('#1e3a5f')
+    doc.fontSize(8).font('Helvetica-Bold').fillColor('#fff')
+      .text('#',           55, tableTop + 5, { width: 18 })
+      .text('Descripción', 78, tableTop + 5, { width: 230 })
+      .text('Cant',       318, tableTop + 5, { width: 40,  align: 'right' })
+      .text('P. Unit.',   368, tableTop + 5, { width: 80,  align: 'right' })
+      .text('Total',      458, tableTop + 5, { width: 80,  align: 'right' })
+
+    const lineas = factura.orden?.lineas ?? []
+    let y = tableTop + 18
+    lineas.forEach((l, i) => {
+      const desc  = l.itemCatalogo?.nombre ?? l.descripcion
+      const total = Number(l.precioUnitario) * l.cantidad
+      if (i % 2 === 0) doc.rect(50, y, W, 16).fill('#f9fafc')
+      doc.fontSize(8).font('Helvetica').fillColor('#222')
+        .text(String(i + 1),       55,  y + 4, { width: 18 })
+        .text(desc,                78,  y + 4, { width: 230 })
+        .text(String(l.cantidad),  318, y + 4, { width: 40,  align: 'right' })
+        .text(fmtMoney(l.precioUnitario), 368, y + 4, { width: 80, align: 'right' })
+        .text(fmtMoney(total),     458, y + 4, { width: 80,  align: 'right' })
+      y += 16
+    })
+    doc.moveTo(50, y).lineTo(545, y).strokeColor('#ccc').lineWidth(0.5).stroke()
+
+    // ── Totals ────────────────────────────────────────────────────────────────
+    y += 10
+    const totRow = (label, val, bold = false) => {
+      doc.fontSize(9)[bold ? 'font' : 'font']( bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(bold ? '#1e3a5f' : '#333')
+        .text(label, 360, y, { width: 100, align: 'right' })
+        .font('Helvetica-Bold').fillColor(bold ? '#1e3a5f' : '#333')
+        .text(val,   468, y, { width: 75,  align: 'right' })
+      y += 16
+    }
+    totRow('Subtotal:', fmtMoney(factura.subtotal))
+    totRow(`ITBIS (18%):`, fmtMoney(factura.itbis))
+    doc.moveTo(360, y).lineTo(543, y).strokeColor('#1e3a5f').lineWidth(1).stroke(); y += 6
+    totRow('TOTAL:', fmtMoney(factura.total), true)
+
+    // ── Footer ────────────────────────────────────────────────────────────────
+    doc.moveTo(50, 770).lineTo(545, 770).strokeColor('#1e3a5f').lineWidth(1).stroke()
+    doc.fontSize(7).font('Helvetica').fillColor('#888')
+      .text('ACR Networks & Solutions · Documento generado electrónicamente · Este documento es válido sin firma ni sello.', 50, 775, { align: 'center', width: W })
+
+    doc.end()
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: 'Error al generar PDF.' })
+  }
+})
+
+// ─── Health ───────────────────────────────────────────────────────────────────
+
+app.get('/api/health', async (req, res) => {
+  try {
+    await prisma.$queryRaw`SELECT 1`
+    res.json({ ok: true, db: 'up', uptime: Math.floor(process.uptime()) })
+  } catch {
+    res.status(503).json({ ok: false, db: 'down' })
+  }
+})
+
+// ─── WISP Auto-Biller Cron ────────────────────────────────────────────────────
+
+async function billarOTsISP() {
+  const hoy = new Date()
+  const diaHoy = hoy.getDate()
+  console.log(`[CRON WISP] Iniciando facturación automática para día de corte: ${diaHoy}`)
+  let facturadas = 0, errores = 0
+
+  try {
+    // Fetch ISP OTs activas cuyo diaCorte en metadatos == hoy
+    const ots = await prisma.$queryRaw`
+      SELECT ot.id, ot."clienteId", ot.metadatos
+      FROM   "OrdenTrabajo" ot
+      WHERE  ot."tipoOT" = 'ISP'
+        AND  ot."estado"  = 'Activo'
+        AND  (
+          (ot.metadatos->>'diaCorte')::int = ${diaHoy}
+          OR ot."diaCorte" = ${diaHoy}
+        )
+    `
+
+    for (const ot of ots) {
+      try {
+        await prisma.$transaction(async (tx) => {
+          // Idempotency — no double-bill same OT same day
+          const existing = await tx.factura.findFirst({
+            where: {
+              ordenId:      ot.id,
+              fechaEmision: { gte: new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate()) },
+            },
+          })
+          if (existing) return
+
+          const otFull = await tx.ordenTrabajo.findUnique({
+            where:   { id: ot.id },
+            include: { cliente: true, lineas: true },
+          })
+          if (!otFull || !otFull.lineas.length) return
+
+          const tipoNcf = otFull.cliente.tipoNcf ?? 'B02'
+          const rows = await tx.$queryRaw`
+            UPDATE "ConfiguracionNCF"
+            SET    "secuenciaActual" = "secuenciaActual" + 1
+            WHERE  "tipoNcf"         = ${tipoNcf}
+              AND  "activo"          = true
+              AND  "secuenciaActual" < "limite"
+              AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
+            RETURNING *
+          `
+          if (!rows || rows.length === 0) throw new Error(`Sin NCF disponible para tipo ${tipoNcf}`)
+
+          const seq       = String(rows[0].secuenciaActual).padStart(8, '0')
+          const ncf       = `${rows[0].prefijo}${seq}`
+          const noFactura = `FAC${hoy.getFullYear()}${seq}`
+          const subtotal  = otFull.lineas.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0)
+          const itbis     = otFull.cliente.itbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+          const total     = Math.round((subtotal + itbis) * 100) / 100
+
+          await tx.factura.create({
+            data: {
+              noFactura,
+              clienteId:  otFull.clienteId,
+              ordenId:    otFull.id,
+              estado:     'Emitida',
+              subtotal,
+              itbis,
+              total,
+              ncf,
+              tipoNcf,
+              fechaVence: new Date(hoy.getTime() + 30 * 24 * 60 * 60 * 1000),
+            },
+          })
+        })
+        facturadas++
+      } catch (err) {
+        errores++
+        console.error(`[CRON WISP] Error en OT ${ot.id}:`, err.message)
+      }
+    }
+  } catch (err) {
+    console.error('[CRON WISP] Error fatal:', err.message)
+  }
+
+  console.log(`[CRON WISP] Completado. Facturadas: ${facturadas}, Errores: ${errores}`)
+}
+
+cron.schedule('5 0 * * *', billarOTsISP, { timezone: 'America/Santo_Domingo' })
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
