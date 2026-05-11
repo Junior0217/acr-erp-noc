@@ -78,13 +78,16 @@ export function CartProvider({ children }) {
     } catch {}
   }
 
-  async function checkout(esCotizacion = false) {
+  async function checkout(esCotizacion = false, tipoNcfOverride, nombreTemporal) {
     setLoading(true)
     try {
+      const body = { esCotizacion }
+      if (tipoNcfOverride) body.tipoNcfOverride = tipoNcfOverride
+      if (nombreTemporal)  body.nombreTemporal  = nombreTemporal
       const r = await apiFetch('/api/carrito/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ esCotizacion }),
+        body: JSON.stringify(body),
       })
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error en checkout.'); return null }

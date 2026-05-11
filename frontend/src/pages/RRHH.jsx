@@ -54,14 +54,15 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
       const body   = { nombre, email, cargo, roleIds: selectedRoleIds, ...(password ? { password } : {}) }
       const r    = await apiFetch(path, { method, body: JSON.stringify(body) })
       const json = await r.json()
-      if (!r.ok) { toast.error(json.error ?? 'Error al guardar'); return }
+      if (!r.ok) { toast.error(json.detail?.[0]?.message ?? json.error ?? 'Error al guardar'); return }
       toast.success(empleado ? 'Técnico actualizado.' : 'Técnico creado.')
       onSaved(json)
     } catch { toast.error('Error de conexión') }
     finally { setSaving(false) }
   }
 
-  const canSave = nombre.trim() && email.trim() && (!(!empleado) || password.length >= 8)
+  const pwdValid = !password || (password.length >= 8 && /[!@#$%^&*]/.test(password))
+  const canSave  = nombre.trim() && email.trim() && pwdValid && (!!empleado || password.length >= 8)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -93,6 +94,9 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
               </button>
             </div>
             {!empleado && <p className="text-[10px] text-slate-600 mt-1 font-mono">Requiere símbolo especial: ! @ # $ % ^ &amp; *</p>}
+            {empleado && password && !pwdValid && (
+              <p className="text-[10px] text-red-400 mt-1 font-mono">Mín. 8 caracteres + símbolo (!@#$%^&amp;*)</p>
+            )}
           </div>
           <div>
             <label className={LABEL}>Rol(es) Asignado(s)</label>

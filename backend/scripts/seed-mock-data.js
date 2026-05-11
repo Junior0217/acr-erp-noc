@@ -2,21 +2,19 @@
 // Seed realistic mock data for ACR Networks ERP — Dominican Republic ISP context
 // All records prefixed with "[TEST]" for easy cleanup.
 // NEVER touches existing employees (no upsert on Empleado).
-// Run: DATABASE_URL="..." node backend/scripts/seed-mock-data.js
+// Run: node backend/scripts/seed-mock-data.js [--yes]
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { PrismaClient, TipoServicio, EstadoServicio, TipoOrden, EstadoFactura, TipoFacturacion } = require('@prisma/client');
+const { PrismaClient, TipoServicio, EstadoServicio, EstadoFactura, TipoFacturacion } = require('@prisma/client');
 const prisma = new PrismaClient();
 
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-const rnd = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
-const pick = arr => arr[rnd(0, arr.length - 1)];
+const rnd      = (a, b) => Math.floor(Math.random() * (b - a + 1)) + a;
+const pick     = arr => arr[rnd(0, arr.length - 1)];
 const daysAgo  = n => new Date(Date.now() - n * 86_400_000);
 const daysAhead = n => new Date(Date.now() + n * 86_400_000);
 
-// ─── 1. Categorías ───────────────────────────────────────────────────────────
+// ─── 1. Categorías ────────────────────────────────────────────────────────────
 
 const CATEGORIAS = [
   { nombre: '[TEST] Equipos WISP'           },
@@ -24,26 +22,39 @@ const CATEGORIAS = [
   { nombre: '[TEST] Networking / Redes'      },
   { nombre: '[TEST] Cables y Fibra Óptica'  },
   { nombre: '[TEST] Herramientas de Campo'   },
+  { nombre: '[TEST] Servicios / Planes'      },
 ];
 
-// ─── 2. Productos ─────────────────────────────────────────────────────────────
+// ─── 2. Productos Físicos (ARTICULO) + Servicios/Planes (SERVICIO) ────────────
 
 const makeProductos = catMap => [
-  { sku: 'TEST-ONU-ZTE-F670', nombre: '[TEST] ONU ZTE F670L GPON',           precio: 3200,  stock: 25, cat: '[TEST] Equipos WISP'          },
-  { sku: 'TEST-MT-HAP-AX3',   nombre: '[TEST] Router MikroTik hAP ax3',      precio: 8500,  stock: 15, cat: '[TEST] Equipos WISP'          },
-  { sku: 'TEST-UB-NS-M5',     nombre: '[TEST] Antena Ubiquiti NanoStation M5',precio: 6200,  stock: 10, cat: '[TEST] Equipos WISP'          },
-  { sku: 'TEST-HIK-CAM-4MP',  nombre: '[TEST] Cámara Hikvision DS-2CD2143G2 4MP', precio: 4800, stock: 20, cat: '[TEST] Equipos CCTV'    },
-  { sku: 'TEST-HIK-DVR-8CH',  nombre: '[TEST] DVR Hikvision DS-7208HGHI 8ch',precio: 9500,  stock: 8,  cat: '[TEST] Equipos CCTV'          },
-  { sku: 'TEST-TP-SW-8P',     nombre: '[TEST] Switch TP-Link TL-SG108 8P',   precio: 1950,  stock: 30, cat: '[TEST] Networking / Redes'    },
-  { sku: 'TEST-MT-CCR2004',   nombre: '[TEST] Router MikroTik CCR2004-1G-12S',precio:42000, stock: 4,  cat: '[TEST] Networking / Redes'    },
-  { sku: 'TEST-UTP-CAT6-305', nombre: '[TEST] Cable UTP CAT6 Rollo 305m',    precio: 4200,  stock: 50, cat: '[TEST] Cables y Fibra Óptica' },
-  { sku: 'TEST-FTTH-DROP-500',nombre: '[TEST] Fibra Drop 2H Rollo 500m',     precio: 7800,  stock: 40, cat: '[TEST] Cables y Fibra Óptica' },
-  { sku: 'TEST-ODF-24P',      nombre: '[TEST] ODF 24 Puertos Wall Mount',     precio: 3600,  stock: 12, cat: '[TEST] Cables y Fibra Óptica' },
-  { sku: 'TEST-HERR-FUSION',  nombre: '[TEST] Fusionadora Fujikura 62S',      precio:85000, stock: 2,  cat: '[TEST] Herramientas de Campo'  },
-  { sku: 'TEST-HERR-OTDR',    nombre: '[TEST] OTDR EXFO AXS-100',             precio:120000,stock: 1,  cat: '[TEST] Herramientas de Campo'  },
+  // Artículos físicos — stockActual > 50
+  { sku: 'ART-TEST-ONU-ZTE-F670', nombre: '[TEST] ONU ZTE F670L GPON',            precio: 3200,  stockActual: 75,  tipoItem: 'ARTICULO', cat: '[TEST] Equipos WISP'          },
+  { sku: 'ART-TEST-MT-HAP-AX3',   nombre: '[TEST] Router MikroTik hAP ax3',       precio: 8500,  stockActual: 60,  tipoItem: 'ARTICULO', cat: '[TEST] Equipos WISP'          },
+  { sku: 'ART-TEST-UB-NS-M5',     nombre: '[TEST] Antena Ubiquiti NanoStation M5', precio: 6200,  stockActual: 55,  tipoItem: 'ARTICULO', cat: '[TEST] Equipos WISP'          },
+  { sku: 'ART-TEST-HIK-CAM-4MP',  nombre: '[TEST] Cámara Hikvision DS-2CD2143G2 4MP', precio: 4800, stockActual: 80, tipoItem: 'ARTICULO', cat: '[TEST] Equipos CCTV'    },
+  { sku: 'ART-TEST-HIK-DVR-8CH',  nombre: '[TEST] DVR Hikvision DS-7208HGHI 8ch', precio: 9500,  stockActual: 52,  tipoItem: 'ARTICULO', cat: '[TEST] Equipos CCTV'          },
+  { sku: 'ART-TEST-TP-SW-8P',     nombre: '[TEST] Switch TP-Link TL-SG108 8P',    precio: 1950,  stockActual: 100, tipoItem: 'ARTICULO', cat: '[TEST] Networking / Redes'    },
+  { sku: 'ART-TEST-MT-CCR2004',   nombre: '[TEST] Router MikroTik CCR2004-1G-12S', precio:42000, stockActual: 55,  tipoItem: 'ARTICULO', cat: '[TEST] Networking / Redes'    },
+  { sku: 'ART-TEST-UTP-CAT6-305', nombre: '[TEST] Cable UTP CAT6 Rollo 305m',     precio: 4200,  stockActual: 120, tipoItem: 'ARTICULO', cat: '[TEST] Cables y Fibra Óptica' },
+  { sku: 'ART-TEST-FTTH-DROP-500',nombre: '[TEST] Fibra Drop 2H Rollo 500m',      precio: 7800,  stockActual: 90,  tipoItem: 'ARTICULO', cat: '[TEST] Cables y Fibra Óptica' },
+  { sku: 'ART-TEST-ODF-24P',      nombre: '[TEST] ODF 24 Puertos Wall Mount',      precio: 3600,  stockActual: 60,  tipoItem: 'ARTICULO', cat: '[TEST] Cables y Fibra Óptica' },
+  { sku: 'ART-TEST-HERR-FUSION',  nombre: '[TEST] Fusionadora Fujikura 62S',       precio:85000, stockActual: 55,  tipoItem: 'ARTICULO', cat: '[TEST] Herramientas de Campo'  },
+  { sku: 'ART-TEST-HERR-OTDR',    nombre: '[TEST] OTDR EXFO AXS-100',              precio:120000,stockActual: 51,  tipoItem: 'ARTICULO', cat: '[TEST] Herramientas de Campo'  },
+  // Servicios/Planes — tipoItem SERVICIO (no descuenta stock)
+  { sku: 'SV-TEST-RES-30',        nombre: '[TEST] Plan Residencial 30Mbps',        precio: 1500,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-RES-50',        nombre: '[TEST] Plan Residencial 50Mbps',        precio: 2200,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-EMP-100',       nombre: '[TEST] Plan Empresarial 100Mbps',       precio: 4500,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-EMP-200',       nombre: '[TEST] Plan Empresarial 200Mbps',       precio: 7500,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-CCTV-BASICO',   nombre: '[TEST] CCTV Básico 4 Cámaras',         precio: 800,   stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-CCTV-EMP',      nombre: '[TEST] CCTV Empresarial 8 Cámaras',    precio: 1500,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-INSTAL-WISP',   nombre: '[TEST] Instalación WISP',              precio: 2500,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-INSTAL-CCTV',   nombre: '[TEST] Instalación CCTV',              precio: 5000,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-SOPORTE-TEC',   nombre: '[TEST] Visita Técnica / Diagnóstico',  precio: 800,   stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
+  { sku: 'SV-TEST-SOPORTE-MENS',  nombre: '[TEST] Soporte Técnico Mensual',       precio: 3000,  stockActual: 0,   tipoItem: 'SERVICIO', cat: '[TEST] Servicios / Planes'    },
 ].map(p => ({ ...p, categoriaId: catMap[p.cat] }));
 
-// ─── 3. Roles adicionales ────────────────────────────────────────────────────
+// ─── 3. Roles adicionales ─────────────────────────────────────────────────────
 
 const ROLES = [
   { nombre: '[TEST] Cajero',           descripcion: 'Gestión de cobros y facturas', permisos: ['ventas:ver', 'ventas:crear'], require2FA: false },
@@ -51,7 +62,7 @@ const ROLES = [
   { nombre: '[TEST] Supervisor NOC',   descripcion: 'Supervisión de operaciones', permisos: ['rrhh:ver', 'clientes:ver', 'servicios:ver', 'inventario:ver'], require2FA: false },
 ];
 
-// ─── 4. Clientes ─────────────────────────────────────────────────────────────
+// ─── 4. Clientes ──────────────────────────────────────────────────────────────
 
 const CLIENTES = [
   { noCliente: 'CL-TEST-001', razonSocial: '[TEST] Colmado Los Tres Hermanos', tipoCliente: 'Empresa',     tipoEmpresa: 'PYME',        nombreContacto: 'Pedro',   apellidoContacto: 'Jiménez',   telefonoPrincipal: '809-555-0101', email: 'colmado.treshermanos@test.do', direccion: 'Calle Duarte #12', sector: 'Centro', provincia: 'Santo Domingo', rnc: '1-01-00001-1' },
@@ -66,7 +77,7 @@ const CLIENTES = [
   { noCliente: 'CL-TEST-010', razonSocial: '[TEST] Residencial Carlos Mejía',   tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', nombreContacto: 'Carlos',   apellidoContacto: 'Mejía',     telefonoPrincipal: '849-555-0110', email: 'c.mejia.test@gmail.com',      direccion: 'Urb. Los Jardines #14', sector: 'Los Jardines', provincia: 'Santiago' },
 ];
 
-// ─── 5. Planes ───────────────────────────────────────────────────────────────
+// ─── 5. Planes ────────────────────────────────────────────────────────────────
 
 const PLANES = [
   { nombre: '[TEST] Residencial 30Mbps',    tipo: TipoServicio.WISP,          precioMensualBase: 1500, precioInstalBase: 2500 },
@@ -78,7 +89,7 @@ const PLANES = [
   { nombre: '[TEST] Soporte Técnico Mensual',tipo: TipoServicio.SoporteTecnico,precioMensualBase: 3000, precioInstalBase: 0 },
 ];
 
-// ─── 6. Items de Catálogo ────────────────────────────────────────────────────
+// ─── 6. Items de Catálogo ─────────────────────────────────────────────────────
 
 const ITEMS_CATALOGO = [
   { nombre: '[TEST] Servicio de Instalación WISP',   tipo: TipoFacturacion.Servicio,    categoria: TipoServicio.WISP,          precio: 2500, costo: 800  },
@@ -89,43 +100,59 @@ const ITEMS_CATALOGO = [
   { nombre: '[TEST] Reemplazo ONU/Router',           tipo: TipoFacturacion.VentaUnica,  categoria: TipoServicio.WISP,          precio: 3500, costo: 2800 },
 ];
 
+// ─── 7. NCF Configs ───────────────────────────────────────────────────────────
+
+const NCF_CONFIGS = [
+  { prefijo: 'B01', tipoNcf: 'Fiscal',               tipoDescripcion: 'Crédito Fiscal',       secuenciaActual: 14, limite: 9999999, activo: true },
+  { prefijo: 'B02', tipoNcf: 'Consumidor Final',      tipoDescripcion: 'Consumidor Final',     secuenciaActual: 52, limite: 9999999, activo: true },
+  { prefijo: 'B14', tipoNcf: 'Gubernamental',         tipoDescripcion: 'Gubernamental',        secuenciaActual:  0, limite: 9999999, activo: true },
+  { prefijo: 'B15', tipoNcf: 'Regímenes Especiales',  tipoDescripcion: 'Regímenes Especiales', secuenciaActual:  0, limite: 9999999, activo: true },
+];
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log('\n[SEED MOCK] Starting mock data seed...\n');
 
-  // ── Categorías ──────────────────────────────────────────────────────────────
+  // Categorías
   const catMap = {};
   for (const c of CATEGORIAS) {
     const r = await prisma.categoria.upsert({ where: { nombre: c.nombre }, update: {}, create: c });
     catMap[r.nombre] = r.id;
   }
-  console.log(`  [Categoria      ] ${CATEGORIAS.length} records`);
+  console.log(`  [Categoria       ] ${CATEGORIAS.length} records`);
 
-  // ── Productos ───────────────────────────────────────────────────────────────
+  // Productos (ARTICULO + SERVICIO)
   const prodMap = {};
   for (const p of makeProductos(catMap)) {
     const { cat, ...data } = p;
-    const r = await prisma.producto.upsert({ where: { sku: data.sku }, update: { nombre: data.nombre, precio: data.precio, stockActual: data.stock, categoriaId: data.categoriaId }, create: { sku: data.sku, nombre: data.nombre, precio: data.precio, stockActual: data.stock, categoriaId: data.categoriaId } });
+    const r = await prisma.producto.upsert({
+      where:  { sku: data.sku },
+      update: { nombre: data.nombre, precio: data.precio, stockActual: data.stockActual, tipoItem: data.tipoItem, categoriaId: data.categoriaId },
+      create: data,
+    });
     prodMap[r.sku] = r.id;
   }
   console.log(`  [Producto        ] ${Object.keys(prodMap).length} records`);
 
-  // ── Roles adicionales ───────────────────────────────────────────────────────
+  // Roles adicionales
   for (const rol of ROLES) {
     await prisma.rol.upsert({ where: { nombre: rol.nombre }, update: {}, create: rol });
   }
   console.log(`  [Rol             ] ${ROLES.length} records`);
 
-  // ── Items catálogo ──────────────────────────────────────────────────────────
+  // Items catálogo
   const itemMap = {};
   for (const item of ITEMS_CATALOGO) {
-    const r = await prisma.itemCatalogo.upsert({ where: { id: (await prisma.itemCatalogo.findFirst({ where: { nombre: item.nombre } }))?.id ?? '00000000-0000-0000-0000-000000000000' }, update: { precio: item.precio, costo: item.costo, activo: true }, create: item });
+    const existing = await prisma.itemCatalogo.findFirst({ where: { nombre: item.nombre } });
+    const r = existing
+      ? await prisma.itemCatalogo.update({ where: { id: existing.id }, data: { precio: item.precio, costo: item.costo, activo: true } })
+      : await prisma.itemCatalogo.create({ data: item });
     itemMap[item.nombre] = r.id;
   }
   console.log(`  [ItemCatalogo    ] ${ITEMS_CATALOGO.length} records`);
 
-  // ── Planes ──────────────────────────────────────────────────────────────────
+  // Planes
   const planMap = {};
   for (const plan of PLANES) {
     const existing = await prisma.plan.findFirst({ where: { nombre: plan.nombre } });
@@ -136,52 +163,50 @@ async function main() {
   }
   console.log(`  [Plan            ] ${PLANES.length} records`);
 
-  // Attach sample plantilla to residential plans
-  const onuId = prodMap['TEST-ONU-ZTE-F670'];
-  const mtHapId = prodMap['TEST-MT-HAP-AX3'];
+  // Attach plantilla to residential plans
+  const onuId   = prodMap['ART-TEST-ONU-ZTE-F670'];
+  const mtHapId = prodMap['ART-TEST-MT-HAP-AX3'];
   for (const planNombre of ['[TEST] Residencial 30Mbps', '[TEST] Residencial 50Mbps']) {
     const planId = planMap[planNombre];
-    if (onuId) await prisma.plantillaEquipo.upsert({ where: { planId_productoId: { planId, productoId: onuId } }, update: { cantidad: 1 }, create: { planId, productoId: onuId, cantidad: 1 } });
+    if (onuId)   await prisma.plantillaEquipo.upsert({ where: { planId_productoId: { planId, productoId: onuId   } }, update: { cantidad: 1 }, create: { planId, productoId: onuId,   cantidad: 1 } });
     if (mtHapId) await prisma.plantillaEquipo.upsert({ where: { planId_productoId: { planId, productoId: mtHapId } }, update: { cantidad: 1 }, create: { planId, productoId: mtHapId, cantidad: 1 } });
   }
 
-  // ── Clientes ────────────────────────────────────────────────────────────────
+  // Clientes
   const clienteMap = {};
   for (const c of CLIENTES) {
     const r = await prisma.cliente.upsert({
       where:  { noCliente: c.noCliente },
       update: {},
-      create: { ...c, tipoNcf: c.tipoEmpresa === 'Residencial' ? 'Consumidor Final' : 'Fiscal', itbis: true, activo: true },
+      create: { ...c, tipoNcf: ['PYME','Empresa'].includes(c.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final', itbis: true, activo: true },
     });
     clienteMap[c.noCliente] = r.id;
   }
   console.log(`  [Cliente         ] ${CLIENTES.length} records`);
 
-  // ── Get existing employees for tech assignments (DO NOT MODIFY THEM) ────────
-  const tecnicos = await prisma.empleado.findMany({ where: { bloqueado: false }, select: { id: true, nombre: true }, take: 5 });
-  if (!tecnicos.length) { console.warn('  [WARN] No active employees found — OT tecnico will be null'); }
+  // Empleados existentes (read-only)
+  const tecnicos = await prisma.empleado.findMany({ where: { bloqueado: false }, select: { id: true }, take: 5 });
   const getTecnico = () => tecnicos.length ? pick(tecnicos).id : null;
 
-  // ── Servicios ───────────────────────────────────────────────────────────────
+  // Servicios
   const SERVICIO_SPECS = [
-    { noCliente: 'CL-TEST-001', planNombre: '[TEST] Residencial 50Mbps',    estado: EstadoServicio.Activo,         precioMensual: 2200, precioInstal: 2500  },
-    { noCliente: 'CL-TEST-002', planNombre: '[TEST] Empresarial 100Mbps',   estado: EstadoServicio.Activo,         precioMensual: 4500, precioInstal: 4000  },
-    { noCliente: 'CL-TEST-003', planNombre: '[TEST] CCTV Básico 4 Cámaras', estado: EstadoServicio.Activo,         precioMensual: 800,  precioInstal: 12000 },
-    { noCliente: 'CL-TEST-004', planNombre: '[TEST] Empresarial 200Mbps',   estado: EstadoServicio.Activo,         precioMensual: 7500, precioInstal: 4000  },
-    { noCliente: 'CL-TEST-005', planNombre: '[TEST] Residencial 30Mbps',    estado: EstadoServicio.Activo,         precioMensual: 1500, precioInstal: 2500  },
-    { noCliente: 'CL-TEST-006', planNombre: '[TEST] CCTV Empresarial 8C',   estado: EstadoServicio.EnInstalacion,  precioMensual: 1500, precioInstal: 22000 },
-    { noCliente: 'CL-TEST-007', planNombre: '[TEST] Residencial 50Mbps',    estado: EstadoServicio.Pendiente,      precioMensual: 2200, precioInstal: 2500  },
-    { noCliente: 'CL-TEST-008', planNombre: '[TEST] Residencial 30Mbps',    estado: EstadoServicio.Suspendido,     precioMensual: 1500, precioInstal: 2500  },
+    { noCliente: 'CL-TEST-001', planNombre: '[TEST] Residencial 50Mbps',     estado: EstadoServicio.Activo,        precioMensual: 2200, precioInstal: 2500  },
+    { noCliente: 'CL-TEST-002', planNombre: '[TEST] Empresarial 100Mbps',    estado: EstadoServicio.Activo,        precioMensual: 4500, precioInstal: 4000  },
+    { noCliente: 'CL-TEST-003', planNombre: '[TEST] CCTV Básico 4 Cámaras',  estado: EstadoServicio.Activo,        precioMensual: 800,  precioInstal: 12000 },
+    { noCliente: 'CL-TEST-004', planNombre: '[TEST] Empresarial 200Mbps',    estado: EstadoServicio.Activo,        precioMensual: 7500, precioInstal: 4000  },
+    { noCliente: 'CL-TEST-005', planNombre: '[TEST] Residencial 30Mbps',     estado: EstadoServicio.Activo,        precioMensual: 1500, precioInstal: 2500  },
+    { noCliente: 'CL-TEST-006', planNombre: '[TEST] CCTV Empresarial 8C',    estado: EstadoServicio.EnInstalacion, precioMensual: 1500, precioInstal: 22000 },
+    { noCliente: 'CL-TEST-007', planNombre: '[TEST] Residencial 50Mbps',     estado: EstadoServicio.Pendiente,     precioMensual: 2200, precioInstal: 2500  },
+    { noCliente: 'CL-TEST-008', planNombre: '[TEST] Residencial 30Mbps',     estado: EstadoServicio.Suspendido,    precioMensual: 1500, precioInstal: 2500  },
     { noCliente: 'CL-TEST-009', planNombre: '[TEST] Soporte Técnico Mensual',estado: EstadoServicio.Activo,        precioMensual: 3000, precioInstal: 0     },
-    { noCliente: 'CL-TEST-010', planNombre: '[TEST] Residencial 50Mbps',    estado: EstadoServicio.Activo,         precioMensual: 2200, precioInstal: 2500  },
+    { noCliente: 'CL-TEST-010', planNombre: '[TEST] Residencial 50Mbps',     estado: EstadoServicio.Activo,        precioMensual: 2200, precioInstal: 2500  },
   ];
-
   const servicioIds = [];
   for (const s of SERVICIO_SPECS) {
     const clienteId = clienteMap[s.noCliente];
     const planId    = planMap[s.planNombre];
     if (!clienteId || !planId) continue;
-    const existing  = await prisma.servicio.findFirst({ where: { clienteId, planId } });
+    const existing = await prisma.servicio.findFirst({ where: { clienteId, planId } });
     const r = existing
       ? await prisma.servicio.update({ where: { id: existing.id }, data: { estado: s.estado, precioMensual: s.precioMensual, precioInstalacion: s.precioInstal } })
       : await prisma.servicio.create({ data: { clienteId, planId, estado: s.estado, precioMensual: s.precioMensual, precioInstalacion: s.precioInstal } });
@@ -189,7 +214,7 @@ async function main() {
   }
   console.log(`  [Servicio        ] ${servicioIds.length} records`);
 
-  // ── Órdenes de Trabajo ──────────────────────────────────────────────────────
+  // Órdenes de Trabajo
   const OT_SPECS = [
     { noCliente: 'CL-TEST-001', tipoOT: 'Instalacion', estado: 'Completada', daysAgoN: 30, itemNombre: '[TEST] Servicio de Instalación WISP', precio: 2500 },
     { noCliente: 'CL-TEST-002', tipoOT: 'Instalacion', estado: 'Completada', daysAgoN: 45, itemNombre: '[TEST] Servicio de Instalación WISP', precio: 2500 },
@@ -199,84 +224,103 @@ async function main() {
     { noCliente: 'CL-TEST-006', tipoOT: 'Instalacion', estado: 'EnProceso',  daysAgoN: 3,  itemNombre: '[TEST] Servicio de Instalación CCTV', precio: 5000 },
     { noCliente: 'CL-TEST-009', tipoOT: 'Mantenimiento',estado: 'Pendiente', daysAgoN: 0,  itemNombre: '[TEST] Visita Técnica Diagnóstico',   precio: 800  },
   ];
-
   const otIds = [];
   for (const ot of OT_SPECS) {
     const clienteId = clienteMap[ot.noCliente];
     if (!clienteId) continue;
-    const tecnicoId = getTecnico();
-    const existing  = await prisma.ordenTrabajo.findFirst({ where: { clienteId, tipoOT: ot.tipoOT, estado: ot.estado, createdAt: { gte: daysAgo(ot.daysAgoN + 1) } } });
+    const existing = await prisma.ordenTrabajo.findFirst({ where: { clienteId, tipoOT: ot.tipoOT, estado: ot.estado, createdAt: { gte: daysAgo(ot.daysAgoN + 1) } } });
     if (existing) { otIds.push(existing.id); continue; }
     const r = await prisma.ordenTrabajo.create({
       data: {
-        clienteId, tecnicoId, tipoOT: ot.tipoOT, estado: ot.estado, metadatos: {},
+        clienteId, tecnicoId: getTecnico(), tipoOT: ot.tipoOT, estado: ot.estado, metadatos: {},
         completadaEn: ot.estado === 'Completada' ? daysAgo(ot.daysAgoN) : null,
-        lineas: { create: [{
-          descripcion: ot.itemNombre, cantidad: 1, precioUnitario: ot.precio,
-          itemCatalogoId: itemMap[ot.itemNombre] ?? null,
-        }] },
+        lineas: { create: [{ descripcion: ot.itemNombre, cantidad: 1, precioUnitario: ot.precio, itemCatalogoId: itemMap[ot.itemNombre] ?? null }] },
       },
     });
     otIds.push(r.id);
   }
   console.log(`  [OrdenTrabajo    ] ${otIds.length} records`);
 
-  // ── Facturas ────────────────────────────────────────────────────────────────
+  // Facturas (Emitidas / Pagadas / Vencidas)
   const FAC_SPECS = [
-    // Pagadas (clientes activos, meses anteriores)
-    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-001', estado: EstadoFactura.Pagada,   subtotal: 2200, itbis: 374,  daysAgoEmision: 32, daysAgoPago: 25  },
-    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-002', estado: EstadoFactura.Pagada,   subtotal: 2200, itbis: 374,  daysAgoEmision: 62, daysAgoPago: 55  },
-    { noCliente: 'CL-TEST-002', noFac: 'FAC-TEST-003', estado: EstadoFactura.Pagada,   subtotal: 4500, itbis: 765,  daysAgoEmision: 30, daysAgoPago: 22  },
-    { noCliente: 'CL-TEST-003', noFac: 'FAC-TEST-004', estado: EstadoFactura.Pagada,   subtotal: 5000, itbis: 850,  daysAgoEmision: 20, daysAgoPago: 15  },
-    { noCliente: 'CL-TEST-004', noFac: 'FAC-TEST-005', estado: EstadoFactura.Pagada,   subtotal: 7500, itbis: 1275, daysAgoEmision: 30, daysAgoPago: 20  },
-    // Emitidas (corriente)
-    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-006', estado: EstadoFactura.Emitida,  subtotal: 2200, itbis: 374,  daysAgoEmision: 2,  daysVence: 28    },
-    { noCliente: 'CL-TEST-002', noFac: 'FAC-TEST-007', estado: EstadoFactura.Emitida,  subtotal: 4500, itbis: 765,  daysAgoEmision: 1,  daysVence: 29    },
-    { noCliente: 'CL-TEST-005', noFac: 'FAC-TEST-008', estado: EstadoFactura.Emitida,  subtotal: 1500, itbis: 255,  daysAgoEmision: 5,  daysVence: 25    },
-    { noCliente: 'CL-TEST-009', noFac: 'FAC-TEST-009', estado: EstadoFactura.Emitida,  subtotal: 3000, itbis: 510,  daysAgoEmision: 3,  daysVence: 27    },
-    // Vencidas (cliente suspendido + otros morosos)
-    { noCliente: 'CL-TEST-008', noFac: 'FAC-TEST-010', estado: EstadoFactura.Vencida,  subtotal: 1500, itbis: 255,  daysAgoEmision: 45, daysVence: -15   },
-    { noCliente: 'CL-TEST-008', noFac: 'FAC-TEST-011', estado: EstadoFactura.Vencida,  subtotal: 1500, itbis: 255,  daysAgoEmision: 75, daysVence: -45   },
-    { noCliente: 'CL-TEST-006', noFac: 'FAC-TEST-012', estado: EstadoFactura.Vencida,  subtotal: 5000, itbis: 850,  daysAgoEmision: 60, daysVence: -30   },
-    // Instalaciones facturadas (con referencia a OT completada)
-    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-013', estado: EstadoFactura.Pagada,   subtotal: 2500, itbis: 425,  daysAgoEmision: 30, daysAgoPago: 28, otIndex: 0 },
-    { noCliente: 'CL-TEST-003', noFac: 'FAC-TEST-014', estado: EstadoFactura.Pagada,   subtotal: 5000, itbis: 850,  daysAgoEmision: 20, daysAgoPago: 18, otIndex: 2 },
+    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-001', estado: EstadoFactura.Pagada,  subtotal: 2200, itbis: 374,  daysAgoEmision: 32, daysAgoPago: 25  },
+    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-002', estado: EstadoFactura.Pagada,  subtotal: 2200, itbis: 374,  daysAgoEmision: 62, daysAgoPago: 55  },
+    { noCliente: 'CL-TEST-002', noFac: 'FAC-TEST-003', estado: EstadoFactura.Pagada,  subtotal: 4500, itbis: 765,  daysAgoEmision: 30, daysAgoPago: 22  },
+    { noCliente: 'CL-TEST-003', noFac: 'FAC-TEST-004', estado: EstadoFactura.Pagada,  subtotal: 5000, itbis: 850,  daysAgoEmision: 20, daysAgoPago: 15  },
+    { noCliente: 'CL-TEST-004', noFac: 'FAC-TEST-005', estado: EstadoFactura.Pagada,  subtotal: 7500, itbis: 1275, daysAgoEmision: 30, daysAgoPago: 20  },
+    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-006', estado: EstadoFactura.Emitida, subtotal: 2200, itbis: 374,  daysAgoEmision:  2, daysVence: 28    },
+    { noCliente: 'CL-TEST-002', noFac: 'FAC-TEST-007', estado: EstadoFactura.Emitida, subtotal: 4500, itbis: 765,  daysAgoEmision:  1, daysVence: 29    },
+    { noCliente: 'CL-TEST-005', noFac: 'FAC-TEST-008', estado: EstadoFactura.Emitida, subtotal: 1500, itbis: 255,  daysAgoEmision:  5, daysVence: 25    },
+    { noCliente: 'CL-TEST-009', noFac: 'FAC-TEST-009', estado: EstadoFactura.Emitida, subtotal: 3000, itbis: 510,  daysAgoEmision:  3, daysVence: 27    },
+    { noCliente: 'CL-TEST-008', noFac: 'FAC-TEST-010', estado: EstadoFactura.Vencida, subtotal: 1500, itbis: 255,  daysAgoEmision: 45, daysVence: -15   },
+    { noCliente: 'CL-TEST-008', noFac: 'FAC-TEST-011', estado: EstadoFactura.Vencida, subtotal: 1500, itbis: 255,  daysAgoEmision: 75, daysVence: -45   },
+    { noCliente: 'CL-TEST-006', noFac: 'FAC-TEST-012', estado: EstadoFactura.Vencida, subtotal: 5000, itbis: 850,  daysAgoEmision: 60, daysVence: -30   },
+    { noCliente: 'CL-TEST-001', noFac: 'FAC-TEST-013', estado: EstadoFactura.Pagada,  subtotal: 2500, itbis: 425,  daysAgoEmision: 30, daysAgoPago: 28, otIndex: 0 },
+    { noCliente: 'CL-TEST-003', noFac: 'FAC-TEST-014', estado: EstadoFactura.Pagada,  subtotal: 5000, itbis: 850,  daysAgoEmision: 20, daysAgoPago: 18, otIndex: 2 },
   ];
-
   let facCount = 0;
   for (const f of FAC_SPECS) {
     const clienteId = clienteMap[f.noCliente];
     if (!clienteId) continue;
-    const total   = f.subtotal + f.itbis;
-    const ordenId = f.otIndex !== undefined ? (otIds[f.otIndex] ?? null) : null;
+    const tipoNcf  = ['CL-TEST-001','CL-TEST-002','CL-TEST-003','CL-TEST-004','CL-TEST-006','CL-TEST-009'].includes(f.noCliente) ? 'Fiscal' : 'Consumidor Final';
+    const total    = f.subtotal + f.itbis;
+    const ordenId  = f.otIndex !== undefined ? (otIds[f.otIndex] ?? null) : null;
     await prisma.factura.upsert({
       where:  { noFactura: f.noFac },
       update: { estado: f.estado, total },
       create: {
-        noFactura:    f.noFac,
-        clienteId,
-        ordenId,
-        estado:       f.estado,
-        subtotal:     f.subtotal,
-        itbis:        f.itbis,
-        total,
+        noFactura: f.noFac, clienteId, ordenId, estado: f.estado, subtotal: f.subtotal, itbis: f.itbis, total, tipoNcf,
         fechaEmision: daysAgo(f.daysAgoEmision),
-        fechaVence:   f.daysVence !== undefined ? daysAhead(f.daysVence) : (f.daysAgoEmision ? daysAgo(Math.abs(f.daysVence ?? 0)) : null),
+        fechaVence:   f.daysVence !== undefined ? (f.daysVence >= 0 ? daysAhead(f.daysVence) : daysAgo(Math.abs(f.daysVence))) : null,
         fechaPago:    f.daysAgoPago ? daysAgo(f.daysAgoPago) : null,
-        tipoNcf:      'Consumidor Final',
+        notas:        'Factura de prueba [TEST]',
       },
     });
     facCount++;
   }
   console.log(`  [Factura         ] ${facCount} records`);
 
-  // ── Prospectos ──────────────────────────────────────────────────────────────
+  // Cotizaciones (esCotizacion: true)
+  const COT_SPECS = [
+    { noCliente: 'CL-TEST-002', noFac: 'COT-TEST-001', subtotal: 8500,  itbis: 1445, daysAgoN: 5,  lineas: [{ sku: 'ART-TEST-MT-HAP-AX3',  cant: 1, precio: 8500  }] },
+    { noCliente: 'CL-TEST-004', noFac: 'COT-TEST-002', subtotal: 14400, itbis: 2448, daysAgoN: 3,  lineas: [{ sku: 'ART-TEST-HIK-CAM-4MP', cant: 3, precio: 4800  }] },
+    { noCliente: 'CL-TEST-006', noFac: 'COT-TEST-003', subtotal: 7500,  itbis: 1275, daysAgoN: 1,  lineas: [{ sku: 'SV-TEST-EMP-200',       cant: 1, precio: 7500  }] },
+    { noCliente: 'CL-TEST-009', noFac: 'COT-TEST-004', subtotal: 15600, itbis: 2652, daysAgoN: 7,  lineas: [{ sku: 'ART-TEST-TP-SW-8P',    cant: 8, precio: 1950  }] },
+    { noCliente: 'CL-TEST-001', noFac: 'COT-TEST-005', subtotal: 6200,  itbis: 1054, daysAgoN: 10, lineas: [{ sku: 'ART-TEST-UB-NS-M5',    cant: 1, precio: 6200  }] },
+  ];
+  let cotCount = 0;
+  for (const c of COT_SPECS) {
+    const clienteId = clienteMap[c.noCliente];
+    if (!clienteId) continue;
+    const tipoNcf = ['CL-TEST-002','CL-TEST-004','CL-TEST-006','CL-TEST-009'].includes(c.noCliente) ? 'Fiscal' : 'Consumidor Final';
+    const total   = c.subtotal + c.itbis;
+    const existing = await prisma.factura.findUnique({ where: { noFactura: c.noFac } });
+    if (existing) { cotCount++; continue; }
+    const f = await prisma.factura.create({
+      data: {
+        noFactura: c.noFac, clienteId, estado: 'Borrador', subtotal: c.subtotal, itbis: c.itbis, total, tipoNcf,
+        esCotizacion: true, fechaEmision: daysAgo(c.daysAgoN), notas: 'Cotización de prueba [TEST]',
+        lineas: {
+          create: c.lineas.map(l => ({
+            productoId:     prodMap[l.sku] ?? null,
+            descripcion:    l.sku,
+            cantidad:       l.cant,
+            precioUnitario: l.precio,
+          })),
+        },
+      },
+    });
+    cotCount++;
+  }
+  console.log(`  [Cotizacion      ] ${cotCount} records`);
+
+  // Prospectos
   const PROSPECTOS = [
-    { nombre: '[TEST] Alejandro Morales',  telefono: '809-555-1001', servicioInteresado: 'Internet 50Mbps',  origen: 'WhatsApp', estado: 'Nuevo'       },
-    { nombre: '[TEST] Empresa Tech RD',    telefono: '809-555-1002', servicioInteresado: 'Internet 200Mbps + CCTV', origen: 'Referido', estado: 'Contactado' },
-    { nombre: '[TEST] Isabel Gómez',       telefono: '829-555-1003', servicioInteresado: 'CCTV 4 Cámaras',   origen: 'Facebook', estado: 'Nuevo'       },
-    { nombre: '[TEST] Distribuidora Norte',telefono: '809-555-1004', servicioInteresado: 'Fibra Empresarial', origen: 'Llamada',  estado: 'Propuesta'   },
-    { nombre: '[TEST] Residencial El Pino',telefono: '849-555-1005', servicioInteresado: 'Internet 30Mbps',  origen: 'WhatsApp', estado: 'Nuevo'       },
+    { nombre: '[TEST] Alejandro Morales',  telefono: '809-555-1001', servicioInteresado: 'Internet 50Mbps',        origen: 'WhatsApp', estado: 'Nuevo'      },
+    { nombre: '[TEST] Empresa Tech RD',    telefono: '809-555-1002', servicioInteresado: 'Internet 200Mbps + CCTV',origen: 'Referido', estado: 'Contactado' },
+    { nombre: '[TEST] Isabel Gómez',       telefono: '829-555-1003', servicioInteresado: 'CCTV 4 Cámaras',         origen: 'Facebook', estado: 'Nuevo'      },
+    { nombre: '[TEST] Distribuidora Norte',telefono: '809-555-1004', servicioInteresado: 'Fibra Empresarial',      origen: 'Llamada',  estado: 'Propuesta'  },
+    { nombre: '[TEST] Residencial El Pino',telefono: '849-555-1005', servicioInteresado: 'Internet 30Mbps',        origen: 'WhatsApp', estado: 'Nuevo'      },
   ];
   for (const p of PROSPECTOS) {
     const existing = await prisma.prospecto.findFirst({ where: { nombre: p.nombre } });
@@ -284,20 +328,18 @@ async function main() {
   }
   console.log(`  [Prospecto       ] ${PROSPECTOS.length} records`);
 
-  // ── NCF ──────────────────────────────────────────────────────────────────────
-  const NCF_CONFIGS = [
-    { prefijo: 'B01', tipoNcf: 'Fiscal',           tipoDescripcion: 'Crédito Fiscal',       secuenciaActual: 14, limite: 9999999, activo: true },
-    { prefijo: 'B02', tipoNcf: 'Consumidor Final',  tipoDescripcion: 'Consumidor Final',     secuenciaActual: 52, limite: 9999999, activo: true },
-    { prefijo: 'B14', tipoNcf: 'Régimen Especial',  tipoDescripcion: 'Régimen Especial',     secuenciaActual: 0,  limite: 9999999, activo: true },
-    { prefijo: 'B15', tipoNcf: 'Gubernamental',     tipoDescripcion: 'Gubernamental',        secuenciaActual: 0,  limite: 9999999, activo: true },
-  ];
+  // NCF Configs (upsert, don't reset secuenciaActual if already seeded)
   for (const n of NCF_CONFIGS) {
-    await prisma.configuracionNCF.upsert({ where: { tipoNcf: n.tipoNcf }, update: {}, create: n });
+    await prisma.configuracionNCF.upsert({
+      where:  { tipoNcf: n.tipoNcf },
+      update: { prefijo: n.prefijo, tipoDescripcion: n.tipoDescripcion, activo: n.activo },
+      create: n,
+    });
   }
   console.log(`  [ConfigNCF       ] ${NCF_CONFIGS.length} records`);
 
   console.log('\n[SEED MOCK] ✓ Done. All [TEST] records created/verified.');
-  console.log('[SEED MOCK] To clean up: DELETE FROM "<Table>" WHERE nombre LIKE \'%[TEST]%\' (cascade handles relations).');
+  console.log('[SEED MOCK] Cleanup: DELETE FROM "<Table>" WHERE nombre LIKE \'%[TEST]%\' (cascade handles relations).');
 }
 
 main()

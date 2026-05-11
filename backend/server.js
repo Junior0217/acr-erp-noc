@@ -2283,7 +2283,7 @@ const facturaManualSchema = z.object({
 })
 
 // Shared transaction: used by /api/facturas/manual and /api/carrito/checkout
-async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas }) {
+async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal }) {
   return prisma.$transaction(async (tx) => {
     // 1. Resolve client
     let cliente
@@ -2348,8 +2348,8 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
       noFactura = `COT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
       estado    = 'Borrador'
     } else {
-      // 5. Smart NCF: PYME/Empresa → Fiscal (B01); else → Consumidor Final (B02)
-      tipoNcf = ['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final'
+      // 5. Smart NCF: override > PYME/Empresa → Fiscal (B01); else → Consumidor Final (B02)
+      tipoNcf = tipoNcfOverride || (['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final')
       const rows = await tx.$queryRaw`
         UPDATE "ConfiguracionNCF"
         SET    "secuenciaActual" = "secuenciaActual" + 1
@@ -2373,7 +2373,11 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
       data: {
         noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
         ncf, tipoNcf, esCotizacion,
-        notas:      esCotizacion ? `Cotización POS — ${lineas.length} línea(s)` : `Factura manual POS — ${lineas.length} línea(s)`,
+        notas:      esCotizacion
+          ? `Cotización POS — ${lineas.length} línea(s)`
+          : nombreTemporal
+            ? `[WALK-IN] ${nombreTemporal} | Factura manual POS — ${lineas.length} línea(s)`
+            : `Factura manual POS — ${lineas.length} línea(s)`,
         fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
         lineas:     { createMany: { data: lineaData } },
       },
@@ -2523,9 +2527,13 @@ app.delete('/api/carrito', verificarJWT, async (req, res) => {
 })
 
 app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
-  const schema = z.object({ esCotizacion: z.boolean().optional().default(false) })
+  const schema = z.object({
+    esCotizacion:    z.boolean().optional().default(false),
+    tipoNcfOverride: z.string().optional(),
+    nombreTemporal:  z.string().max(100).optional(),
+  })
   try {
-    const { esCotizacion } = schema.parse(req.body)
+    const { esCotizacion, tipoNcfOverride, nombreTemporal } = schema.parse(req.body)
     const carrito = await prisma.carritoTemp.findUnique({
       where: { empleadoId: req.user.sub },
       include: { lineas: true },
@@ -2544,6 +2552,8 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
       diasVence:      carrito.diasVence,
       esCotizacion,
       lineas,
+      tipoNcfOverride,
+      nombreTemporal,
     })
     await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
     auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
