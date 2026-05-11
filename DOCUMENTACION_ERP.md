@@ -21,6 +21,9 @@
 | 11 | [Dashboard KPIs en Vivo](#11-dashboard-kpis-en-vivo) |
 | 12 | [Infraestructura y Deploy](#12-infraestructura-y-deploy) |
 | 13 | [Variables de Entorno](#13-variables-de-entorno) |
+| 14 | [MikroTik Sandbox Engine](#14-mikrotik-sandbox-engine) |
+| 15 | [PWA — Soporte Móvil](#15-pwa--soporte-móvil) |
+| 16 | [Migración desde WispHub / AdminOLT](#16-migración-desde-wisphub--adminolt) |
 
 ---
 
@@ -469,6 +472,161 @@ Compatible con Docker, load balancers y UptimeRobot.
 | `SENTRY_DSN` | Prod | DSN de Sentry para error tracking |
 
 > **Nunca** subir `.env` al repositorio. Crear `.env.example` como plantilla pública.
+
+---
+
+---
+
+## 14. MikroTik Sandbox Engine
+
+### Flujo de control de morosidad
+
+```
+[Cron billarMoras 00:10 AST]          [PATCH /facturas/:id/estado → Pagada]
+         │                                          │
+         ▼                                          ▼
+  prisma.factura.findMany              prisma.factura.update
+  (Emitida + fechaVence < hoy)         (estado: 'Pagada')
+         │                                          │
+         ▼                                          ▼
+  prisma.factura.updateMany            OT.tipoOT === 'ISP' ?
+  (→ Vencida)                          OT.metadatos.ip exists ?
+         │                                          │
+         ▼                                          ▼
+  setImmediate ──────────────────► syncMikrotik(ip, 'activo')
+  for each ISP OT IP                          │
+         │                           MIKROTIK_DRY_RUN=true ?
+         ▼                                    │
+  syncMikrotik(ip, 'moroso')         YES ─────┼─────► console.log [SANDBOX]
+         │                           NO       │
+  MIKROTIK_DRY_RUN=true ?                     ▼
+         │                           RouterOSAPI.connect()
+  YES ──►│──► console.log [SANDBOX]  /ip/firewall/address-list/remove
+  NO     │                           (quita de lista morosos)
+         ▼
+  RouterOSAPI.connect()
+  /ip/firewall/address-list/add
+  list=morosos, address=ip
+```
+
+### Variables de entorno MikroTik
+
+| Variable | Default | Descripción |
+|---|---|---|
+| `MIKROTIK_DRY_RUN` | `true` | `false` para activar modo real |
+| `MIKROTIK_HOST` | `192.168.88.1` | IP del router MikroTik |
+| `MIKROTIK_PORT` | `8728` | Puerto API RouterOS |
+| `MIKROTIK_USER` | `admin` | Usuario API |
+| `MIKROTIK_PASS` | — | Contraseña API |
+| `MIKROTIK_LISTA_MOROSOS` | `morosos` | Nombre de la Address List de bloqueo |
+
+### Regla de firewall (agregar una vez en el router)
+
+```routeros
+/ip firewall filter add \
+  chain=forward \
+  src-address-list=morosos \
+  action=drop \
+  comment="ERP-mora-auto" \
+  place-before=0
+```
+
+---
+
+## 15. PWA — Soporte Móvil
+
+El frontend está configurado como Progressive Web App usando `vite-plugin-pwa`.
+
+### Capacidades habilitadas
+
+| Característica | Detalle |
+|---|---|
+| **Instalable** | "Añadir a pantalla de inicio" en Android/iOS |
+| **Sin barra de URL** | `display: standalone` — se ve como app nativa |
+| **Offline parcial** | Service Worker cachea assets + última respuesta del dashboard |
+| **Actualización automática** | `registerType: autoUpdate` — nueva versión en background |
+
+### Estrategias de cache
+
+```
+GET /api/dashboard   → NetworkFirst   (5s timeout → cache de 60s)
+GET /api/catalogo    → StaleWhileRevalidate (cache 5 min, actualiza en background)
+GET /api/clientes    → StaleWhileRevalidate
+Assets JS/CSS/HTML   → CacheFirst (Workbox precache, versionado por hash)
+```
+
+### Iconos requeridos (crear antes del deploy)
+
+```
+frontend/public/
+├── pwa-192x192.png     ← Logo ACR 192×192px
+├── pwa-512x512.png     ← Logo ACR 512×512px (maskable)
+└── apple-touch-icon.png ← 180×180px para iOS
+```
+
+> Generar con: [realfavicongenerator.net](https://realfavicongenerator.net) o `sharp` CLI.
+
+---
+
+## 16. Migración desde WispHub / AdminOLT
+
+### Estrategia de transición suave (Parallel Run)
+
+```
+FASE 1 — PARALELO (actual)
+─────────────────────────────────────────────────────────
+  WispHub                    ACR ERP (este sistema)
+  ─────────                  ──────────────────────
+  Gestiona clientes          Registra clientes manualmente
+  Cobra facturas             Emite facturas NCF propias
+  Controla MikroTik          MIKROTIK_DRY_RUN=true
+                             Logs en consola (audit trail)
+  ─────────────────────────────────────────────────────
+  ✅ Sin riesgo de servicio  ✅ Datos reales en ERP
+  ✅ WispHub como fallback   ✅ Equipo aprende el sistema
+
+FASE 2 — VALIDACIÓN (1-3 meses)
+─────────────────────────────────────────────────────────
+  1. Comparar datos ERP vs WispHub (clientes, facturas)
+  2. Verificar logs SANDBOX vs acciones reales WispHub
+  3. Activar MIKROTIK_DRY_RUN=false en horario de bajo tráfico
+  4. Monitorear 48h con WispHub como fallback manual
+
+FASE 3 — CORTE (cuando ERP sea la fuente de verdad)
+─────────────────────────────────────────────────────────
+  1. Exportar historial de pagos de WispHub → importar a Factura
+  2. Activar cron billarOTsISP y billarMoras como único motor
+  3. Desactivar módulos de WispHub uno a uno
+  4. WispHub en modo lectura por 30 días adicionales
+```
+
+### Flujo completo de un cliente ISP en el ERP
+
+```
+[CRM: crear Cliente]
+       │
+       ▼
+[Ventas: crear OT tipo ISP]
+  metadatos: { ip, macAddress, router, diaCorte }
+       │
+       ▼
+[Cron billarOTsISP — día 1 del mes 00:05 AST]
+  → genera Factura con NCF automático
+  → envía PDF por email (nodemailer)
+       │
+       ├── Pagada antes de fechaVence
+       │         │
+       │         ▼
+       │   PATCH /facturas/:id/estado → Pagada
+       │   syncMikrotik(ip, 'activo') [SANDBOX/LIVE]
+       │
+       └── No pagada → fechaVence < hoy
+                 │
+                 ▼
+         Cron billarMoras — 00:10 AST
+         Factura → Vencida
+         syncMikrotik(ip, 'moroso') [SANDBOX/LIVE]
+```
 
 ---
 

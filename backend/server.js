@@ -14,7 +14,8 @@ const QRCode       = require('qrcode');
 const cron         = require('node-cron');
 const PDFDocument  = require('pdfkit');
 const nodemailer   = require('nodemailer');
-const PERMISSIONS_MAP = require('./shared/permissions.map.js');
+const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
+const { syncMikrotik } = require('./services/mikrotik');
 
 // ─── Sentry (descomenta en producción: npm install @sentry/node) ──────────────
 // const Sentry = require('@sentry/node')
@@ -2193,6 +2194,20 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
     const factura = await prisma.factura.update({ where: { id: req.params.id }, data })
     auditReq('factura:estado', req, { facturaId: factura.id, estado, ncf: factura.ncf })
     res.json(factura)
+
+    // Fire-and-forget: sync RouterOS Address List for ISP clients (Pagada → activo, Vencida → moroso)
+    if ((estado === 'Pagada' || estado === 'Vencida') && factura.ordenId) {
+      setImmediate(async () => {
+        try {
+          const ot = await prisma.ordenTrabajo.findUnique({
+            where: { id: factura.ordenId },
+            select: { tipoOT: true, metadatos: true },
+          })
+          const ip = ot?.tipoOT === 'ISP' ? ot.metadatos?.ip : null
+          if (ip) await syncMikrotik(ip, estado === 'Pagada' ? 'activo' : 'moroso')
+        } catch (e) { console.error('[MIKROTIK FF]', e.message) }
+      })
+    }
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
@@ -2421,11 +2436,27 @@ async function billarMoras() {
   const hoy = new Date()
   console.log(`[CRON MORA] Revisando facturas vencidas al ${hoy.toLocaleDateString('es-DO')}`)
   try {
+    // Fetch ISP OT IPs before bulk update so we can sync MikroTik after
+    const afectadas = await prisma.factura.findMany({
+      where: { estado: 'Emitida', fechaVence: { lt: hoy } },
+      select: { id: true, orden: { select: { tipoOT: true, metadatos: true } } },
+    })
+
     const { count } = await prisma.factura.updateMany({
       where: { estado: 'Emitida', fechaVence: { lt: hoy } },
       data:  { estado: 'Vencida' },
     })
     if (count > 0) console.log(`[CRON MORA] ${count} factura(s) marcadas como Vencida.`)
+
+    // Sync MikroTik for each ISP client that just went moroso
+    setImmediate(async () => {
+      for (const f of afectadas) {
+        if (f.orden?.tipoOT === 'ISP') {
+          const ip = f.orden.metadatos?.ip
+          if (ip) await syncMikrotik(ip, 'moroso').catch(e => console.error('[MIKROTIK MORA]', e.message))
+        }
+      }
+    })
   } catch (err) {
     console.error('[CRON MORA] Error:', err.message)
   }
