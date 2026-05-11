@@ -141,6 +141,7 @@ model Producto {
   plantillaEquipos PlantillaEquipo[]
   detallesOrden    DetalleOrden[]
   lineasOrden      LineaOrdenTrabajo[]
+  lineasFactura    LineaFactura[]
 
   @@index([categoriaId])
   @@index([nombre])
@@ -454,8 +455,10 @@ model Factura {
   fechaVence   DateTime?
   fechaPago    DateTime?
   notas        String?
+  esCotizacion Boolean       @default(false)
   cliente      Cliente       @relation(fields: [clienteId], references: [id], onDelete: Restrict)
   orden        OrdenTrabajo? @relation(fields: [ordenId], references: [id], onDelete: SetNull)
+  lineas       LineaFactura[]
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 
@@ -463,8 +466,22 @@ model Factura {
   @@index([estado])
   @@index([fechaEmision])
   @@index([ncf])
+  @@index([esCotizacion])
   @@index([clienteId, fechaEmision])
   @@index([estado, fechaEmision])
+}
+
+model LineaFactura {
+  id             Int       @id @default(autoincrement())
+  facturaId      String
+  productoId     Int?
+  descripcion    String
+  cantidad       Int
+  precioUnitario Decimal   @db.Decimal(12, 2)
+  factura        Factura   @relation(fields: [facturaId], references: [id], onDelete: Cascade)
+  producto       Producto? @relation(fields: [productoId], references: [id], onDelete: Restrict)
+
+  @@index([facturaId])
 }
 
 model ConfiguracionNCF {

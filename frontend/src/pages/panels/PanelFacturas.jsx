@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useReactToPrint } from 'react-to-print'
 import { toast } from 'sonner'
-import { Loader2, RefreshCw, DollarSign, Plus, Trash2, X, Search, Receipt } from 'lucide-react'
+import {
+  Loader2, RefreshCw, DollarSign, Plus, Trash2, X,
+  Search, Receipt, Printer, FileText,
+} from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import {
@@ -13,28 +17,150 @@ import {
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
 
-// ─── Modal Factura Manual ─────────────────────────────────────────────────────
+// ─── Product selector row ─────────────────────────────────────────────────────
 
-function ModalFacturaManual({ onClose, onEmitida }) {
-  const [busqueda,    setBusqueda]    = useState('')
-  const [clientes,    setClientes]    = useState([])
-  const [searching,   setSearching]   = useState(false)
-  const [clienteSel,  setClienteSel]  = useState(null)   // null = Consumidor Final
-  const [showDrop,    setShowDrop]    = useState(false)
-  const [applyItbis,  setApplyItbis]  = useState(false)
-  const [diasVence,   setDiasVence]   = useState(30)
-  const [lineas,      setLineas]      = useState([{ concepto: '', cantidad: 1, precioUnitario: '' }])
-  const [emitting,    setEmitting]    = useState(false)
+function LineaRow({ linea, onUpdate, onRemove, canRemove }) {
+  const [busqueda,   setBusqueda]   = useState(linea.producto?.nombre ?? '')
+  const [resultados, setResultados] = useState([])
+  const [showDrop,   setShowDrop]   = useState(false)
+  const [searching,  setSearching]  = useState(false)
   const dropRef = useRef(null)
 
-  // Close dropdown on outside click
   useEffect(() => {
-    function onMouseDown(e) { if (dropRef.current && !dropRef.current.contains(e.target)) setShowDrop(false) }
-    document.addEventListener('mousedown', onMouseDown)
-    return () => document.removeEventListener('mousedown', onMouseDown)
+    function handler(e) { if (dropRef.current && !dropRef.current.contains(e.target)) setShowDrop(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
   }, [])
 
-  // Debounced client search
+  useEffect(() => {
+    if (!busqueda.trim() || linea.producto) return
+    const t = setTimeout(async () => {
+      setSearching(true)
+      try {
+        const r = await apiFetch(`/api/productos?search=${encodeURIComponent(busqueda)}&limit=8`)
+        if (r.ok) { const j = await r.json(); setResultados(j.data ?? []) }
+      } catch {} finally { setSearching(false) }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [busqueda, linea.producto])
+
+  function seleccionar(p) {
+    setBusqueda(p.nombre)
+    setShowDrop(false)
+    setResultados([])
+    onUpdate({ producto: p, precioOverride: '' })
+  }
+
+  function limpiar() {
+    setBusqueda('')
+    setResultados([])
+    onUpdate({ producto: null, precioOverride: '' })
+  }
+
+  const precioFinal = linea.precioOverride !== '' ? parseFloat(linea.precioOverride) || 0 : (linea.producto ? Number(linea.producto.precio) : 0)
+  const subtlinea   = precioFinal * (parseInt(linea.cantidad) || 0)
+
+  return (
+    <div className="space-y-1">
+      <div className="grid grid-cols-12 gap-2 items-start">
+        {/* Product combobox */}
+        <div className="col-span-5 relative" ref={dropRef}>
+          <div className="relative">
+            <input
+              className={INPUT + ' text-xs pr-7'}
+              placeholder="Buscar producto…"
+              value={busqueda}
+              onChange={e => { setBusqueda(e.target.value); setShowDrop(true); if (linea.producto) onUpdate({ producto: null }) }}
+              onFocus={() => { if (!linea.producto) setShowDrop(true) }}
+              autoComplete="off"
+            />
+            {linea.producto
+              ? <button onClick={limpiar} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-red-400 transition-colors"><X size={12} /></button>
+              : searching
+                ? <Loader2 size={12} className="absolute right-2 top-1/2 -translate-y-1/2 animate-spin text-slate-500" />
+                : <Search size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-600 pointer-events-none" />}
+          </div>
+          {showDrop && resultados.length > 0 && (
+            <div className="absolute z-30 w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-2xl overflow-hidden max-h-52 overflow-y-auto">
+              {resultados.map(p => (
+                <button key={p.id} onMouseDown={() => seleccionar(p)}
+                  className="w-full text-left px-3 py-2 hover:bg-slate-700 transition-colors border-b border-slate-700/30 last:border-0">
+                  <div className="text-xs font-medium text-slate-200 truncate">{p.nombre}</div>
+                  <div className="flex items-center gap-2 mt-0.5">
+                    <span className="text-[10px] text-slate-500 font-mono">{p.sku}</span>
+                    <span className={`text-[10px] font-semibold font-mono ${p.stockActual > 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                      {p.stockActual > 0 ? `Stk: ${p.stockActual}` : 'Sin stock'}
+                    </span>
+                    <span className="text-[10px] text-blue-300 font-mono ml-auto">{formatCurrency(p.precio)}</span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Qty */}
+        <input
+          type="number" min="1" step="1"
+          className={INPUT + ' col-span-2 text-xs text-center'}
+          value={linea.cantidad}
+          onChange={e => onUpdate({ cantidad: e.target.value })}
+        />
+
+        {/* Price override */}
+        <input
+          type="number" min="0.01" step="0.01"
+          className={INPUT + ' col-span-3 text-xs text-right'}
+          placeholder={linea.producto ? String(Number(linea.producto.precio).toFixed(2)) : '0.00'}
+          value={linea.precioOverride}
+          onChange={e => onUpdate({ precioOverride: e.target.value })}
+        />
+
+        {/* Subtotal + remove */}
+        <div className="col-span-2 flex items-center justify-end gap-1.5 pt-1.5">
+          <span className="text-[11px] font-mono text-slate-300 shrink-0">{formatCurrency(subtlinea)}</span>
+          <button onClick={onRemove} disabled={!canRemove}
+            className="text-slate-700 hover:text-red-400 disabled:opacity-30 transition-colors shrink-0">
+            <Trash2 size={13} />
+          </button>
+        </div>
+      </div>
+
+      {/* Stock badge */}
+      {linea.producto && (
+        <div className="ml-1 flex items-center gap-2">
+          <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${linea.producto.stockActual > 0 ? 'bg-emerald-600/10 text-emerald-400 border-emerald-600/20' : 'bg-red-600/10 text-red-400 border-red-600/20'}`}>
+            Stock disponible: {linea.producto.stockActual}
+          </span>
+          {linea.producto.stockActual === 0 && (
+            <span className="text-[10px] text-amber-400">⚠ Sin stock — no se podrá emitir factura</span>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Modal POS / Factura Manual ───────────────────────────────────────────────
+
+function ModalFacturaManual({ onClose, onSuccess }) {
+  const [busqueda,   setBusqueda]   = useState('')
+  const [clientes,   setClientes]   = useState([])
+  const [searching,  setSearching]  = useState(false)
+  const [clienteSel, setClienteSel] = useState(null)
+  const [showDrop,   setShowDrop]   = useState(false)
+  const [applyItbis, setApplyItbis] = useState(false)
+  const [diasVence,  setDiasVence]  = useState(30)
+  const [lineas,     setLineas]     = useState([{ producto: null, cantidad: 1, precioOverride: '' }])
+  const [submitting, setSubmitting] = useState(null)
+  const dropRef = useRef(null)
+
+  useEffect(() => {
+    function handler(e) { if (dropRef.current && !dropRef.current.contains(e.target)) setShowDrop(false) }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [])
+
   useEffect(() => {
     if (!busqueda.trim()) { setClientes([]); return }
     const t = setTimeout(async () => {
@@ -54,57 +180,54 @@ function ModalFacturaManual({ onClose, onEmitida }) {
     setApplyItbis(c ? c.itbis : false)
   }
 
-  function addLinea() {
-    setLineas(prev => [...prev, { concepto: '', cantidad: 1, precioUnitario: '' }])
-  }
+  function addLinea()        { setLineas(p => [...p, { producto: null, cantidad: 1, precioOverride: '' }]) }
+  function removeLinea(i)    { setLineas(p => p.filter((_, idx) => idx !== i)) }
+  function updateLinea(i, u) { setLineas(p => p.map((l, idx) => idx === i ? { ...l, ...u } : l)) }
 
-  function removeLinea(i) {
-    setLineas(prev => prev.filter((_, idx) => idx !== i))
-  }
+  const totales = lineas.reduce((acc, l) => {
+    const pu  = l.precioOverride !== '' ? parseFloat(l.precioOverride) || 0 : (l.producto ? Number(l.producto.precio) : 0)
+    const sub = pu * (parseInt(l.cantidad) || 0)
+    acc.subtotal += sub
+    return acc
+  }, { subtotal: 0 })
+  const itbisAmt = applyItbis ? Math.round(totales.subtotal * 0.18 * 100) / 100 : 0
+  const total    = Math.round((totales.subtotal + itbisAmt) * 100) / 100
 
-  function updateLinea(i, field, val) {
-    setLineas(prev => prev.map((l, idx) => idx === i ? { ...l, [field]: val } : l))
-  }
+  const canSubmit = lineas.length > 0 && lineas.every(l => l.producto !== null && parseInt(l.cantidad) > 0)
 
-  const subtotal = lineas.reduce((s, l) => s + (parseFloat(l.precioUnitario) || 0) * (parseFloat(l.cantidad) || 0), 0)
-  const itbisAmt = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
-  const total    = subtotal + itbisAmt
-
-  const canEmit = lineas.every(l => l.concepto.trim() && parseFloat(l.cantidad) > 0 && parseFloat(l.precioUnitario) > 0) && lineas.length > 0
-
-  async function emitir() {
-    if (!canEmit) return
-    setEmitting(true)
+  async function submit(esCotizacion) {
+    if (!canSubmit) return
+    setSubmitting(esCotizacion ? 'cotizacion' : 'factura')
     try {
       const body = {
-        clienteId: clienteSel?.id ?? undefined,
-        itbis:     applyItbis,
-        diasVence: parseInt(diasVence) || 30,
+        clienteId:    clienteSel?.id ?? undefined,
+        itbis:        applyItbis,
+        diasVence:    parseInt(diasVence) || 30,
+        esCotizacion,
         lineas: lineas.map(l => ({
-          concepto:       l.concepto.trim(),
-          cantidad:       parseFloat(l.cantidad),
-          precioUnitario: parseFloat(l.precioUnitario),
+          productoId: l.producto.id,
+          cantidad:   parseInt(l.cantidad),
+          ...(l.precioOverride !== '' ? { precioUnitario: parseFloat(l.precioOverride) } : {}),
         })),
       }
       const r = await apiFetch('/api/facturas/manual', { method: 'POST', body: JSON.stringify(body) })
       const j = await r.json()
-      if (!r.ok) { toast.error(j.error ?? 'Error al emitir.'); return }
-      toast.success(`Factura emitida · NCF ${j.ncf}`)
-      onEmitida(j)
+      if (!r.ok) { toast.error(j.error ?? 'Error.'); return }
+      toast.success(esCotizacion ? `Cotización guardada · ${j.noFactura}` : `Factura emitida · NCF ${j.ncf}`)
+      onSuccess(j)
     } catch { toast.error('Error de conexión.') }
-    finally { setEmitting(false) }
+    finally { setSubmitting(null) }
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-2xl bg-slate-900 border border-slate-700/50 rounded-xl shadow-2xl flex flex-col max-h-[90vh]">
+      <div className="relative z-10 w-full max-w-2xl bg-slate-900 border border-slate-700/50 rounded-xl shadow-2xl flex flex-col max-h-[92vh]">
 
-        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-2">
             <Receipt size={16} className="text-blue-400" />
-            <h2 className="text-base font-semibold text-slate-100">Nueva Factura Manual</h2>
+            <h2 className="text-base font-semibold text-slate-100">Punto de Venta — Nueva Factura</h2>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
         </div>
@@ -129,17 +252,23 @@ function ModalFacturaManual({ onClose, onEmitida }) {
               </div>
               {showDrop && (busqueda.trim() || clientes.length > 0) && (
                 <div className="absolute z-20 w-full mt-1 bg-slate-800 border border-slate-700 rounded-lg shadow-2xl overflow-hidden">
-                  <button
-                    onMouseDown={() => seleccionarCliente(null)}
+                  <button onMouseDown={() => seleccionarCliente(null)}
                     className="w-full text-left px-3 py-2.5 hover:bg-slate-700 transition-colors border-b border-slate-700/50">
                     <span className="text-sm font-medium text-slate-300">Consumidor Final</span>
-                    <span className="ml-2 text-[10px] text-slate-600 font-mono">Sin RNC</span>
+                    <span className="ml-2 text-[10px] text-slate-600 font-mono">Sin RNC · B02</span>
                   </button>
                   {clientes.map(c => (
                     <button key={c.id} onMouseDown={() => seleccionarCliente(c)}
                       className="w-full text-left px-3 py-2.5 hover:bg-slate-700 transition-colors border-b border-slate-700/30 last:border-0">
                       <div className="text-sm font-medium text-slate-200 truncate">{c.razonSocial}</div>
-                      <div className="text-[10px] text-slate-500 font-mono">{c.noCliente} {c.rnc ? `· RNC ${c.rnc}` : ''}</div>
+                      <div className="text-[10px] text-slate-500 font-mono">
+                        {c.noCliente}
+                        {c.rnc ? ` · RNC ${c.rnc}` : ''}
+                        {' · '}
+                        <span className={['PYME','Empresa'].includes(c.tipoEmpresa) ? 'text-amber-400' : 'text-slate-600'}>
+                          {['PYME','Empresa'].includes(c.tipoEmpresa) ? 'NCF Fiscal (B01)' : 'Consumidor Final (B02)'}
+                        </span>
+                      </div>
                     </button>
                   ))}
                   {busqueda.trim() && clientes.length === 0 && !searching && (
@@ -150,62 +279,41 @@ function ModalFacturaManual({ onClose, onEmitida }) {
             </div>
             {clienteSel && (
               <div className="mt-1.5 flex items-center gap-2 text-xs text-blue-300 font-mono bg-blue-600/10 border border-blue-600/20 rounded-lg px-3 py-1.5">
-                <span className="font-semibold">{clienteSel.razonSocial}</span>
+                <span className="font-semibold truncate">{clienteSel.razonSocial}</span>
                 <span className="text-slate-600">·</span>
                 <span>{clienteSel.noCliente}</span>
+                {clienteSel.rnc && <><span className="text-slate-600">·</span><span>RNC {clienteSel.rnc}</span></>}
+                <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${['PYME','Empresa'].includes(clienteSel.tipoEmpresa) ? 'bg-amber-600/10 border-amber-600/30 text-amber-400' : 'bg-slate-700/50 border-slate-600/30 text-slate-500'}`}>
+                  {['PYME','Empresa'].includes(clienteSel.tipoEmpresa) ? 'NCF Fiscal B01' : 'B02'}
+                </span>
                 <button onClick={() => seleccionarCliente(null)} className="ml-auto text-slate-500 hover:text-slate-300"><X size={10} /></button>
               </div>
             )}
-            {!clienteSel && (
-              <p className="mt-1 text-[10px] text-slate-600">Sin cliente seleccionado → se asignará a <span className="text-slate-400 font-mono">Consumidor Final</span></p>
-            )}
+            {!clienteSel && <p className="mt-1 text-[10px] text-slate-600">Sin cliente → <span className="text-slate-400 font-mono">Consumidor Final</span> · NCF B02</p>}
           </div>
 
-          {/* Líneas */}
+          {/* Líneas de productos */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <label className={LABEL}>Detalle de la Factura</label>
+              <label className={LABEL}>Productos</label>
               <button onClick={addLinea}
                 className="flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300 transition-colors">
                 <Plus size={12} /> Añadir línea
               </button>
             </div>
-            <div className="space-y-2">
-              {/* Header */}
-              <div className="grid grid-cols-12 gap-2 px-1">
-                <div className="col-span-6 text-[10px] font-semibold text-slate-600 uppercase">Concepto</div>
-                <div className="col-span-2 text-[10px] font-semibold text-slate-600 uppercase text-center">Cant.</div>
-                <div className="col-span-3 text-[10px] font-semibold text-slate-600 uppercase text-right">Precio Unit.</div>
-                <div className="col-span-1" />
-              </div>
+            <div className="grid grid-cols-12 gap-2 px-1 mb-1.5">
+              <div className="col-span-5 text-[10px] font-semibold text-slate-600 uppercase">Producto</div>
+              <div className="col-span-2 text-[10px] font-semibold text-slate-600 uppercase text-center">Cant.</div>
+              <div className="col-span-3 text-[10px] font-semibold text-slate-600 uppercase text-right">Precio Unit.</div>
+              <div className="col-span-2 text-[10px] font-semibold text-slate-600 uppercase text-right pr-5">Subtotal</div>
+            </div>
+            <div className="space-y-3">
               {lineas.map((l, i) => (
-                <div key={i} className="grid grid-cols-12 gap-2 items-center">
-                  <input
-                    className={INPUT + ' col-span-6 text-xs'}
-                    placeholder="Ej. Patch Cord Cat6 2m"
-                    value={l.concepto}
-                    onChange={e => updateLinea(i, 'concepto', e.target.value)}
-                  />
-                  <input
-                    type="number" min="0.01" step="0.01"
-                    className={INPUT + ' col-span-2 text-xs text-center'}
-                    value={l.cantidad}
-                    onChange={e => updateLinea(i, 'cantidad', e.target.value)}
-                  />
-                  <input
-                    type="number" min="0.01" step="0.01"
-                    className={INPUT + ' col-span-3 text-xs text-right'}
-                    placeholder="0.00"
-                    value={l.precioUnitario}
-                    onChange={e => updateLinea(i, 'precioUnitario', e.target.value)}
-                  />
-                  <button
-                    onClick={() => removeLinea(i)}
-                    disabled={lineas.length === 1}
-                    className="col-span-1 flex justify-center text-slate-700 hover:text-red-400 disabled:opacity-30 transition-colors">
-                    <Trash2 size={14} />
-                  </button>
-                </div>
+                <LineaRow key={i} linea={l}
+                  onUpdate={u => updateLinea(i, u)}
+                  onRemove={() => removeLinea(i)}
+                  canRemove={lineas.length > 1}
+                />
               ))}
             </div>
           </div>
@@ -230,7 +338,7 @@ function ModalFacturaManual({ onClose, onEmitida }) {
           <div className="bg-slate-800/60 border border-slate-700/40 rounded-xl p-4 space-y-1.5">
             <div className="flex justify-between text-sm text-slate-400">
               <span>Subtotal</span>
-              <span className="font-mono">{formatCurrency(subtotal)}</span>
+              <span className="font-mono">{formatCurrency(totales.subtotal)}</span>
             </div>
             {applyItbis && (
               <div className="flex justify-between text-sm text-amber-400">
@@ -239,23 +347,185 @@ function ModalFacturaManual({ onClose, onEmitida }) {
               </div>
             )}
             <div className="flex justify-between text-base font-bold text-emerald-400 border-t border-slate-700/50 pt-1.5 mt-1.5">
-              <span>Total</span>
+              <span>Total RD$</span>
               <span className="font-mono">{formatCurrency(total)}</span>
             </div>
           </div>
         </div>
 
-        {/* Footer */}
         <div className="flex justify-end gap-3 px-5 py-4 border-t border-slate-800 shrink-0">
           <button onClick={onClose}
             className="px-4 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
             Cancelar
           </button>
-          <button onClick={emitir} disabled={!canEmit || emitting}
-            className="px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50 flex items-center gap-2">
-            {emitting && <Loader2 size={14} className="animate-spin" />}
-            Emitir Factura
+          <button onClick={() => submit(true)} disabled={!canSubmit || !!submitting}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-amber-600/20 hover:bg-amber-600/30 border border-amber-600/40 text-amber-300 transition-colors disabled:opacity-40">
+            {submitting === 'cotizacion' && <Loader2 size={13} className="animate-spin" />}
+            <FileText size={13} /> Guardar Cotización
           </button>
+          <button onClick={() => submit(false)} disabled={!canSubmit || !!submitting}
+            className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50">
+            {submitting === 'factura' && <Loader2 size={13} className="animate-spin" />}
+            <Receipt size={13} /> Emitir Factura
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Modal Vista Previa / Impresión ───────────────────────────────────────────
+
+function ModalVistaPrevia({ factura, onClose }) {
+  const contentRef  = useRef(null)
+  const handlePrint = useReactToPrint({ contentRef })
+  const esCot = factura.esCotizacion
+  const cli   = factura.cliente ?? {}
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-2xl bg-white rounded-xl shadow-2xl flex flex-col max-h-[92vh]">
+
+        {/* Toolbar (not printed) */}
+        <div className="flex items-center justify-between px-5 py-3 bg-slate-800 rounded-t-xl print:hidden shrink-0">
+          <span className="text-sm font-semibold text-slate-300">
+            {esCot ? 'Cotización' : 'Factura'} · {factura.noFactura}
+          </span>
+          <div className="flex items-center gap-2">
+            <button onClick={handlePrint}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors">
+              <Printer size={14} /> Imprimir / PDF
+            </button>
+            <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
+          </div>
+        </div>
+
+        {/* Printable content */}
+        <div className="overflow-y-auto">
+          <div ref={contentRef} className="p-8 bg-white text-gray-900 text-sm font-sans relative">
+
+            {/* Watermark cotización */}
+            {esCot && (
+              <div className="absolute inset-0 flex items-center justify-center pointer-events-none overflow-hidden">
+                <span className="text-7xl font-black text-gray-100 select-none tracking-widest"
+                  style={{ transform: 'rotate(-30deg)', whiteSpace: 'nowrap' }}>
+                  COTIZACIÓN
+                </span>
+              </div>
+            )}
+
+            {/* Header */}
+            <div className="flex justify-between items-start mb-7">
+              <div>
+                {/* Logo placeholder */}
+                <div className="w-36 h-14 bg-gray-100 border-2 border-dashed border-gray-300 rounded-lg flex items-center justify-center mb-3">
+                  <span className="text-[10px] text-gray-400 font-mono font-bold tracking-widest">ACR LOGO</span>
+                </div>
+                <div className="text-sm font-black text-gray-800 leading-tight">ACR Networks &amp; Solutions</div>
+                <div className="text-[10px] text-gray-500 mt-0.5">ISP · CCTV · Infraestructura de Redes</div>
+                <div className="text-[10px] text-gray-500">Santo Domingo, República Dominicana</div>
+                <div className="text-[10px] text-gray-500">RNC: 1-32-XXXXX-X · Tel: 829-XXX-XXXX</div>
+              </div>
+
+              <div className="text-right">
+                <div className={`text-2xl font-black mb-1 ${esCot ? 'text-amber-600' : 'text-blue-700'}`}>
+                  {esCot ? 'COTIZACIÓN' : 'FACTURA'}
+                </div>
+                <div className="text-base font-mono font-bold text-gray-700">{factura.noFactura}</div>
+                {factura.ncf && (
+                  <div className="mt-2 bg-blue-50 border border-blue-200 rounded-lg px-3 py-2 inline-block text-right">
+                    <div className="text-[9px] font-bold text-blue-500 uppercase tracking-widest">NCF</div>
+                    <div className="text-sm font-mono font-black text-blue-700">{factura.ncf}</div>
+                    <div className="text-[9px] text-blue-400">{factura.tipoNcf}</div>
+                  </div>
+                )}
+                <div className="mt-2 text-[10px] text-gray-500 space-y-0.5">
+                  <div>Emisión: <span className="font-semibold text-gray-700">{formatDate(factura.fechaEmision)}</span></div>
+                  {factura.fechaVence && <div>Vence: <span className="font-semibold text-gray-700">{formatDate(factura.fechaVence)}</span></div>}
+                </div>
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="border-t-2 border-gray-200 mb-5" />
+
+            {/* Client */}
+            <div className="bg-gray-50 border border-gray-200 rounded-lg p-4 mb-6">
+              <div className="text-[9px] font-bold text-gray-400 uppercase tracking-widest mb-1.5">Facturar a</div>
+              <div className="font-black text-gray-800">{cli.razonSocial ?? '—'}</div>
+              {cli.rnc && <div className="text-xs text-gray-600 font-mono mt-0.5">RNC: {cli.rnc}</div>}
+              {cli.direccion && cli.direccion !== 'N/A' && <div className="text-xs text-gray-500 mt-0.5">{cli.direccion}</div>}
+            </div>
+
+            {/* Line items */}
+            <table className="w-full mb-5" style={{ borderCollapse: 'collapse' }}>
+              <thead>
+                <tr style={{ borderBottom: '2px solid #d1d5db' }}>
+                  <th className="py-2 text-left text-[10px] font-bold text-gray-500 uppercase tracking-wide">Descripción</th>
+                  <th className="py-2 text-center text-[10px] font-bold text-gray-500 uppercase tracking-wide w-14">Cant.</th>
+                  <th className="py-2 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wide w-28">Precio Unit.</th>
+                  <th className="py-2 text-right text-[10px] font-bold text-gray-500 uppercase tracking-wide w-28">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(factura.lineas ?? []).length === 0 ? (
+                  <tr>
+                    <td colSpan={4} className="py-4 text-center text-xs text-gray-400 italic">
+                      Sin detalle de líneas disponible
+                    </td>
+                  </tr>
+                ) : (factura.lineas ?? []).map((l, i) => (
+                  <tr key={l.id ?? i} style={{ borderBottom: '1px solid #f3f4f6' }}>
+                    <td className="py-2 text-xs text-gray-800">{l.descripcion}</td>
+                    <td className="py-2 text-xs text-center text-gray-700 font-mono">{Number(l.cantidad)}</td>
+                    <td className="py-2 text-xs text-right text-gray-700 font-mono">{formatCurrency(l.precioUnitario)}</td>
+                    <td className="py-2 text-xs text-right font-mono font-semibold text-gray-800">
+                      {formatCurrency(Number(l.precioUnitario) * Number(l.cantidad))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+
+            {/* Totals */}
+            <div className="flex justify-end mb-6">
+              <div className="w-60">
+                <div className="flex justify-between py-1 text-xs text-gray-600 border-b border-gray-100">
+                  <span>Subtotal</span>
+                  <span className="font-mono">{formatCurrency(factura.subtotal)}</span>
+                </div>
+                {Number(factura.itbis) > 0 && (
+                  <div className="flex justify-between py-1 text-xs text-amber-700 border-b border-gray-100">
+                    <span>ITBIS (18%)</span>
+                    <span className="font-mono">{formatCurrency(factura.itbis)}</span>
+                  </div>
+                )}
+                <div className="flex justify-between py-2.5 text-sm font-black text-gray-900">
+                  <span>TOTAL RD$</span>
+                  <span className="font-mono">{formatCurrency(factura.total)}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Footer: legal + QR */}
+            <div className="flex justify-between items-end border-t border-gray-200 pt-4">
+              <div className="text-[9px] text-gray-400 font-mono space-y-0.5">
+                <div>Documento generado electrónicamente por ACR Networks &amp; Solutions ERP.</div>
+                {!esCot && <div>Verificar NCF en: dgii.gov.do/verificador</div>}
+                {esCot && <div className="text-amber-600 font-semibold">Cotización sin validez fiscal — no tiene NCF asignado.</div>}
+              </div>
+              {/* QR placeholder */}
+              <div className="w-16 h-16 border-2 border-dashed border-gray-300 rounded flex flex-col items-center justify-center gap-0.5 shrink-0">
+                <div className="grid grid-cols-3 gap-0.5 mb-0.5">
+                  {Array.from({ length: 9 }).map((_, i) => (
+                    <div key={i} className={`w-1.5 h-1.5 rounded-sm ${[0,2,4,6,8].includes(i) ? 'bg-gray-400' : 'bg-transparent'}`} />
+                  ))}
+                </div>
+                <div className="text-[7px] text-gray-400 font-mono font-bold">QR · DGII</div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -265,16 +535,18 @@ function ModalFacturaManual({ onClose, onEmitida }) {
 // ─── Panel Principal ──────────────────────────────────────────────────────────
 
 export default function PanelFacturas() {
-  const { tienePermiso }                    = useAuth()
-  const canEdit                             = tienePermiso('factura:editar')
-  const canEmit                             = tienePermiso('factura:emitir')
-  const [facturas,      setFacturas]        = useState([])
-  const [loading,       setLoading]         = useState(false)
-  const [updating,      setUpdating]        = useState(null)
-  const [filtroEstado,  setFiltroEstado]    = useState('')
-  const [page,          setPage]            = useState(0)
-  const [total,         setTotal]           = useState(0)
-  const [showManual,    setShowManual]      = useState(false)
+  const { tienePermiso }                          = useAuth()
+  const canEdit                                   = tienePermiso('factura:editar')
+  const canEmit                                   = tienePermiso('factura:emitir')
+  const [facturas,      setFacturas]              = useState([])
+  const [loading,       setLoading]               = useState(false)
+  const [updating,      setUpdating]              = useState(null)
+  const [filtroEstado,  setFiltroEstado]          = useState('')
+  const [page,          setPage]                  = useState(0)
+  const [total,         setTotal]                 = useState(0)
+  const [showManual,    setShowManual]             = useState(false)
+  const [facturaPreview, setFacturaPreview]        = useState(null)
+  const [loadingPreview, setLoadingPreview]        = useState(null)
 
   const fetchFacturas = useCallback(async () => {
     setLoading(true)
@@ -285,8 +557,7 @@ export default function PanelFacturas() {
       p.set('offset', String(page * PAGE_SIZE))
       const r = await apiFetch(`/api/facturas?${p}`)
       if (r.ok) { const j = await r.json(); setFacturas(j.data ?? []); setTotal(j.total ?? 0) }
-    } catch {}
-    finally { setLoading(false) }
+    } catch {} finally { setLoading(false) }
   }, [filtroEstado, page])
 
   useEffect(() => { setPage(0) }, [filtroEstado])
@@ -307,7 +578,18 @@ export default function PanelFacturas() {
     finally { setUpdating(null) }
   }
 
-  const colSpan = 9 + (canEdit ? 1 : 0)
+  async function abrirPreview(f) {
+    setLoadingPreview(f.id)
+    try {
+      const r = await apiFetch(`/api/facturas/${f.id}`)
+      if (!r.ok) { toast.error('No se pudo cargar la factura.'); return }
+      const j = await r.json()
+      setFacturaPreview(j)
+    } catch { toast.error('Error de conexión.') }
+    finally { setLoadingPreview(null) }
+  }
+
+  const colSpan = 10 + (canEdit ? 1 : 0)
 
   const totalEmitidas = facturas
     .filter(f => f.estado === 'Emitida' || f.estado === 'Pagada')
@@ -320,7 +602,7 @@ export default function PanelFacturas() {
           <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}
             className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
             <option value="">Todos los estados</option>
-            {FACTURA_ESTADOS.map(e => <option key={e} value={e}>{e}</option>)}
+            {FACTURA_ESTADOS.map(e => <option key={e} value={e}>{e === 'Borrador' ? 'Cotizaciones' : e}</option>)}
           </select>
           <button onClick={fetchFacturas}
             className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
@@ -329,7 +611,7 @@ export default function PanelFacturas() {
           {canEmit && (
             <button onClick={() => setShowManual(true)}
               className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors">
-              <Plus size={14} /> Nueva Factura Manual
+              <Plus size={14} /> Nueva Factura / POS
             </button>
           )}
         </div>
@@ -350,12 +632,13 @@ export default function PanelFacturas() {
                 <th className={TH}>No. Factura</th>
                 <th className={TH}>NCF</th>
                 <th className={TH}>Cliente</th>
-                <th className={TH}>Tipo OT</th>
+                <th className={TH}>Tipo</th>
                 <th className={TH}>Subtotal</th>
                 <th className={TH}>ITBIS</th>
                 <th className={TH}>Total</th>
                 <th className={TH}>Estado</th>
                 <th className={TH}>Emisión</th>
+                <th className="px-4 py-3" />
                 {canEdit && <th className="px-4 py-3" />}
               </tr>
             </thead>
@@ -390,9 +673,11 @@ export default function PanelFacturas() {
                     <div className="text-[10px] text-slate-500 font-mono">{f.cliente?.noCliente}</div>
                   </td>
                   <td className="px-4 py-3 whitespace-nowrap">
-                    {f.orden?.tipoOT
-                      ? <OtTipoBadge tipo={f.orden.tipoOT} />
-                      : <span className="text-slate-700 text-xs font-mono text-[10px]">Manual</span>}
+                    {f.esCotizacion
+                      ? <span className="text-[10px] font-semibold font-mono px-1.5 py-0.5 rounded border bg-amber-600/10 border-amber-600/20 text-amber-400">Cotización</span>
+                      : f.orden?.tipoOT
+                        ? <OtTipoBadge tipo={f.orden.tipoOT} />
+                        : <span className="text-slate-600 text-[10px] font-mono">Manual</span>}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{formatCurrency(f.subtotal)}</td>
                   <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">
@@ -403,19 +688,25 @@ export default function PanelFacturas() {
                   <td className="px-4 py-3 font-mono text-sm text-emerald-400 font-bold whitespace-nowrap">{formatCurrency(f.total)}</td>
                   <td className="px-4 py-3 whitespace-nowrap"><FacturaEstadoBadge estado={f.estado} /></td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(f.fechaEmision)}</td>
+                  {/* Print button */}
+                  <td className="px-2 py-3">
+                    <button onClick={() => abrirPreview(f)} disabled={loadingPreview === f.id}
+                      title="Ver / Imprimir"
+                      className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
+                      {loadingPreview === f.id
+                        ? <Loader2 size={14} className="animate-spin" />
+                        : <Printer size={14} />}
+                    </button>
+                  </td>
                   {canEdit && (
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       {f.estado === 'Emitida' && updating !== f.id && (
                         <div className="flex items-center gap-1.5 justify-end">
-                          <button
-                            onClick={() => actualizarEstado(f, 'Pagada')}
-                            disabled={!!updating}
+                          <button onClick={() => actualizarEstado(f, 'Pagada')} disabled={!!updating}
                             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-400 text-xs font-semibold transition-all disabled:opacity-40">
                             Pagada
                           </button>
-                          <button
-                            onClick={() => actualizarEstado(f, 'Anulada')}
-                            disabled={!!updating}
+                          <button onClick={() => actualizarEstado(f, 'Anulada')} disabled={!!updating}
                             className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-600/15 hover:bg-red-600/25 border border-red-600/30 text-red-400 text-xs font-semibold transition-all disabled:opacity-40">
                             Anular
                           </button>
@@ -433,18 +724,12 @@ export default function PanelFacturas() {
           <p className="text-xs text-slate-600 font-mono">{total} factura{total !== 1 ? 's' : ''}</p>
           {total > PAGE_SIZE && (
             <div className="flex items-center gap-2">
-              <button
-                onClick={() => setPage(p => Math.max(0, p - 1))}
-                disabled={page === 0 || loading}
+              <button onClick={() => setPage(p => Math.max(0, p - 1))} disabled={page === 0 || loading}
                 className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-colors">
                 Anterior
               </button>
-              <span className="text-xs text-slate-500 font-mono">
-                {page + 1} / {Math.ceil(total / PAGE_SIZE)}
-              </span>
-              <button
-                onClick={() => setPage(p => p + 1)}
-                disabled={(page + 1) * PAGE_SIZE >= total || loading}
+              <span className="text-xs text-slate-500 font-mono">{page + 1} / {Math.ceil(total / PAGE_SIZE)}</span>
+              <button onClick={() => setPage(p => p + 1)} disabled={(page + 1) * PAGE_SIZE >= total || loading}
                 className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-colors">
                 Siguiente
               </button>
@@ -456,7 +741,14 @@ export default function PanelFacturas() {
       {showManual && (
         <ModalFacturaManual
           onClose={() => setShowManual(false)}
-          onEmitida={() => { setShowManual(false); fetchFacturas() }}
+          onSuccess={f => { setShowManual(false); fetchFacturas(); setFacturaPreview(f) }}
+        />
+      )}
+
+      {facturaPreview && (
+        <ModalVistaPrevia
+          factura={facturaPreview}
+          onClose={() => setFacturaPreview(null)}
         />
       )}
     </div>
