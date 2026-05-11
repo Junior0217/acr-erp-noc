@@ -1825,14 +1825,14 @@ const ncfSchema = z.object({
   activo:          z.boolean().default(true),
 })
 
-app.get('/api/ncf-config', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+app.get('/api/ncf-config', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   try {
     const configs = await prisma.configuracionNCF.findMany({ orderBy: { tipoNcf: 'asc' } })
     res.json({ data: configs })
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-app.post('/api/ncf-config', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+app.post('/api/ncf-config', verificarJWT, requerirPermiso('sistema:admin'), async (req, res) => {
   try {
     const data = ncfSchema.parse(req.body)
     const config = await prisma.configuracionNCF.upsert({
@@ -1841,6 +1841,77 @@ app.post('/api/ncf-config', verificarJWT, requerirPermiso('ventas:editar'), asyn
       update: { ...data, vencimiento: data.vencimiento ? new Date(data.vencimiento) : null },
     })
     res.json(config)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── Órdenes de Trabajo ───────────────────────────────────────────────────────
+
+const lineaOTSchema = z.object({
+  itemCatalogoId: z.string().uuid().optional().nullable(),
+  productoId:     z.number().int().optional().nullable(),
+  descripcion:    z.string().min(1).max(200),
+  cantidad:       z.number().int().min(1).default(1),
+  precioUnitario: z.number().min(0),
+})
+
+const ordenTrabajoSchema = z.object({
+  clienteId:     z.string().uuid(),
+  tecnicoId:     z.number().int().optional().nullable(),
+  tipoOT:        z.enum(['ISP', 'CCTV', 'Reparacion', 'CercoElectrico', 'VentaDirecta', 'General']).default('General'),
+  estado:        z.string().default('Pendiente'),
+  notasTecnicas: z.string().optional().nullable(),
+  metadatos:     z.record(z.unknown()).default({}),
+  lineas:        z.array(lineaOTSchema).min(1, 'Agrega al menos un item.'),
+})
+
+app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
+  try {
+    const { estado, tipoOT, clienteId, tecnicoId, limit = '50', offset = '0' } = req.query
+    const where = {}
+    if (estado)    where.estado    = estado
+    if (tipoOT)    where.tipoOT    = tipoOT
+    if (clienteId) where.clienteId = clienteId
+    if (tecnicoId) where.tecnicoId = parseInt(tecnicoId)
+    const [total, ordenes] = await prisma.$transaction([
+      prisma.ordenTrabajo.count({ where }),
+      prisma.ordenTrabajo.findMany({
+        where,
+        include: {
+          cliente: { select: { id: true, razonSocial: true, noCliente: true } },
+          tecnico: { select: { id: true, nombre: true } },
+          lineas:  { include: { itemCatalogo: { select: { id: true, nombre: true, tipo: true } } } },
+          _count:  { select: { facturas: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+      }),
+    ])
+    res.json({ data: ordenes, total })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/ordenes', verificarJWT, requerirPermiso('ot:crear'), async (req, res) => {
+  try {
+    const { lineas, ...otData } = ordenTrabajoSchema.parse(req.body)
+    const orden = await prisma.$transaction(async (tx) => {
+      const ot = await tx.ordenTrabajo.create({ data: otData })
+      await tx.lineaOrdenTrabajo.createMany({
+        data: lineas.map(l => ({ ...l, ordenId: ot.id })),
+      })
+      return tx.ordenTrabajo.findUnique({
+        where: { id: ot.id },
+        include: {
+          cliente: { select: { id: true, razonSocial: true } },
+          lineas:  { include: { itemCatalogo: { select: { nombre: true } } } },
+        },
+      })
+    })
+    auditReq('ot:crear', req, { ordenId: orden.id, tipoOT: orden.tipoOT, clienteId: orden.clienteId })
+    res.status(201).json(orden)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
     res.status(500).json({ error: 'Error interno.' })

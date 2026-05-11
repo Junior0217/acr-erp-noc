@@ -396,8 +396,10 @@ model OrdenTrabajo {
   id            String              @id @default(uuid())
   clienteId     String
   tecnicoId     Int?
+  tipoOT        String              @default("General")
   estado        String              @default("Pendiente")
   notasTecnicas String?
+  metadatos     Json                @default("{}")
   latitud       String?
   longitud      String?
   macAddress    String?
@@ -414,6 +416,7 @@ model OrdenTrabajo {
 
   @@index([clienteId])
   @@index([tecnicoId])
+  @@index([tipoOT])
   @@index([estado])
   @@index([createdAt])
 }
