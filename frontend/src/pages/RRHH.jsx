@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
   Plus, Pencil, Trash2, X, Loader2, RefreshCw,
-  Users, LogIn, LogOut, Clock, Calendar, Search, ShieldOff, Eye, EyeOff,
+  Users, LogIn, LogOut, Clock, Calendar, Search, ShieldOff, Eye, EyeOff, Lock,
 } from 'lucide-react'
 import { useDebounce } from '../hooks/useDebounce'
 import { useAuth } from '../contexts/AuthContext'
@@ -19,6 +19,7 @@ const fmtTime = d => new Date(d).toLocaleTimeString('es-DO', { hour: '2-digit', 
 // ─── Modal Formulario Empleado ────────────────────────────────────────────────
 
 function FormularioEmpleado({ empleado, onClose, onSaved }) {
+  const { user }                                = useAuth()
   const [nombre,   setNombre]   = useState(empleado?.nombre ?? '')
   const [email,    setEmail]    = useState(empleado?.email  ?? '')
   const [password, setPassword] = useState('')
@@ -48,10 +49,9 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
     if (!empleado && !password) { toast.error('La contraseña inicial es requerida.'); return }
     setSaving(true)
     try {
-      const cargo  = roles.filter(r => selectedRoleIds.includes(r.id)).map(r => r.nombre).join(' / ') || 'Técnico'
       const path   = empleado ? `/api/empleados/${empleado.id}` : '/api/empleados'
       const method = empleado ? 'PUT' : 'POST'
-      const body   = { nombre, email, cargo, roleIds: selectedRoleIds, ...(password ? { password } : {}) }
+      const body   = { nombre, email, roleIds: selectedRoleIds, ...(password ? { password } : {}) }
       const r    = await apiFetch(path, { method, body: JSON.stringify(body) })
       const json = await r.json()
       if (!r.ok) { toast.error(json.detail?.[0]?.message ?? json.error ?? 'Error al guardar'); return }
@@ -61,8 +61,10 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
     finally { setSaving(false) }
   }
 
-  const pwdValid = !password || (password.length >= 8 && /[^a-zA-Z0-9\s]/.test(password))
-  const canSave  = nombre.trim() && email.trim() && pwdValid && (!!empleado || password.length >= 8)
+  const callerNivel  = user?.nivelMax ?? 0
+  const sortedRoles  = [...roles].sort((a, b) => (b.nivel ?? 0) - (a.nivel ?? 0))
+  const pwdValid     = !password || (password.length >= 8 && /[^a-zA-Z0-9\s]/.test(password))
+  const canSave      = nombre.trim() && email.trim() && pwdValid && (!!empleado || password.length >= 8)
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -102,21 +104,32 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
             <label className={LABEL}>Rol(es) Asignado(s)</label>
             {loadingRoles
               ? <div className="flex items-center gap-2 text-xs text-slate-500 py-2"><Loader2 size={12} className="animate-spin" />Cargando roles...</div>
-              : roles.length === 0
+              : sortedRoles.length === 0
               ? <p className="text-xs text-slate-600 py-2">Sin roles disponibles. Crea uno en Configuración.</p>
               : (
                 <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
-                  {roles.map(r => {
-                    const on = selectedRoleIds.includes(r.id)
+                  {sortedRoles.map(r => {
+                    const on       = selectedRoleIds.includes(r.id)
+                    const locked   = (r.nivel ?? 0) >= callerNivel
                     return (
-                      <label key={r.id} className={`flex items-center gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all ${
-                        on ? 'bg-blue-600/10 border-blue-600/30' : 'bg-slate-800/40 border-slate-700/30 hover:bg-slate-800/60'
+                      <label key={r.id} className={`flex items-center gap-2.5 p-2.5 rounded-lg border transition-all ${
+                        locked
+                          ? 'bg-slate-800/20 border-slate-700/20 opacity-50 cursor-not-allowed'
+                          : on
+                          ? 'bg-blue-600/10 border-blue-600/30 cursor-pointer'
+                          : 'bg-slate-800/40 border-slate-700/30 hover:bg-slate-800/60 cursor-pointer'
                       }`}>
-                        <input type="checkbox" checked={on} onChange={() => toggleRol(r.id)} className="accent-blue-500 w-4 h-4 flex-shrink-0" />
-                        <div className="min-w-0">
-                          <p className={`text-sm font-medium leading-tight ${on ? 'text-blue-300' : 'text-slate-300'}`}>{r.nombre}</p>
+                        {locked
+                          ? <Lock size={14} className="text-slate-600 flex-shrink-0" />
+                          : <input type="checkbox" checked={on} onChange={() => toggleRol(r.id)} className="accent-blue-500 w-4 h-4 flex-shrink-0" />
+                        }
+                        <div className="min-w-0 flex-1">
+                          <p className={`text-sm font-medium leading-tight ${locked ? 'text-slate-600' : on ? 'text-blue-300' : 'text-slate-300'}`}>{r.nombre}</p>
                           {r.descripcion && <p className="text-[10px] text-slate-600 truncate">{r.descripcion}</p>}
                         </div>
+                        {r.nivel != null && (
+                          <span className="text-[9px] font-mono text-slate-700 flex-shrink-0">niv.{r.nivel}</span>
+                        )}
                       </label>
                     )
                   })}

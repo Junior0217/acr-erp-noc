@@ -30,9 +30,9 @@ const BETA_PERMS = [
 ];
 
 const ROLES_DEF = [
-  { nombre: 'Propietario Absoluto', descripcion: 'Control total. Intocable — único portador de sistema:owner.', permisos: OWNER_PERMS, require2FA: true,  email: 'crosario@acrnetworks.do'  },
-  { nombre: 'Socio Administrador',  descripcion: 'Acceso completo. No puede modificar roles del Propietario.',  permisos: ALL_PERMS,   require2FA: false, email: 'cadams@acrnetworks.do'    },
-  { nombre: 'Beta Tester / QA',     descripcion: 'POS + catálogo. Sin permisos destructivos ni de config.',     permisos: BETA_PERMS,  require2FA: false, email: 'afernandez@acrnetworks.do' },
+  { nombre: 'Propietario Absoluto', descripcion: 'Control total. Intocable — único portador de sistema:owner.', permisos: OWNER_PERMS, require2FA: true,  nivel: 100, email: 'crosario@acrnetworks.do'  },
+  { nombre: 'Socio Administrador',  descripcion: 'Acceso completo. No puede modificar roles del Propietario.',  permisos: ALL_PERMS,   require2FA: false, nivel: 80,  email: 'cadams@acrnetworks.do'    },
+  { nombre: 'Beta Tester / QA',     descripcion: 'POS + catálogo. Sin permisos destructivos ni de config.',     permisos: BETA_PERMS,  require2FA: false, nivel: 50,  email: 'afernandez@acrnetworks.do' },
 ];
 
 const LEGACY = ['Owner', 'Propietario', 'Administrador General', 'Admin'];
@@ -58,8 +58,8 @@ async function main() {
   for (const def of ROLES_DEF) {
     const r = await prisma.rol.upsert({
       where:  { nombre: def.nombre },
-      update: { permisos: def.permisos, descripcion: def.descripcion, require2FA: def.require2FA, activo: true },
-      create: { nombre: def.nombre, descripcion: def.descripcion, permisos: def.permisos, require2FA: def.require2FA, activo: true },
+      update: { permisos: def.permisos, descripcion: def.descripcion, require2FA: def.require2FA, nivel: def.nivel, activo: true },
+      create: { nombre: def.nombre, descripcion: def.descripcion, permisos: def.permisos, require2FA: def.require2FA, nivel: def.nivel, activo: true },
     });
     rolIds[def.nombre] = r.id;
     console.log(`   ✓ "${def.nombre}" id=${r.id}`);

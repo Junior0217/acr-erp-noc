@@ -239,7 +239,6 @@ const passwordSchema = z.string()
 
 const empleadoSchema = z.object({
   nombre:   z.string().min(2).max(100),
-  cargo:    z.string().max(200).default('Técnico'),
   email:    z.string().email().trim(),
   roleIds:  z.array(z.number().int().positive()).optional().default([]),
   password: passwordSchema,
@@ -247,7 +246,6 @@ const empleadoSchema = z.object({
 
 const empleadoUpdateSchema = z.object({
   nombre:   z.string().min(2).max(100).optional(),
-  cargo:    z.string().max(200).optional(),
   email:    z.string().email().trim().optional(),
   roleIds:  z.array(z.number().int().positive()).optional(),
   // Accept strong password OR empty string (= no change). Transform '' → undefined.
@@ -430,15 +428,23 @@ function requerirPermiso(permiso) {
 async function protegerPropietario(req, res, next) {
   const targetId = parseInt(req.params.id ?? req.params.empleadoId);
   if (!targetId) return next();
+  if (req.user?.permisos?.includes('sistema:owner')) return next();
   try {
-    const target = await prisma.empleado.findUnique({
-      where: { id: targetId },
-      include: { roles: { where: { activo: true }, select: { permisos: true } } },
-    });
-    if (!target) return next();
-    const targetPerms = target.roles.flatMap(r => Array.isArray(r.permisos) ? r.permisos : []);
-    if (targetPerms.includes('sistema:owner') && !req.user?.permisos?.includes('sistema:owner')) {
-      return res.status(403).json({ error: 'El propietario es inmutable.' });
+    const [callerRoles, targetEmp] = await Promise.all([
+      prisma.rol.findMany({
+        where: { empleados: { some: { id: req.user.sub } }, activo: true },
+        select: { nivel: true },
+      }),
+      prisma.empleado.findUnique({
+        where: { id: targetId },
+        include: { roles: { where: { activo: true }, select: { nivel: true } } },
+      }),
+    ]);
+    if (!targetEmp) return next();
+    const callerNivel = callerRoles.length ? Math.max(...callerRoles.map(r => r.nivel ?? 0)) : 0;
+    const targetNivel = targetEmp.roles.length ? Math.max(...targetEmp.roles.map(r => r.nivel ?? 0)) : 0;
+    if (callerNivel <= targetNivel) {
+      return res.status(403).json({ error: `Sin autorización: tu nivel (${callerNivel}) no supera el nivel del objetivo (${targetNivel}).` });
     }
     next();
   } catch { next(); }
@@ -591,10 +597,14 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
 
 app.get('/api/auth/me', verificarJWT, async (req, res) => {
   try {
-    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorEnabled: true } })
+    const emp = await prisma.empleado.findUnique({
+      where: { id: req.user.sub },
+      select: { twoFactorEnabled: true, roles: { where: { activo: true }, select: { nivel: true } } },
+    })
     const permisos = Array.isArray(req.user.permisos) ? req.user.permisos : []
     const needs2FASetup = req.user.needs2FASetup === true && !emp?.twoFactorEnabled
-    const out = { id: req.user.sub, nombre: req.user.nombre, permisos, twoFactorEnabled: emp?.twoFactorEnabled ?? false }
+    const nivelMax = emp?.roles?.length ? Math.max(...emp.roles.map(r => r.nivel ?? 0)) : 0
+    const out = { id: req.user.sub, nombre: req.user.nombre, permisos, twoFactorEnabled: emp?.twoFactorEnabled ?? false, nivelMax }
     if (needs2FASetup) out.needs2FASetup = true
     res.json(out)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
@@ -787,8 +797,13 @@ app.post('/api/empleados', verificarJWT, requerirPermiso('rrhh:editar'), async (
   try {
     const { roleIds, password, ...data } = empleadoSchema.parse(req.body);
     const passwordHash = await bcrypt.hash(password, 12);
+    let cargo = 'Técnico';
+    if (roleIds.length) {
+      const roles = await prisma.rol.findMany({ where: { id: { in: roleIds } }, select: { nombre: true, nivel: true }, orderBy: { nivel: 'desc' } });
+      if (roles.length) cargo = roles[0].nombre;
+    }
     const e = await prisma.empleado.create({
-      data: { ...data, passwordHash, roles: { connect: roleIds.map(id => ({ id })) } },
+      data: { ...data, cargo, passwordHash, roles: { connect: roleIds.map(id => ({ id })) } },
       select: { id: true, nombre: true, cargo: true, email: true, bloqueado: true, creadoEn: true, roles: { select: { id: true, nombre: true } } },
     });
     auditReq('rrhh:empleado_creado', req, { nombre: e.nombre });
@@ -803,7 +818,7 @@ app.post('/api/empleados', verificarJWT, requerirPermiso('rrhh:editar'), async (
 app.get('/api/empleados', verificarJWT, async (req, res) => {
   try {
     const { search } = req.query;
-    const where = {};
+    const where = { deletedAt: null };
     if (search) where.OR = [
       { nombre: { contains: search, mode: 'insensitive' } },
       { cargo:  { contains: search, mode: 'insensitive' } },
@@ -827,8 +842,14 @@ app.put('/api/empleados/:id', verificarJWT, requerirPermiso('rrhh:editar'), prot
   try {
     const { roleIds, password, ...data } = empleadoUpdateSchema.parse(req.body);
     const updateData = { ...data };
-    if (password)             updateData.passwordHash = await bcrypt.hash(password, 12);
-    if (roleIds !== undefined) updateData.roles = { set: roleIds.map(rid => ({ id: rid })) };
+    if (password) updateData.passwordHash = await bcrypt.hash(password, 12);
+    if (roleIds !== undefined) {
+      updateData.roles = { set: roleIds.map(rid => ({ id: rid })) };
+      if (roleIds.length) {
+        const roles = await prisma.rol.findMany({ where: { id: { in: roleIds } }, select: { nombre: true, nivel: true }, orderBy: { nivel: 'desc' } });
+        if (roles.length) updateData.cargo = roles[0].nombre;
+      }
+    }
     const e = await prisma.empleado.update({
       where: { id }, data: updateData,
       select: { id: true, nombre: true, cargo: true, email: true, bloqueado: true, creadoEn: true, roles: { select: { id: true, nombre: true } } },
@@ -850,11 +871,10 @@ app.delete('/api/empleados/:id', verificarJWT, protegerPropietario, async (req, 
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
-    await prisma.empleado.delete({ where: { id } });
+    await prisma.empleado.update({ where: { id }, data: { deletedAt: new Date() } });
     res.status(204).end();
   } catch (e) {
     if (e.code === 'P2025') return res.status(404).json({ error: 'Empleado no encontrado.' });
-    if (e.code === 'P2003') return res.status(409).json({ error: 'No se puede eliminar: el técnico tiene órdenes asignadas.' });
     res.status(500).json({ error: 'Error al eliminar empleado.' });
   }
 });
@@ -1838,11 +1858,19 @@ app.patch('/api/admin/empleados/:id/roles', verificarJWT, requerirPermiso('siste
     // Anti-privilege-escalation: non-owner can only assign roles whose perms are a subset of their own
     if (!req.user.permisos?.includes('sistema:owner')) {
       const callerPerms = new Set(Array.isArray(req.user.permisos) ? req.user.permisos : [])
-      const rolesToAssign = await prisma.rol.findMany({ where: { id: { in: roleIds } } })
+      const rolesToAssign = await prisma.rol.findMany({ where: { id: { in: roleIds } }, select: { id: true, nombre: true, permisos: true, nivel: true } })
       for (const rol of rolesToAssign) {
         const rolPerms = Array.isArray(rol.permisos) ? rol.permisos : []
         const escalated = rolPerms.find(p => !callerPerms.has(p))
         if (escalated) return res.status(403).json({ error: `No puedes asignar el rol "${rol.nombre}": contiene permiso "${escalated}" que tú no posees.` })
+      }
+      // nivel check: cannot assign a role with nivel >= own nivelMax
+      const callerRoles = await prisma.rol.findMany({ where: { empleados: { some: { id: req.user.sub } }, activo: true }, select: { nivel: true } })
+      const callerNivel = callerRoles.length ? Math.max(...callerRoles.map(r => r.nivel ?? 0)) : 0
+      for (const rol of rolesToAssign) {
+        if ((rol.nivel ?? 0) >= callerNivel) {
+          return res.status(403).json({ error: `No puedes asignar el rol "${rol.nombre}" (nivel ${rol.nivel}): tu nivel máximo es ${callerNivel}.` })
+        }
       }
     }
     const newRoles     = await prisma.rol.findMany({ where: { id: { in: roleIds } } });
@@ -1893,6 +1921,7 @@ const rolSchema = z.object({
   descripcion: z.string().max(200).optional().nullable(),
   permisos:    z.array(z.string()).default([]),
   activo:      z.boolean().default(true),
+  nivel:       z.number().int().min(0).max(100).optional().default(0),
 });
 const rolUpdateSchema = rolSchema.partial();
 
@@ -2700,7 +2729,7 @@ app.get('/api/facturas/:id', verificarJWT, requerirPermiso('factura:ver'), async
 app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   try {
     const { estado, clienteId, limit = '50', offset = '0' } = req.query
-    const where = {}
+    const where = { deletedAt: null }
     if (estado)    where.estado    = estado
     if (clienteId) where.clienteId = clienteId
     const [total, facturas] = await prisma.$transaction([
