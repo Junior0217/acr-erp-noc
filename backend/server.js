@@ -1898,13 +1898,22 @@ app.put('/api/roles/:id', verificarJWT, requerirPermiso('sistema:admin'), async 
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
+    const existing = await prisma.rol.findUnique({ where: { id } });
+    if (!existing) return res.status(404).json({ error: 'Rol no encontrado.' });
+    const existingPerms = Array.isArray(existing.permisos) ? existing.permisos : [];
+    if (existingPerms.includes('sistema:owner') && !req.user?.permisos?.includes('sistema:owner'))
+      return res.status(403).json({ error: 'El rol Owner solo puede ser modificado por el propietario del sistema.' });
     const data = rolUpdateSchema.parse(req.body);
-    const rol  = await prisma.rol.update({ where: { id }, data, include: { _count: { select: { empleados: true } } } });
+    const newPerms = Array.isArray(data.permisos) ? data.permisos : [];
+    if (existingPerms.includes('sistema:owner') && !newPerms.includes('sistema:owner'))
+      return res.status(403).json({ error: 'No se puede remover sistema:owner del rol Owner.' });
+    const rol = await prisma.rol.update({ where: { id }, data, include: { _count: { select: { empleados: true } } } });
     auditReq('admin:rol_actualizado', req, { rolId: id });
     res.json(rol);
   } catch (e) {
     if (e.code === 'P2025') return res.status(404).json({ error: 'Rol no encontrado.' });
     if (e.code === 'P2002') return res.status(409).json({ error: 'Ya existe un rol con ese nombre.' });
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' });
     res.status(400).json({ error: 'Datos inválidos.' });
   }
 });
@@ -1915,6 +1924,9 @@ app.delete('/api/roles/:id', verificarJWT, requerirPermiso('sistema:admin'), asy
   try {
     const rol = await prisma.rol.findUnique({ where: { id }, include: { _count: { select: { empleados: true } } } });
     if (!rol) return res.status(404).json({ error: 'Rol no encontrado.' });
+    const rolPerms = Array.isArray(rol.permisos) ? rol.permisos : [];
+    if (rolPerms.includes('sistema:owner'))
+      return res.status(403).json({ error: 'El rol Owner es inmutable y no puede eliminarse.' });
     if (rol._count.empleados > 0) return res.status(409).json({ error: `No se puede eliminar: ${rol._count.empleados} usuario(s) tienen este rol asignado.` });
     await prisma.rol.delete({ where: { id } });
     auditReq('admin:rol_eliminado', req, { rolId: id, nombre: rol.nombre });
@@ -2225,142 +2237,406 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
   }
 })
 
-// ─── Manual / POS Invoice ────────────────────────────────────────────────────
+// ─── POS / Manual Invoice ─────────────────────────────────────────────────────
 
 const CONSUMIDOR_FINAL_NO = 'CF-0001'
+
+// Compute effective unit price after sequential discounts (% first, then fixed)
+function efectivoUnitario(pu, pct, monto) {
+  const afterPct = pu * (1 - pct / 100)
+  return Math.round(Math.max(0, afterPct - monto) * 100) / 100
+}
+function totalLinea(pu, pct, monto, cant) {
+  return Math.round(efectivoUnitario(pu, pct, monto) * cant * 100) / 100
+}
+
+function formatCarrito(c) {
+  if (!c) return null
+  const lineas = (c.lineas ?? []).map(l => {
+    const pu  = Number(l.precioUnitario)
+    const pct = Number(l.descuentoPorcentaje)
+    const mon = Number(l.descuentoMonto)
+    const eu  = efectivoUnitario(pu, pct, mon)
+    return { ...l, precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon, precioEfectivo: eu, subtotalLinea: Math.round(eu * l.cantidad * 100) / 100 }
+  })
+  const subtotal = Math.round(lineas.reduce((s, l) => s + l.subtotalLinea, 0) * 100) / 100
+  const itbisAmt = c.applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+  return { ...c, lineas, totales: { subtotal, itbis: itbisAmt, total: Math.round((subtotal + itbisAmt) * 100) / 100 } }
+}
+
+const lineaPOSSchema = z.object({
+  productoId:          z.number().int().positive(),
+  cantidad:            z.number().int().positive(),
+  precioUnitario:      z.number().positive().optional(),
+  descuentoPorcentaje: z.number().min(0).max(100).optional().default(0),
+  descuentoMonto:      z.number().min(0).optional().default(0),
+})
 
 const facturaManualSchema = z.object({
   clienteId:    z.string().uuid().optional(),
   itbis:        z.boolean().optional().default(true),
   diasVence:    z.number().int().min(0).max(365).optional().default(30),
   esCotizacion: z.boolean().optional().default(false),
-  lineas: z.array(z.object({
-    productoId:     z.number().int().positive(),
-    cantidad:       z.number().int().positive(),
-    precioUnitario: z.number().positive().optional(),
-  })).min(1, 'Se requiere al menos una línea.'),
+  lineas:       z.array(lineaPOSSchema).min(1, 'Se requiere al menos una línea.'),
 })
+
+// Shared transaction: used by /api/facturas/manual and /api/carrito/checkout
+async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas }) {
+  return prisma.$transaction(async (tx) => {
+    // 1. Resolve client
+    let cliente
+    if (inputClienteId) {
+      cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
+      if (!cliente) throw Object.assign(new Error('Cliente no encontrado.'), { status: 404 })
+    } else {
+      cliente = await tx.cliente.upsert({
+        where:  { noCliente: CONSUMIDOR_FINAL_NO },
+        update: {},
+        create: {
+          noCliente: CONSUMIDOR_FINAL_NO, razonSocial: 'Consumidor Final', nombreContacto: 'Consumidor Final',
+          tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', telefonoPrincipal: '000-000-0000',
+          email: 'consumidor@acr.do', direccion: 'N/A', sector: 'N/A', provincia: 'Santo Domingo',
+          itbis: false, tipoNcf: 'Consumidor Final', activo: true,
+        },
+      })
+    }
+
+    // 2. Load all products in one query
+    const productoIds = [...new Set(lineas.map(l => l.productoId))]
+    const productos = await tx.producto.findMany({
+      where:  { id: { in: productoIds } },
+      select: { id: true, nombre: true, sku: true, stockActual: true, precio: true, tipoItem: true },
+    })
+    const pMap = Object.fromEntries(productos.map(p => [p.id, p]))
+    for (const l of lineas) {
+      if (!pMap[l.productoId]) throw Object.assign(new Error(`Producto ID ${l.productoId} no encontrado.`), { status: 404 })
+    }
+
+    // 3. Stock check — only ARTICULO items, only for real invoices
+    if (!esCotizacion) {
+      const cantPorArticulo = {}
+      for (const l of lineas) {
+        if (pMap[l.productoId].tipoItem !== 'SERVICIO')
+          cantPorArticulo[l.productoId] = (cantPorArticulo[l.productoId] || 0) + l.cantidad
+      }
+      for (const [pid, cant] of Object.entries(cantPorArticulo)) {
+        const p = pMap[Number(pid)]
+        if (p.stockActual < cant)
+          throw Object.assign(new Error(`Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${cant}.`), { status: 400 })
+      }
+    }
+
+    // 4. Build enriched lines + totals (with discounts)
+    const lineasEnriquecidas = lineas.map(l => {
+      const p   = pMap[l.productoId]
+      const pu  = l.precioUnitario ?? Number(p.precio)
+      const pct = l.descuentoPorcentaje ?? 0
+      const mon = l.descuentoMonto ?? 0
+      return { productoId: l.productoId, descripcion: p.nombre, cantidad: l.cantidad,
+               precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon,
+               _tipoItem: p.tipoItem }
+    })
+    const subtotal = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
+    const itbisAmt = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+    const total    = Math.round((subtotal + itbisAmt) * 100) / 100
+
+    let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
+
+    if (esCotizacion) {
+      noFactura = `COT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
+      estado    = 'Borrador'
+    } else {
+      // 5. Smart NCF: PYME/Empresa → Fiscal (B01); else → Consumidor Final (B02)
+      tipoNcf = ['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final'
+      const rows = await tx.$queryRaw`
+        UPDATE "ConfiguracionNCF"
+        SET    "secuenciaActual" = "secuenciaActual" + 1
+        WHERE  "tipoNcf"         = ${tipoNcf}
+          AND  "activo"          = true
+          AND  "secuenciaActual" < "limite"
+          AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
+        RETURNING *
+      `
+      if (!rows || rows.length === 0)
+        throw Object.assign(new Error(`Sin secuencia NCF disponible para "${tipoNcf}". Verifica Configuración NCF.`), { status: 422 })
+      const seq = String(rows[0].secuenciaActual).padStart(8, '0')
+      ncf       = `${rows[0].prefijo}${seq}`
+      noFactura = `FAC${new Date().getFullYear()}${seq}`
+      estado    = 'Emitida'
+    }
+
+    // 6. Create Factura + LineaFactura (nested write)
+    const lineaData = lineasEnriquecidas.map(({ _tipoItem, ...rest }) => rest)
+    const f = await tx.factura.create({
+      data: {
+        noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
+        ncf, tipoNcf, esCotizacion,
+        notas:      esCotizacion ? `Cotización POS — ${lineas.length} línea(s)` : `Factura manual POS — ${lineas.length} línea(s)`,
+        fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
+        lineas:     { createMany: { data: lineaData } },
+      },
+      include: {
+        cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
+        lineas:  { include: { producto: { select: { id: true, nombre: true, sku: true, tipoItem: true } } } },
+      },
+    })
+
+    // 7. Deduct stock + Kardex (ARTICULO only, real invoices only)
+    if (!esCotizacion) {
+      const cantPorArticulo = {}
+      for (const l of lineasEnriquecidas) {
+        if (l._tipoItem !== 'SERVICIO')
+          cantPorArticulo[l.productoId] = (cantPorArticulo[l.productoId] || 0) + l.cantidad
+      }
+      await Promise.all(
+        Object.entries(cantPorArticulo).flatMap(([pid, cant]) => [
+          tx.producto.update({ where: { id: Number(pid) }, data: { stockActual: { decrement: cant } } }),
+          tx.movimientoInventario.create({ data: { productoId: Number(pid), tipo: 'Salida', cantidad: cant } }),
+        ])
+      )
+    }
+    return f
+  })
+}
 
 app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
   try {
-    const { clienteId: inputClienteId, itbis: applyItbis, diasVence, esCotizacion, lineas } = facturaManualSchema.parse(req.body)
-
-    const factura = await prisma.$transaction(async (tx) => {
-      // 1. Resolve client
-      let cliente
-      if (inputClienteId) {
-        cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
-        if (!cliente) throw Object.assign(new Error('Cliente no encontrado.'), { status: 404 })
-      } else {
-        cliente = await tx.cliente.upsert({
-          where:  { noCliente: CONSUMIDOR_FINAL_NO },
-          update: {},
-          create: {
-            noCliente: CONSUMIDOR_FINAL_NO, razonSocial: 'Consumidor Final', nombreContacto: 'Consumidor Final',
-            tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', telefonoPrincipal: '000-000-0000',
-            email: 'consumidor@acr.do', direccion: 'N/A', sector: 'N/A', provincia: 'Santo Domingo',
-            itbis: false, tipoNcf: 'Consumidor Final', activo: true,
-          },
-        })
-      }
-
-      // 2. Load all products in one query (no N+1)
-      const productoIds = [...new Set(lineas.map(l => l.productoId))]
-      const productos = await tx.producto.findMany({
-        where: { id: { in: productoIds } },
-        select: { id: true, nombre: true, sku: true, stockActual: true, precio: true },
-      })
-      const pMap = Object.fromEntries(productos.map(p => [p.id, p]))
-
-      for (const l of lineas) {
-        if (!pMap[l.productoId]) throw Object.assign(new Error(`Producto ID ${l.productoId} no encontrado.`), { status: 404 })
-      }
-
-      // 3. Stock check — only for real invoices, not quotes
-      if (!esCotizacion) {
-        const cantPorProducto = {}
-        for (const l of lineas) cantPorProducto[l.productoId] = (cantPorProducto[l.productoId] || 0) + l.cantidad
-        for (const [pid, cant] of Object.entries(cantPorProducto)) {
-          const p = pMap[Number(pid)]
-          if (p.stockActual < cant)
-            throw Object.assign(new Error(`Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${cant}.`), { status: 400 })
-        }
-      }
-
-      // 4. Build enriched lines + totals
-      const lineasEnriquecidas = lineas.map(l => {
-        const p   = pMap[l.productoId]
-        const pu  = l.precioUnitario ?? Number(p.precio)
-        return { productoId: l.productoId, descripcion: p.nombre, cantidad: l.cantidad, precioUnitario: pu }
-      })
-      const subtotal = Math.round(lineasEnriquecidas.reduce((s, l) => s + l.precioUnitario * l.cantidad, 0) * 100) / 100
-      const itbisAmt = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
-      const total    = Math.round((subtotal + itbisAmt) * 100) / 100
-
-      let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
-
-      if (esCotizacion) {
-        noFactura = `COT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
-        estado    = 'Borrador'
-      } else {
-        // 5. Smart NCF: PYME/Empresa → Fiscal (B01); Residencial/CF → Consumidor Final (B02)
-        tipoNcf = ['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final'
-
-        // 6. Atomic NCF increment (row lock prevents duplicates)
-        const rows = await tx.$queryRaw`
-          UPDATE "ConfiguracionNCF"
-          SET    "secuenciaActual" = "secuenciaActual" + 1
-          WHERE  "tipoNcf"         = ${tipoNcf}
-            AND  "activo"          = true
-            AND  "secuenciaActual" < "limite"
-            AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
-          RETURNING *
-        `
-        if (!rows || rows.length === 0)
-          throw Object.assign(new Error(`Sin secuencia NCF disponible para "${tipoNcf}". Verifica Configuración NCF.`), { status: 422 })
-
-        const seq = String(rows[0].secuenciaActual).padStart(8, '0')
-        ncf       = `${rows[0].prefijo}${seq}`
-        noFactura = `FAC${new Date().getFullYear()}${seq}`
-        estado    = 'Emitida'
-      }
-
-      // 7. Create Factura + LineaFactura in one nested write
-      const f = await tx.factura.create({
-        data: {
-          noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
-          ncf, tipoNcf, esCotizacion,
-          notas:     esCotizacion ? `Cotización POS — ${lineas.length} línea(s)` : `Factura manual POS — ${lineas.length} línea(s)`,
-          fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
-          lineas: { createMany: { data: lineasEnriquecidas } },
-        },
-        include: {
-          cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
-          lineas:  { include: { producto: { select: { id: true, nombre: true, sku: true } } } },
-        },
-      })
-
-      // 8. Deduct stock + Kardex (real invoices only)
-      if (!esCotizacion) {
-        const cantPorProducto = {}
-        for (const l of lineas) cantPorProducto[l.productoId] = (cantPorProducto[l.productoId] || 0) + l.cantidad
-        await Promise.all(
-          Object.entries(cantPorProducto).flatMap(([pid, cant]) => [
-            tx.producto.update({ where: { id: Number(pid) }, data: { stockActual: { decrement: cant } } }),
-            tx.movimientoInventario.create({ data: { productoId: Number(pid), tipo: 'Salida', cantidad: cant } }),
-          ])
-        )
-      }
-
-      return f
-    })
-
+    const { clienteId, itbis: applyItbis, diasVence, esCotizacion, lineas } = facturaManualSchema.parse(req.body)
+    const factura = await procesarFacturaPOS({ inputClienteId: clienteId, applyItbis, diasVence, esCotizacion, lineas })
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:manual', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length })
     res.status(201).json(factura)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
     console.error('[FACTURA MANUAL]', e.message)
     res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error al generar la factura.' })
+  }
+})
+
+// ─── Carrito Temporal (POS) ───────────────────────────────────────────────────
+
+const CARRITO_INCLUDE = {
+  cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, tipoNcf: true, tipoEmpresa: true } },
+  lineas:  { include: { producto: { select: { id: true, nombre: true, sku: true, precio: true, stockActual: true, tipoItem: true } } }, orderBy: { id: 'asc' } },
+}
+
+app.get('/api/carrito', verificarJWT, async (req, res) => {
+  try {
+    let c = await prisma.carritoTemp.findUnique({ where: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
+    if (!c) c = await prisma.carritoTemp.create({ data: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
+    res.json(formatCarrito(c))
+  } catch { res.status(500).json({ error: 'Error al obtener carrito.' }) }
+})
+
+app.patch('/api/carrito', verificarJWT, async (req, res) => {
+  const schema = z.object({
+    clienteId:  z.string().uuid().nullable().optional(),
+    applyItbis: z.boolean().optional(),
+    diasVence:  z.number().int().min(0).max(365).optional(),
+  })
+  try {
+    const data = schema.parse(req.body)
+    const c = await prisma.carritoTemp.upsert({
+      where: { empleadoId: req.user.sub }, update: data,
+      create: { empleadoId: req.user.sub, ...data }, include: CARRITO_INCLUDE,
+    })
+    res.json(formatCarrito(c))
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error al actualizar carrito.' })
+  }
+})
+
+app.post('/api/carrito/item', verificarJWT, async (req, res) => {
+  const schema = z.object({
+    productoId:          z.number().int().positive(),
+    cantidad:            z.number().int().positive().default(1),
+    precioOverride:      z.number().positive().optional(),
+    descuentoPorcentaje: z.number().min(0).max(100).optional().default(0),
+    descuentoMonto:      z.number().min(0).optional().default(0),
+  })
+  try {
+    const { productoId, cantidad, precioOverride, descuentoPorcentaje, descuentoMonto } = schema.parse(req.body)
+    const producto = await prisma.producto.findUnique({ where: { id: productoId }, select: { id: true, precio: true, tipoItem: true } })
+    if (!producto) return res.status(404).json({ error: 'Producto no encontrado.' })
+    const carrito = await prisma.carritoTemp.upsert({ where: { empleadoId: req.user.sub }, update: {}, create: { empleadoId: req.user.sub } })
+    const existing = await prisma.lineaCarrito.findFirst({ where: { carritoId: carrito.id, productoId } })
+    if (existing) {
+      await prisma.lineaCarrito.update({
+        where: { id: existing.id },
+        data: { cantidad: { increment: cantidad }, ...(precioOverride !== undefined ? { precioUnitario: precioOverride } : {}), descuentoPorcentaje, descuentoMonto },
+      })
+    } else {
+      await prisma.lineaCarrito.create({
+        data: { carritoId: carrito.id, productoId, cantidad, precioUnitario: precioOverride ?? Number(producto.precio), descuentoPorcentaje, descuentoMonto },
+      })
+    }
+    const full = await prisma.carritoTemp.findUnique({ where: { id: carrito.id }, include: CARRITO_INCLUDE })
+    res.status(201).json(formatCarrito(full))
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
+    res.status(500).json({ error: 'Error al agregar item.' })
+  }
+})
+
+app.patch('/api/carrito/item/:lineaId', verificarJWT, async (req, res) => {
+  const lineaId = parseInt(req.params.lineaId)
+  if (!lineaId) return res.status(400).json({ error: 'ID inválido.' })
+  const schema = z.object({
+    cantidad:            z.number().int().min(1).optional(),
+    precioUnitario:      z.number().positive().optional(),
+    descuentoPorcentaje: z.number().min(0).max(100).optional(),
+    descuentoMonto:      z.number().min(0).optional(),
+  })
+  try {
+    const data = schema.parse(req.body)
+    const linea = await prisma.lineaCarrito.findUnique({ where: { id: lineaId }, include: { carrito: { select: { empleadoId: true } } } })
+    if (!linea || linea.carrito.empleadoId !== req.user.sub) return res.status(404).json({ error: 'Línea no encontrada.' })
+    await prisma.lineaCarrito.update({ where: { id: lineaId }, data })
+    const full = await prisma.carritoTemp.findUnique({ where: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
+    res.json(formatCarrito(full))
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error al actualizar línea.' })
+  }
+})
+
+app.delete('/api/carrito/item/:lineaId', verificarJWT, async (req, res) => {
+  const lineaId = parseInt(req.params.lineaId)
+  if (!lineaId) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const linea = await prisma.lineaCarrito.findUnique({ where: { id: lineaId }, include: { carrito: { select: { empleadoId: true } } } })
+    if (!linea || linea.carrito.empleadoId !== req.user.sub) return res.status(404).json({ error: 'Línea no encontrada.' })
+    await prisma.lineaCarrito.delete({ where: { id: lineaId } })
+    const full = await prisma.carritoTemp.findUnique({ where: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
+    res.json(formatCarrito(full))
+  } catch { res.status(500).json({ error: 'Error al eliminar línea.' }) }
+})
+
+app.delete('/api/carrito', verificarJWT, async (req, res) => {
+  try {
+    const c = await prisma.carritoTemp.findUnique({ where: { empleadoId: req.user.sub } })
+    if (c) await prisma.lineaCarrito.deleteMany({ where: { carritoId: c.id } })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error al vaciar carrito.' }) }
+})
+
+app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
+  const schema = z.object({ esCotizacion: z.boolean().optional().default(false) })
+  try {
+    const { esCotizacion } = schema.parse(req.body)
+    const carrito = await prisma.carritoTemp.findUnique({
+      where: { empleadoId: req.user.sub },
+      include: { lineas: true },
+    })
+    if (!carrito || carrito.lineas.length === 0) return res.status(400).json({ error: 'Carrito vacío.' })
+    const lineas = carrito.lineas.map(l => ({
+      productoId:          l.productoId,
+      cantidad:            l.cantidad,
+      precioUnitario:      Number(l.precioUnitario),
+      descuentoPorcentaje: Number(l.descuentoPorcentaje),
+      descuentoMonto:      Number(l.descuentoMonto),
+    }))
+    const factura = await procesarFacturaPOS({
+      inputClienteId: carrito.clienteId ?? undefined,
+      applyItbis:     carrito.applyItbis,
+      diasVence:      carrito.diasVence,
+      esCotizacion,
+      lineas,
+    })
+    await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
+    auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
+    res.status(201).json(factura)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    console.error('[CHECKOUT]', e.message)
+    res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error en checkout.' })
+  }
+})
+
+// ─── Cotizaciones ─────────────────────────────────────────────────────────────
+
+app.get('/api/cotizaciones', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+  try {
+    const { clienteId, limit = '20', offset = '0' } = req.query
+    const where = { esCotizacion: true }
+    if (clienteId) where.clienteId = clienteId
+    const [total, data] = await prisma.$transaction([
+      prisma.factura.count({ where }),
+      prisma.factura.findMany({
+        where, orderBy: { createdAt: 'desc' }, take: parseInt(limit), skip: parseInt(offset),
+        include: {
+          cliente: { select: { id: true, razonSocial: true, noCliente: true } },
+          lineas:  { select: { id: true, descripcion: true, cantidad: true, precioUnitario: true, descuentoPorcentaje: true, descuentoMonto: true } },
+        },
+      }),
+    ])
+    res.json({ data, total })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/cotizaciones/:id/revivir', verificarJWT, requerirPermiso('factura:emitir'), async (req, res) => {
+  const schema = z.object({ emitir: z.boolean().optional().default(false) })
+  try {
+    const { emitir } = schema.parse(req.body)
+    const original = await prisma.factura.findUnique({
+      where: { id: req.params.id },
+      include: { cliente: true, lineas: { include: { producto: { select: { id: true, precio: true, stockActual: true, tipoItem: true } } } } },
+    })
+    if (!original || !original.esCotizacion) return res.status(404).json({ error: 'Cotización no encontrada.' })
+    if (original.lineas.some(l => !l.productoId))
+      return res.status(422).json({ error: 'Cotización contiene líneas sin referencia de producto. Recrea manualmente.' })
+
+    // Re-check current prices
+    const productoIds = original.lineas.map(l => l.productoId)
+    const prods = await prisma.producto.findMany({ where: { id: { in: productoIds } }, select: { id: true, nombre: true, precio: true, stockActual: true, tipoItem: true } })
+    const pMap = Object.fromEntries(prods.map(p => [p.id, p]))
+
+    const lineasRevividas = original.lineas.map(l => {
+      const actual = pMap[l.productoId]
+      const precioActual = actual ? Number(actual.precio) : Number(l.precioUnitario)
+      return {
+        productoId:          l.productoId,
+        cantidad:            l.cantidad,
+        precioUnitario:      precioActual,
+        descuentoPorcentaje: Number(l.descuentoPorcentaje ?? 0),
+        descuentoMonto:      Number(l.descuentoMonto ?? 0),
+        _meta: {
+          descripcion:         l.descripcion,
+          precioEnCotizacion:  Number(l.precioUnitario),
+          precioActual,
+          precioActualizado:   actual !== null && precioActual !== Number(l.precioUnitario),
+          stockDisponible:     actual?.stockActual ?? null,
+          tipoItem:            actual?.tipoItem ?? null,
+        },
+      }
+    })
+
+    const sub = Math.round(lineasRevividas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
+    const itb = Number(original.itbis) > 0 ? Math.round(sub * 0.18 * 100) / 100 : 0
+
+    if (!emitir) {
+      return res.json({
+        original:          { id: original.id, noFactura: original.noFactura, createdAt: original.createdAt },
+        lineas:            lineasRevividas,
+        totales:           { subtotal: sub, itbis: itb, total: Math.round((sub + itb) * 100) / 100 },
+        hayActualizaciones: lineasRevividas.some(l => l._meta.precioActualizado),
+      })
+    }
+
+    const lineasParaProcesar = lineasRevividas.map(({ _meta, ...rest }) => rest)
+    const nuevaFactura = await procesarFacturaPOS({
+      inputClienteId: original.clienteId,
+      applyItbis:     Number(original.itbis) > 0,
+      diasVence:      original.fechaVence ? Math.max(0, Math.round((new Date(original.fechaVence) - Date.now()) / 86_400_000)) : 30,
+      esCotizacion:   false,
+      lineas:         lineasParaProcesar,
+    })
+    auditReq('cotizacion:revivir', req, { originalId: original.id, nuevaId: nuevaFactura.id })
+    res.status(201).json({ factura: nuevaFactura, lineas: lineasRevividas })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
+    console.error('[COTIZACION REVIVIR]', e.message)
+    res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error al revivir la cotización.' })
   }
 })
 
