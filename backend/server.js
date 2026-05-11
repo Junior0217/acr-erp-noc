@@ -252,7 +252,10 @@ const empleadoUpdateSchema = z.object({
   cargo:    z.string().max(200).optional(),
   email:    z.string().email().trim().optional(),
   roleIds:  z.array(z.number().int().positive()).optional(),
-  password: passwordSchema.optional(),
+  // Accept strong password OR empty string (= no change). Transform '' → undefined.
+  password: z.union([passwordSchema, z.literal('')])
+              .optional()
+              .transform(v => (v === '' || v == null) ? undefined : v),
 });
 
 const asistenciaSchema = z.object({
@@ -801,8 +804,9 @@ app.put('/api/empleados/:id', verificarJWT, requerirPermiso('rrhh:editar'), prot
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
-    const { roleIds, ...data } = empleadoUpdateSchema.parse(req.body);
+    const { roleIds, password, ...data } = empleadoUpdateSchema.parse(req.body);
     const updateData = { ...data };
+    if (password)             updateData.passwordHash = await bcrypt.hash(password, 12);
     if (roleIds !== undefined) updateData.roles = { set: roleIds.map(rid => ({ id: rid })) };
     const e = await prisma.empleado.update({
       where: { id }, data: updateData,
@@ -810,9 +814,14 @@ app.put('/api/empleados/:id', verificarJWT, requerirPermiso('rrhh:editar'), prot
     });
     res.json(e);
   } catch (e) {
+    if (e instanceof z.ZodError) {
+      console.error('[ZOD ERROR RRHH]', e.errors);
+      return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors });
+    }
     if (e.code === 'P2025') return res.status(404).json({ error: 'Empleado no encontrado.' });
     if (e.code === 'P2002') return res.status(409).json({ error: 'El email ya está registrado.' });
-    res.status(400).json({ error: 'Datos inválidos.' });
+    console.error('[EMPLEADO PUT ERROR]', e.message);
+    res.status(500).json({ error: 'Error al actualizar empleado.' });
   }
 });
 
