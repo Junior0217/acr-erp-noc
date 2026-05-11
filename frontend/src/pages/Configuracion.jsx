@@ -147,11 +147,13 @@ function PermMatrixHybrid({ permisosExtra, setPermisosExtra, permGroups, inherit
 }
 
 function PanelRol({ rol, permGroups, onUpdated }) {
+  const { user: me }  = useAuth()
   const isNew = !rol
   const [nombre,      setNombre]      = useState(rol?.nombre ?? '')
   const [descripcion, setDescripcion] = useState(rol?.descripcion ?? '')
   const [permisos,    setPermisos]    = useState(Array.isArray(rol?.permisos) ? rol.permisos : [])
   const [activo,      setActivo]      = useState(rol?.activo ?? true)
+  const [nivel,       setNivel]       = useState(rol?.nivel ?? 0)
   const [saving,      setSaving]      = useState(false)
   const [deleting,    setDeleting]    = useState(false)
 
@@ -160,15 +162,24 @@ function PanelRol({ rol, permGroups, onUpdated }) {
     setDescripcion(rol?.descripcion ?? '')
     setPermisos(Array.isArray(rol?.permisos) ? rol.permisos : [])
     setActivo(rol?.activo ?? true)
+    setNivel(rol?.nivel ?? 0)
   }, [rol])
+
+  const isOwner    = me?.permisos?.includes('sistema:owner')
+  const myNivelMax = me?.nivelMax ?? 0
+  const nivelMax   = isOwner ? 100 : Math.max(0, myNivelMax - 1)
 
   async function guardar() {
     if (!nombre.trim()) { toast.error('El nombre del rol es obligatorio.'); return }
+    const nivelVal = Math.min(Math.max(0, parseInt(nivel) || 0), 100)
+    if (!isOwner && nivelVal >= myNivelMax) {
+      toast.error(`Nivel máximo permitido para ti: ${myNivelMax - 1}.`); return
+    }
     setSaving(true)
     try {
       const method = isNew ? 'POST' : 'PUT'
       const url    = isNew ? '/api/roles' : `/api/roles/${rol.id}`
-      const r = await apiFetch(url, { method, body: JSON.stringify({ nombre: nombre.trim(), descripcion: descripcion.trim() || null, permisos, activo }) })
+      const r = await apiFetch(url, { method, body: JSON.stringify({ nombre: nombre.trim(), descripcion: descripcion.trim() || null, permisos, activo, nivel: nivelVal }) })
       if (r.ok) { toast.success(isNew ? 'Rol creado.' : 'Rol actualizado.'); onUpdated() }
       else toast.error((await r.json()).error)
     } catch { toast.error('Error de conexión') }
@@ -199,6 +210,30 @@ function PanelRol({ rol, permGroups, onUpdated }) {
           <input value={descripcion} onChange={e => setDescripcion(e.target.value)} placeholder="Opcional"
             className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors" />
         </div>
+      </div>
+
+      <div>
+        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
+          Nivel de Privilegio (0 – {nivelMax})
+        </label>
+        <div className="flex items-center gap-3">
+          <input
+            type="range" min={0} max={nivelMax} step={1}
+            value={Math.min(nivel, nivelMax)}
+            onChange={e => setNivel(parseInt(e.target.value))}
+            className="flex-1 accent-blue-500 h-1.5"
+          />
+          <input
+            type="number" min={0} max={nivelMax} step={1}
+            value={Math.min(nivel, nivelMax)}
+            onChange={e => setNivel(Math.min(nivelMax, Math.max(0, parseInt(e.target.value) || 0)))}
+            className="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-slate-100 text-center focus:outline-none focus:border-blue-500 transition-colors"
+          />
+        </div>
+        <p className="text-[10px] text-slate-600 mt-1 font-mono">
+          {nivel === 0 ? 'Sin privilegio especial' : nivel < 50 ? 'Operativo' : nivel < 80 ? 'Supervisor' : nivel < 100 ? 'Administrador' : 'Propietario'}
+          {!isOwner && ` · máx. permitido: ${nivelMax}`}
+        </p>
       </div>
 
       {!isNew && (
@@ -1019,14 +1054,24 @@ export default function Configuracion() {
             {loading && roles.length === 0
               ? <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-blue-500" /></div>
               : <div className="divide-y divide-slate-800">
-                  {roles.map(r => (
+                  {[...roles].sort((a, b) => (b.nivel ?? 0) - (a.nivel ?? 0)).map(r => (
                     <button key={r.id} onClick={() => { setSelRol(r); setNewRolMode(false) }}
                       className={`w-full text-left px-4 py-3 transition-colors hover:bg-slate-800/60 ${
                         !newRolMode && selRol?.id === r.id ? 'bg-blue-600/10 border-r-2 border-blue-500' : ''
                       }`}>
                       <div className="flex items-center gap-1.5">
-                        <p className={`text-sm font-medium leading-tight ${!newRolMode && selRol?.id === r.id ? 'text-blue-300' : 'text-slate-200'}`}>{r.nombre}</p>
-                        {!r.activo && <span className="text-[10px] text-slate-600 font-mono ml-1">(inactivo)</span>}
+                        <p className={`text-sm font-medium leading-tight flex-1 min-w-0 truncate ${!newRolMode && selRol?.id === r.id ? 'text-blue-300' : 'text-slate-200'}`}>{r.nombre}</p>
+                        {r.nivel > 0 && (
+                          <span className={`text-[9px] font-mono px-1.5 py-0.5 rounded flex-shrink-0 ${
+                            r.nivel >= 100 ? 'bg-amber-600/20 text-amber-400' :
+                            r.nivel >= 80  ? 'bg-blue-600/20 text-blue-400' :
+                            r.nivel >= 50  ? 'bg-indigo-600/20 text-indigo-400' :
+                            'bg-slate-700 text-slate-500'
+                          }`}>
+                            niv.{r.nivel}
+                          </span>
+                        )}
+                        {!r.activo && <span className="text-[10px] text-slate-600 font-mono">(off)</span>}
                       </div>
                       <p className="text-[10px] text-slate-600 mt-0.5 font-mono">
                         {Array.isArray(r.permisos) ? r.permisos.length : 0} permisos

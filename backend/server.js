@@ -1935,9 +1935,19 @@ app.get('/api/roles', verificarJWT, async (req, res) => {
   } catch { res.status(500).json({ error: 'Error al obtener roles.' }); }
 });
 
+async function callerNivelMax(userId) {
+  const roles = await prisma.rol.findMany({ where: { empleados: { some: { id: userId } }, activo: true }, select: { nivel: true } });
+  return roles.length ? Math.max(...roles.map(r => r.nivel ?? 0)) : 0;
+}
+
 app.post('/api/roles', verificarJWT, requerirPermiso('sistema:admin'), async (req, res) => {
   try {
     const data = rolSchema.parse(req.body);
+    if (!req.user.permisos?.includes('sistema:owner')) {
+      const myNivel = await callerNivelMax(req.user.sub);
+      if ((data.nivel ?? 0) >= myNivel)
+        return res.status(403).json({ error: `No puedes crear un rol con nivel ${data.nivel}: tu nivel máximo es ${myNivel}.` });
+    }
     const rol  = await prisma.rol.create({ data, include: { _count: { select: { empleados: true } } } });
     auditReq('admin:rol_creado', req, { rolId: rol.id, nombre: rol.nombre });
     res.status(201).json(rol);
@@ -1957,6 +1967,11 @@ app.put('/api/roles/:id', verificarJWT, requerirPermiso('sistema:admin'), async 
     if (existingPerms.includes('sistema:owner') && !req.user?.permisos?.includes('sistema:owner'))
       return res.status(403).json({ error: 'El rol Owner solo puede ser modificado por el propietario del sistema.' });
     const data = rolUpdateSchema.parse(req.body);
+    if (!req.user.permisos?.includes('sistema:owner') && data.nivel !== undefined) {
+      const myNivel = await callerNivelMax(req.user.sub);
+      if (data.nivel >= myNivel)
+        return res.status(403).json({ error: `No puedes asignar nivel ${data.nivel}: tu nivel máximo es ${myNivel}.` });
+    }
     const newPerms = Array.isArray(data.permisos) ? data.permisos : [];
     if (existingPerms.includes('sistema:owner') && !newPerms.includes('sistema:owner'))
       return res.status(403).json({ error: 'No se puede remover sistema:owner del rol Owner.' });
