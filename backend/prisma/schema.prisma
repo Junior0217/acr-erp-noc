@@ -60,6 +60,11 @@ enum EstadoFactura {
   Anulada
 }
 
+enum TipoItem {
+  ARTICULO
+  SERVICIO
+}
+
 // ─── RRHH ─────────────────────────────────────────────────────────────────────
 
 model Rol {
@@ -93,6 +98,7 @@ model Empleado {
   ordenesTrabajo OrdenTrabajo[]
   sessions       SessionToken[]
   roles          Rol[]
+  carritoTemp    CarritoTemp?
 
   @@index([nombre])
 }
@@ -136,16 +142,19 @@ model Producto {
   precio           Decimal                @db.Decimal(12, 2)
   stockActual      Int                    @default(0)
   categoriaId      Int
+  tipoItem         TipoItem               @default(ARTICULO)
   categoria        Categoria              @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
   movimientos      MovimientoInventario[]
   plantillaEquipos PlantillaEquipo[]
   detallesOrden    DetalleOrden[]
   lineasOrden      LineaOrdenTrabajo[]
   lineasFactura    LineaFactura[]
+  lineasCarrito    LineaCarrito[]
 
   @@index([categoriaId])
   @@index([nombre])
   @@index([stockActual])
+  @@index([tipoItem])
 }
 
 model MovimientoInventario {
@@ -232,6 +241,7 @@ model Cliente {
   servicios      Servicio[]
   ordenesTrabajo OrdenTrabajo[]
   facturas       Factura[]
+  carritosTemp   CarritoTemp[]
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -386,6 +396,7 @@ model ItemCatalogo {
   costo       Decimal             @default(0) @db.Decimal(12, 2)
   stock       Int?
   activo      Boolean             @default(true)
+  tipoItem    TipoItem            @default(SERVICIO)
   lineas      LineaOrdenTrabajo[]
   createdAt   DateTime            @default(now())
   updatedAt   DateTime            @updatedAt
@@ -393,6 +404,7 @@ model ItemCatalogo {
   @@index([tipo])
   @@index([categoria])
   @@index([activo])
+  @@index([tipoItem])
 }
 
 model OrdenTrabajo {
@@ -476,10 +488,12 @@ model LineaFactura {
   facturaId      String
   productoId     Int?
   descripcion    String
-  cantidad       Int
-  precioUnitario Decimal   @db.Decimal(12, 2)
-  factura        Factura   @relation(fields: [facturaId], references: [id], onDelete: Cascade)
-  producto       Producto? @relation(fields: [productoId], references: [id], onDelete: Restrict)
+  cantidad            Int
+  precioUnitario      Decimal   @db.Decimal(12, 2)
+  descuentoPorcentaje Decimal   @default(0) @db.Decimal(5, 2)
+  descuentoMonto      Decimal   @default(0) @db.Decimal(12, 2)
+  factura             Factura   @relation(fields: [facturaId], references: [id], onDelete: Cascade)
+  producto            Producto? @relation(fields: [productoId], references: [id], onDelete: Restrict)
 
   @@index([facturaId])
 }
@@ -495,4 +509,36 @@ model ConfiguracionNCF {
   activo          Boolean   @default(true)
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt
+}
+
+// ─── Carrito Temporal (POS) ───────────────────────────────────────────────────
+
+model CarritoTemp {
+  id         String         @id @default(uuid())
+  empleadoId Int            @unique
+  clienteId  String?
+  applyItbis Boolean        @default(false)
+  diasVence  Int            @default(30)
+  empleado   Empleado       @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+  cliente    Cliente?       @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+  lineas     LineaCarrito[]
+  createdAt  DateTime       @default(now())
+  updatedAt  DateTime       @updatedAt
+
+  @@index([empleadoId])
+  @@index([clienteId])
+}
+
+model LineaCarrito {
+  id                  Int         @id @default(autoincrement())
+  carritoId           String
+  productoId          Int
+  cantidad            Int         @default(1)
+  precioUnitario      Decimal     @db.Decimal(12, 2)
+  descuentoPorcentaje Decimal     @default(0) @db.Decimal(5, 2)
+  descuentoMonto      Decimal     @default(0) @db.Decimal(12, 2)
+  carrito             CarritoTemp @relation(fields: [carritoId], references: [id], onDelete: Cascade)
+  producto            Producto    @relation(fields: [productoId], references: [id], onDelete: Restrict)
+
+  @@index([carritoId])
 }
