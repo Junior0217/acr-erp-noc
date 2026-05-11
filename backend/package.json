@@ -11,6 +11,7 @@
   "type": "commonjs",
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "prisma": "^6.19.3",
     "bcryptjs": "^3.0.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.6",
@@ -29,9 +30,7 @@
     "qrcode": "^1.5.4",
     "zod": "^4.4.3"
   },
-  "devDependencies": {
-    "prisma": "^6.19.3"
-  },
+  "devDependencies": {},
   "engines": {
     "node": ">=20"
   },
