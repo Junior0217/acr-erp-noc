@@ -1918,6 +1918,108 @@ app.post('/api/ordenes', verificarJWT, requerirPermiso('ot:crear'), async (req, 
   }
 })
 
+// ─── Facturas ────────────────────────────────────────────────────────────────
+
+app.post('/api/facturas', verificarJWT, requerirPermiso('factura:emitir'), async (req, res) => {
+  const { ordenId } = req.body
+  if (!ordenId) return res.status(400).json({ error: 'ordenId requerido.' })
+  try {
+    const factura = await prisma.$transaction(async (tx) => {
+      // 1. OT + líneas + cliente
+      const ot = await tx.ordenTrabajo.findUnique({
+        where:   { id: ordenId },
+        include: { cliente: true, lineas: true, facturas: { select: { id: true } } },
+      })
+      if (!ot)                      throw Object.assign(new Error('Orden no encontrada.'),        { status: 404 })
+      if (ot.facturas.length > 0)   throw Object.assign(new Error('Esta orden ya tiene factura.'), { status: 409 })
+      if (ot.estado === 'Cancelada') throw Object.assign(new Error('No se puede facturar una OT cancelada.'), { status: 422 })
+
+      // 2. Tipo NCF del cliente
+      const tipoNcf = ot.cliente.tipoNcf ?? 'B02'
+
+      // 3. UPDATE atómico — acquire exclusive row lock, increment counter
+      const rows = await tx.$queryRaw`
+        UPDATE "ConfiguracionNCF"
+        SET    "secuenciaActual" = "secuenciaActual" + 1
+        WHERE  "tipoNcf"         = ${tipoNcf}
+          AND  "activo"          = true
+          AND  "secuenciaActual" < "limite"
+          AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
+        RETURNING *
+      `
+      if (!rows || rows.length === 0)
+        throw Object.assign(
+          new Error(`Sin secuencia NCF disponible para tipo "${tipoNcf}". Verifica la configuración.`),
+          { status: 422 }
+        )
+
+      // 4. NCF + noFactura (tied to same atomic sequence — guaranteed unique)
+      const seq       = String(rows[0].secuenciaActual).padStart(8, '0')
+      const ncf       = `${rows[0].prefijo}${seq}`
+      const noFactura = `FAC${new Date().getFullYear()}${seq}`
+
+      // 5. Cálculo de totales
+      const subtotal = ot.lineas.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0)
+      const itbis    = ot.cliente.itbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+      const total    = Math.round((subtotal + itbis) * 100) / 100
+
+      // 6. Crear Factura en estado Emitida
+      const f = await tx.factura.create({
+        data: {
+          noFactura,
+          clienteId:  ot.clienteId,
+          ordenId:    ot.id,
+          estado:     'Emitida',
+          subtotal,
+          itbis,
+          total,
+          ncf,
+          tipoNcf,
+          fechaVence: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+        },
+      })
+
+      // 7. Marcar OT como Completada
+      await tx.ordenTrabajo.update({
+        where: { id: ordenId },
+        data:  { estado: 'Completada', completadaEn: new Date() },
+      })
+
+      return f
+    })
+
+    auditReq('factura:emitir', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
+    res.status(201).json(factura)
+  } catch (e) {
+    const status = e.status ?? 500
+    const msg    = e.status ? e.message : 'Error al generar la factura.'
+    res.status(status).json({ error: msg })
+  }
+})
+
+app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+  try {
+    const { estado, clienteId, limit = '50', offset = '0' } = req.query
+    const where = {}
+    if (estado)    where.estado    = estado
+    if (clienteId) where.clienteId = clienteId
+    const [total, facturas] = await prisma.$transaction([
+      prisma.factura.count({ where }),
+      prisma.factura.findMany({
+        where,
+        include: {
+          cliente: { select: { id: true, razonSocial: true, noCliente: true } },
+          orden:   { select: { id: true, tipoOT: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: parseInt(limit),
+        skip: parseInt(offset),
+      }),
+    ])
+    res.json({ data: facturas, total })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
 // ─── Server ───────────────────────────────────────────────────────────────────
 
 app.use((err, req, res, next) => {

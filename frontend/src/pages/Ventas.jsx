@@ -797,8 +797,11 @@ function NuevaOTModal({ onClose, onSaved, clienteIdInit, clienteNombreInit }) {
 // ── OT: Panel principal ───────────────────────────────────────────────────────
 
 function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
+  const { tienePermiso }                   = useAuth()
+  const canBill                            = tienePermiso('factura:emitir')
   const [ordenes,       setOrdenes]       = useState([])
   const [loading,       setLoading]       = useState(false)
+  const [billing,       setBilling]       = useState(null)
   const [showModal,     setShowModal]     = useState(!!clienteIdInit)
   const [filtroEstado,  setFiltroEstado]  = useState('')
   const [filtroTipo,    setFiltroTipo]    = useState('')
@@ -816,6 +819,19 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
   }, [filtroEstado, filtroTipo])
 
   useEffect(() => { fetchOrdenes() }, [fetchOrdenes])
+
+  async function facturarOT(ot) {
+    if (!window.confirm(`¿Facturar la OT de "${ot.cliente?.razonSocial}"?\nEsto generará el NCF y marcará la OT como Completada.`)) return
+    setBilling(ot.id)
+    try {
+      const r = await apiFetch('/api/facturas', { method: 'POST', body: JSON.stringify({ ordenId: ot.id }) })
+      const j = await r.json()
+      if (!r.ok) { toast.error(j.error ?? 'Error al facturar.'); return }
+      toast.success(`Factura emitida · NCF ${j.ncf}`)
+      fetchOrdenes()
+    } catch { toast.error('Error de conexión.') }
+    finally { setBilling(null) }
+  }
 
   return (
     <div className="space-y-4">
@@ -856,15 +872,16 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
                 <th className={TH}>Items</th>
                 <th className={TH}>Total</th>
                 <th className={TH}>Fecha</th>
+                {canBill && <th className="px-4 py-3" />}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={7} className="text-center py-12">
+                <tr><td colSpan={7 + (canBill ? 1 : 0)} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : ordenes.length === 0 ? (
-                <tr><td colSpan={7} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={7 + (canBill ? 1 : 0)} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay órdenes de trabajo.
                 </td></tr>
               ) : ordenes.map(ot => {
@@ -891,6 +908,23 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
                     <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                       {formatDate(ot.createdAt)}
                     </td>
+                    {canBill && (
+                      <td className="px-4 py-3 text-right whitespace-nowrap">
+                        {['Pendiente', 'EnProceso'].includes(ot.estado) && (ot._count?.facturas ?? 0) === 0 ? (
+                          <button
+                            onClick={() => facturarOT(ot)}
+                            disabled={billing === ot.id}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-400 text-xs font-semibold transition-all disabled:opacity-40">
+                            {billing === ot.id
+                              ? <Loader2 size={12} className="animate-spin" />
+                              : <FileText size={12} />}
+                            Facturar
+                          </button>
+                        ) : (ot._count?.facturas ?? 0) > 0 ? (
+                          <span className="text-[10px] font-mono text-slate-600 px-2">Facturada</span>
+                        ) : null}
+                      </td>
+                    )}
                   </tr>
                 )
               })}
@@ -912,6 +946,136 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
           onSaved={() => { setShowModal(false); fetchOrdenes() }}
         />
       )}
+    </div>
+  )
+}
+
+// ── Panel de Facturas ─────────────────────────────────────────────────────────
+
+const FACTURA_ESTADOS = ['Borrador', 'Emitida', 'Pagada', 'Vencida', 'Anulada']
+
+const FACTURA_ESTADO_COLORS = {
+  Borrador: { text: 'text-slate-400',   bg: 'bg-slate-500/15',   border: 'border-slate-500/30'   },
+  Emitida:  { text: 'text-blue-400',    bg: 'bg-blue-500/15',    border: 'border-blue-500/30'    },
+  Pagada:   { text: 'text-emerald-400', bg: 'bg-emerald-500/15', border: 'border-emerald-500/30' },
+  Vencida:  { text: 'text-red-400',     bg: 'bg-red-500/15',     border: 'border-red-500/30'     },
+  Anulada:  { text: 'text-slate-600',   bg: 'bg-slate-700/20',   border: 'border-slate-700/30'   },
+}
+
+function FacturaEstadoBadge({ estado }) {
+  const c = FACTURA_ESTADO_COLORS[estado] ?? FACTURA_ESTADO_COLORS.Borrador
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${c.text} ${c.bg} ${c.border}`}>
+      {estado}
+    </span>
+  )
+}
+
+function PanelFacturas() {
+  const [facturas,      setFacturas]      = useState([])
+  const [loading,       setLoading]       = useState(false)
+  const [filtroEstado,  setFiltroEstado]  = useState('')
+
+  const fetchFacturas = useCallback(async () => {
+    setLoading(true)
+    try {
+      const p = new URLSearchParams()
+      if (filtroEstado) p.set('estado', filtroEstado)
+      const r = await apiFetch(`/api/facturas?${p}`)
+      if (r.ok) { const j = await r.json(); setFacturas(j.data ?? []) }
+    } catch {}
+    finally { setLoading(false) }
+  }, [filtroEstado])
+
+  useEffect(() => { fetchFacturas() }, [fetchFacturas])
+
+  const totalEmitidas = facturas
+    .filter(f => f.estado === 'Emitida' || f.estado === 'Pagada')
+    .reduce((s, f) => s + Number(f.total), 0)
+
+  return (
+    <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3 justify-between">
+        <div className="flex gap-2 flex-wrap">
+          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
+            <option value="">Todos los estados</option>
+            {FACTURA_ESTADOS.map(e => <option key={e} value={e}>{e}</option>)}
+          </select>
+          <button onClick={fetchFacturas}
+            className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
+        {facturas.length > 0 && (
+          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/10 border border-emerald-600/20">
+            <DollarSign size={13} className="text-emerald-500" />
+            <span className="text-sm font-mono font-bold text-emerald-400">{formatCurrency(totalEmitidas)}</span>
+            <span className="text-[10px] text-slate-600">emitido / cobrado</span>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl overflow-hidden">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-slate-700/70 bg-slate-800/60">
+                <th className={TH}>No. Factura</th>
+                <th className={TH}>NCF</th>
+                <th className={TH}>Cliente</th>
+                <th className={TH}>Tipo OT</th>
+                <th className={TH}>Subtotal</th>
+                <th className={TH}>ITBIS</th>
+                <th className={TH}>Total</th>
+                <th className={TH}>Estado</th>
+                <th className={TH}>Emisión</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {loading ? (
+                <tr><td colSpan={9} className="text-center py-12">
+                  <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
+                </td></tr>
+              ) : facturas.length === 0 ? (
+                <tr><td colSpan={9} className="text-center py-12 text-slate-500 text-xs font-mono">
+                  No hay facturas emitidas aún.
+                </td></tr>
+              ) : facturas.map(f => (
+                <tr key={f.id} className="hover:bg-slate-800/50 transition-colors">
+                  <td className="px-4 py-3 font-mono text-xs text-slate-300 whitespace-nowrap">{f.noFactura}</td>
+                  <td className="px-4 py-3">
+                    {f.ncf
+                      ? <span className="font-mono text-xs text-blue-300 bg-blue-600/10 border border-blue-600/20 px-2 py-0.5 rounded">{f.ncf}</span>
+                      : <span className="text-slate-700 font-mono text-xs">—</span>}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="font-medium text-slate-100 truncate max-w-[160px]">{f.cliente?.razonSocial ?? '—'}</div>
+                    <div className="text-[10px] text-slate-500 font-mono">{f.cliente?.noCliente}</div>
+                  </td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {f.orden?.tipoOT
+                      ? <OtTipoBadge tipo={f.orden.tipoOT} />
+                      : <span className="text-slate-700 text-xs">—</span>}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{formatCurrency(f.subtotal)}</td>
+                  <td className="px-4 py-3 font-mono text-xs whitespace-nowrap">
+                    {Number(f.itbis) > 0
+                      ? <span className="text-amber-400">{formatCurrency(f.itbis)}</span>
+                      : <span className="text-slate-700">—</span>}
+                  </td>
+                  <td className="px-4 py-3 font-mono text-sm text-emerald-400 font-bold whitespace-nowrap">{formatCurrency(f.total)}</td>
+                  <td className="px-4 py-3 whitespace-nowrap"><FacturaEstadoBadge estado={f.estado} /></td>
+                  <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(f.fechaEmision)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 py-2.5 border-t border-slate-700/50">
+          <p className="text-xs text-slate-600 font-mono">{facturas.length} factura{facturas.length !== 1 ? 's' : ''}</p>
+        </div>
+      </div>
     </div>
   )
 }
@@ -1132,10 +1296,8 @@ export default function Ventas() {
         />
       )}
 
-      {/* ── Facturas (stub) ────────────────────────────────────────────────────── */}
-      {tab === 'facturas' && (
-        <ComingSoon title="Facturación" desc="NCF · ITBIS 18% · DGII · Recurrente vs Única" />
-      )}
+      {/* ── Facturas ───────────────────────────────────────────────────────────── */}
+      {tab === 'facturas' && <PanelFacturas />}
 
       {/* ── Config NCF ─────────────────────────────────────────────────────────── */}
       {tab === 'ncf' && <PanelNCF />}
