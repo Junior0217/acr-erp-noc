@@ -716,9 +716,9 @@ function SesionesActivas() {
                           Actual
                         </span>
                       )}
-                      {s.ip && (
+                      {formatIP(s.ip) && (
                         <span className="flex items-center gap-0.5 text-[10px] text-slate-600 font-mono flex-shrink-0">
-                          <MapPin size={9} />{s.ip}
+                          <MapPin size={9} />{formatIP(s.ip)}
                         </span>
                       )}
                     </div>
@@ -750,6 +750,12 @@ function parseUA(ua) {
   if (/mac/i.test(ua)) return 'Mac'
   if (/linux/i.test(ua)) return 'Linux'
   return 'Navegador'
+}
+
+function formatIP(ip) {
+  if (!ip) return null
+  if (ip === '::1' || ip === '127.0.0.1') return 'Localhost'
+  return ip
 }
 
 function PanelSesionesGlobales() {
@@ -833,9 +839,9 @@ function PanelSesionesGlobales() {
                                 Tu sesión
                               </span>
                             )}
-                            {s.ip && (
+                            {formatIP(s.ip) && (
                               <span className="flex items-center gap-0.5 text-[10px] text-slate-500 font-mono">
-                                <MapPin size={9} />{s.ip}
+                                <MapPin size={9} />{formatIP(s.ip)}
                               </span>
                             )}
                           </div>

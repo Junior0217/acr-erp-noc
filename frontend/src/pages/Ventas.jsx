@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 import {
   Package, ClipboardList, FileText, Settings2, Plus, Search, Pencil,
-  Loader2, Save, X, CheckCircle, XCircle, ShieldOff, Trash2,
+  Loader2, Save, X, CheckCircle, XCircle,
   RefreshCw, AlertCircle,
 } from 'lucide-react'
 import { apiFetch } from '../utils/api'
