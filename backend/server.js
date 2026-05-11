@@ -122,6 +122,13 @@ const totpLimiter = rateLimit({
   skipSuccessfulRequests: true,
 });
 
+const billingLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 5,
+  keyGenerator: (req) => req.user?.sub ? `billing:${req.user.sub}` : req.ip,
+  message: { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
+});
+
 app.use(express.json());
 
 // ─── CSRF Double-Submit Cookie ────────────────────────────────────────────────
@@ -1525,6 +1532,8 @@ app.patch('/api/ordenes/:id/completar', async (req, res) => {
 app.get('/api/dashboard', verificarJWT, async (req, res) => {
   try {
     if (dashCache && Date.now() < dashCacheExp) return res.json(dashCache);
+    const now = new Date()
+    const inicioMes = new Date(now.getFullYear(), now.getMonth(), 1)
     const [
       activos, pendientes, enInstalacion, suspendidos, cancelados,
       ordenesPendientes,
@@ -1532,6 +1541,11 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       totalClientes, clientesActivos,
       totalTecnicos,
       ingresosMensuales,
+      facturacionMes,
+      cobradoMes,
+      facturasVencidas,
+      otsPendientes,
+      otsEnProceso,
     ] = await Promise.all([
       prisma.servicio.count({ where: { estado: 'Activo'         } }),
       prisma.servicio.count({ where: { estado: 'Pendiente'      } }),
@@ -1548,6 +1562,20 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       prisma.cliente.count({ where: { activo: true } }),
       prisma.empleado.count(),
       prisma.servicio.aggregate({ where: { estado: 'Activo' }, _sum: { precioMensual: true } }),
+      prisma.factura.aggregate({
+        where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
+        _sum: { total: true }, _count: { id: true },
+      }),
+      prisma.factura.aggregate({
+        where: { estado: 'Pagada', fechaPago: { gte: inicioMes } },
+        _sum: { total: true },
+      }),
+      prisma.factura.aggregate({
+        where: { estado: 'Vencida' },
+        _sum: { total: true }, _count: { id: true },
+      }),
+      prisma.ordenTrabajo.count({ where: { estado: 'Pendiente' } }),
+      prisma.ordenTrabajo.count({ where: { estado: 'EnProceso' } }),
     ]);
     dashCache = {
       servicios: { activos, pendientes, enInstalacion, suspendidos, cancelados },
@@ -1556,6 +1584,15 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       ingresosMensualesEstimados: Number(ingresosMensuales._sum.precioMensual ?? 0),
       clientes: { total: totalClientes, activos: clientesActivos },
       tecnicos: totalTecnicos,
+      billing: {
+        facturadoMes:    Number(facturacionMes._sum.total    ?? 0),
+        facturasEmitidasMes: facturacionMes._count.id        ?? 0,
+        cobradoMes:      Number(cobradoMes._sum.total        ?? 0),
+        vencidasCount:   facturasVencidas._count.id          ?? 0,
+        vencidasMonto:   Number(facturasVencidas._sum.total  ?? 0),
+        otsPendientes,
+        otsEnProceso,
+      },
     };
     dashCacheExp = Date.now() + 60_000;
     res.json(dashCache);
@@ -1894,7 +1931,7 @@ app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-app.post('/api/ordenes', verificarJWT, requerirPermiso('ot:crear'), async (req, res) => {
+app.post('/api/ordenes', verificarJWT, billingLimiter, requerirPermiso('ot:crear'), async (req, res) => {
   try {
     const { lineas, ...otData } = ordenTrabajoSchema.parse(req.body)
     const orden = await prisma.$transaction(async (tx) => {
@@ -1920,7 +1957,7 @@ app.post('/api/ordenes', verificarJWT, requerirPermiso('ot:crear'), async (req, 
 
 // ─── Facturas ────────────────────────────────────────────────────────────────
 
-app.post('/api/facturas', verificarJWT, requerirPermiso('factura:emitir'), async (req, res) => {
+app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
   const { ordenId } = req.body
   if (!ordenId) return res.status(400).json({ error: 'ordenId requerido.' })
   try {
@@ -2020,7 +2057,7 @@ app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (re
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-app.patch('/api/facturas/:id/estado', verificarJWT, requerirPermiso('factura:editar'), async (req, res) => {
+app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPermiso('factura:editar'), async (req, res) => {
   try {
     const { estado } = req.body
     const allowed = ['Pagada', 'Anulada', 'Vencida']

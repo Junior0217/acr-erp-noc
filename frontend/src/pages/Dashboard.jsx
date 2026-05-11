@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, Package, ClipboardList, Wifi, DollarSign, AlertTriangle, Wrench, TrendingUp, Loader2, RefreshCw } from 'lucide-react'
+import { Users, Package, ClipboardList, Wifi, DollarSign, AlertTriangle, Wrench, TrendingUp, Loader2, RefreshCw, Receipt, CheckCircle, XCircle, Hammer } from 'lucide-react'
 import { apiFetch } from '../utils/api'
 const fmt = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 0 })
 const fmtMoney = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
@@ -9,6 +9,8 @@ const ACCENT = {
   blue:    { bg: 'bg-blue-600/10',    border: 'border-blue-600/30',    icon: 'text-blue-400',    badge: 'bg-blue-600/20 text-blue-300'    },
   amber:   { bg: 'bg-amber-600/10',   border: 'border-amber-600/30',   icon: 'text-amber-400',   badge: 'bg-amber-600/20 text-amber-300'   },
   cyan:    { bg: 'bg-cyan-600/10',    border: 'border-cyan-600/30',    icon: 'text-cyan-400',    badge: 'bg-cyan-600/20 text-cyan-300'    },
+  violet:  { bg: 'bg-violet-600/10', border: 'border-violet-600/30',  icon: 'text-violet-400',  badge: 'bg-violet-600/20 text-violet-300' },
+  red:     { bg: 'bg-red-600/10',    border: 'border-red-600/30',     icon: 'text-red-400',     badge: 'bg-red-600/20 text-red-300'      },
 }
 
 const ESTADO_COLOR = {
@@ -46,10 +48,41 @@ export default function Dashboard() {
   }
 
   const kpis = data ? [
-    { label: 'Servicios Activos',          value: fmt(data.servicios.activos),                  delta: null,     Icon: Wifi,          accent: 'emerald' },
-    { label: 'Ingresos Estimados (RD$)',   value: `${fmtMoney(data.ingresosMensualesEstimados)}`, delta: '/mes',  Icon: DollarSign,    accent: 'blue'    },
-    { label: 'Órdenes Pendientes',         value: fmt(data.ordenesPendientes),                  delta: null,     Icon: ClipboardList, accent: 'amber'   },
-    { label: 'Clientes Activos',           value: fmt(data.clientes.activos),                   delta: `/ ${fmt(data.clientes.total)} total`, Icon: Users, accent: 'cyan' },
+    { label: 'Servicios Activos',          value: fmt(data.servicios.activos),                    delta: null,      Icon: Wifi,          accent: 'emerald' },
+    { label: 'Ingresos Estimados (RD$)',   value: fmtMoney(data.ingresosMensualesEstimados),       delta: '/mes',    Icon: DollarSign,    accent: 'blue'    },
+    { label: 'Órdenes Pendientes',         value: fmt(data.ordenesPendientes),                    delta: null,      Icon: ClipboardList, accent: 'amber'   },
+    { label: 'Clientes Activos',           value: fmt(data.clientes.activos),                     delta: `/ ${fmt(data.clientes.total)} total`, Icon: Users, accent: 'cyan' },
+  ] : []
+
+  const billingKpis = data?.billing ? [
+    {
+      label:  'Facturado este mes',
+      value:  fmtMoney(data.billing.facturadoMes),
+      delta:  `${fmt(data.billing.facturasEmitidasMes)} facturas`,
+      Icon:   Receipt,
+      accent: 'blue',
+    },
+    {
+      label:  'Cobrado este mes',
+      value:  fmtMoney(data.billing.cobradoMes),
+      delta:  'Pagadas',
+      Icon:   CheckCircle,
+      accent: 'emerald',
+    },
+    {
+      label:  'Facturas Vencidas',
+      value:  fmt(data.billing.vencidasCount),
+      delta:  data.billing.vencidasCount > 0 ? `RD$ ${fmtMoney(data.billing.vencidasMonto)}` : null,
+      Icon:   XCircle,
+      accent: data.billing.vencidasCount > 0 ? 'red' : 'cyan',
+    },
+    {
+      label:  'OTs Activas',
+      value:  fmt(data.billing.otsEnProceso),
+      delta:  `${fmt(data.billing.otsPendientes)} pendientes`,
+      Icon:   Hammer,
+      accent: 'violet',
+    },
   ] : []
 
   const totalServicios = data ? Object.values(data.servicios).reduce((a, b) => a + b, 0) : 0
@@ -92,6 +125,30 @@ export default function Dashboard() {
           )
         })}
       </div>
+
+      {/* Billing KPI Cards */}
+      {billingKpis.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {billingKpis.map(({ label, value, delta, Icon, accent }) => {
+            const c = ACCENT[accent]
+            return (
+              <div key={label} className={`rounded-lg border ${c.border} ${c.bg} p-5 flex flex-col gap-4 relative overflow-hidden`}>
+                <div className="flex items-start justify-between">
+                  <p className="text-xs font-mono text-slate-400 uppercase tracking-widest leading-tight">{label}</p>
+                  <div className={`w-8 h-8 rounded-md flex items-center justify-center ${c.bg} border ${c.border}`}>
+                    <Icon size={15} className={c.icon} />
+                  </div>
+                </div>
+                <div className="flex items-end justify-between">
+                  <span className="text-2xl font-bold text-slate-100 tracking-tight tabular-nums">{value}</span>
+                  {delta && <span className={`text-xs font-mono px-2 py-0.5 rounded ${c.badge}`}>{delta}</span>}
+                </div>
+                <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-transparent via-current to-transparent opacity-20" />
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Distribución de Servicios */}

@@ -460,6 +460,8 @@ model Factura {
   @@index([estado])
   @@index([fechaEmision])
   @@index([ncf])
+  @@index([clienteId, fechaEmision])
+  @@index([estado, fechaEmision])
 }
 
 model ConfiguracionNCF {
