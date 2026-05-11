@@ -475,6 +475,22 @@ function completarLogin(empleado, req, res, rememberMe = false) {
   })
 }
 
+// ─── Health Check ─────────────────────────────────────────────────────────────
+
+app.get('/api/health', async (req, res) => {
+  let dbConnected = false;
+  try {
+    await prisma.$queryRaw`SELECT 1`;
+    dbConnected = true;
+  } catch (_) {}
+  res.json({
+    status:    'ok',
+    version:   '3.0.0-HARD-RESET',
+    timestamp: Date.now(),
+    dbConnected,
+  });
+});
+
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
 const generateKeyPairAsync = util.promisify(crypto.generateKeyPair);
