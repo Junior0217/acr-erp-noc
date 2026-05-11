@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { setCsrfToken } from '../utils/api'
 
 const BASE = import.meta.env.VITE_API_URL || ''
 const AuthContext = createContext(null)
@@ -9,10 +10,25 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     fetch(`${BASE}/api/auth/me`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : null)
-      .then(u => setUser(u))
+      .then(async u => {
+        setUser(u)
+        if (u) {
+          // Restore in-memory CSRF token after hard reload.
+          // /api/auth/csrf reads the csrf cookie server-side and echoes it —
+          // works cross-origin because the browser sends the cookie even though
+          // document.cookie cannot read third-party cookies (CHIPS / ITP).
+          try {
+            const cr = await fetch(`${BASE}/api/auth/csrf`, { credentials: 'include' })
+            if (cr.ok) {
+              const { csrfToken } = await cr.json()
+              setCsrfToken(csrfToken)
+            }
+          } catch {}
+        }
+      })
       .catch(() => setUser(null))
 
-    const handler = () => setUser(null)
+    const handler = () => { setUser(null); setCsrfToken(null) }
     window.addEventListener('auth:logout', handler)
     return () => window.removeEventListener('auth:logout', handler)
   }, [])
@@ -37,9 +53,10 @@ export function AuthProvider({ children }) {
     const json = await r.json()
     if (!r.ok) throw new Error(json.error ?? 'Error al iniciar sesión')
 
-    // 2FA required — return signal to Login.jsx without setting user
+    // 2FA required — token not yet issued, csrf comes after TOTP step
     if (json.requires2FA) return json
 
+    setCsrfToken(json.csrfToken ?? null)
     setUser(json)
     return json
   }
@@ -52,6 +69,7 @@ export function AuthProvider({ children }) {
     })
     const json = await r.json()
     if (!r.ok) throw new Error(json.error ?? 'PIN inválido')
+    setCsrfToken(json.csrfToken ?? null)
     setUser(json)
     return json
   }
@@ -60,6 +78,7 @@ export function AuthProvider({ children }) {
     try {
       await fetch(`${BASE}/api/auth/logout`, { method: 'POST', credentials: 'include' })
     } catch {}
+    setCsrfToken(null)
     setUser(null)
   }
 

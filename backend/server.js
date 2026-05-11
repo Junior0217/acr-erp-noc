@@ -163,7 +163,8 @@ const corsOptions = {
     cb(new Error(`CORS: origen no permitido → ${origin}`))
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token'],
+  allowedHeaders:  ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token'],
+  exposedHeaders:  ['X-CSRF-Token'],
   credentials: true,
   optionsSuccessStatus: 200,
 };
@@ -468,7 +469,8 @@ function completarLogin(empleado, req, res, rememberMe = false) {
     }
     res.cookie('csrf',  csrf,  { ...cookieBase, httpOnly: false })
     res.cookie('token', token, { ...cookieBase, httpOnly: true, signed: true })
-    return { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos }
+    res.setHeader('X-CSRF-Token', csrf)
+    return { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos, csrfToken: csrf }
   })
 }
 
@@ -576,6 +578,15 @@ app.get('/api/auth/me', verificarJWT, async (req, res) => {
 
 app.get('/api/auth/permissions', verificarJWT, (req, res) => {
   res.json(PERMISSIONS_MAP);
+});
+
+// Returns the csrf token from the server-side cookie — safe for cross-origin clients
+// that cannot read third-party cookies via document.cookie (CHIPS / ITP).
+// The browser sends the cookie; the server echoes it in the JSON body.
+app.get('/api/auth/csrf', (req, res) => {
+  const token = req.cookies?.csrf
+  if (!token) return res.status(401).json({ error: 'No session.' })
+  res.json({ csrfToken: token })
 });
 
 app.post('/api/auth/logout', verificarJWT, async (req, res) => {
