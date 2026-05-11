@@ -74,6 +74,13 @@ export function AuthProvider({ children }) {
     return json
   }
 
+  async function refreshUser() {
+    try {
+      const r = await fetch(`${BASE}/api/auth/me`, { credentials: 'include' })
+      if (r.ok) setUser(await r.json())
+    } catch {}
+  }
+
   async function logout() {
     try {
       await fetch(`${BASE}/api/auth/logout`, { method: 'POST', credentials: 'include' })
@@ -90,7 +97,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, login, logout, verifyTOTP, tienePermiso }}>
+    <AuthContext.Provider value={{ user, login, logout, verifyTOTP, tienePermiso, refreshUser }}>
       {children}
     </AuthContext.Provider>
   )

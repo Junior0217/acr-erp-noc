@@ -446,7 +446,7 @@ async function protegerPropietario(req, res, next) {
 
 // ─── Auth Helpers ─────────────────────────────────────────────────────────────
 
-function completarLogin(empleado, req, res, rememberMe = false) {
+function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = false) {
   const jti       = crypto.randomUUID()
   const ua        = req.headers['user-agent'] || ''
   const ip        = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
@@ -458,7 +458,8 @@ function completarLogin(empleado, req, res, rememberMe = false) {
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
       ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
     ])]
-    const jwtStr = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua }, process.env.JWT_SECRET, { expiresIn: jwtTTL })
+    const jwtPayload = { sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua, ...(needs2FASetup ? { needs2FASetup: true } : {}) }
+    const jwtStr = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: jwtTTL })
     const token  = wrapJWT(jwtStr)
     const csrf    = crypto.randomBytes(32).toString('hex')
     const isProd  = process.env.NODE_ENV === 'production'
@@ -471,7 +472,9 @@ function completarLogin(empleado, req, res, rememberMe = false) {
     res.cookie('csrf',  csrf,  { ...cookieBase, httpOnly: false })
     res.cookie('token', token, { ...cookieBase, httpOnly: true, signed: true })
     res.setHeader('X-CSRF-Token', csrf)
-    return { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos, csrfToken: csrf }
+    const response = { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos, csrfToken: csrf }
+    if (needs2FASetup) response.needs2FASetup = true
+    return response
   })
 }
 
@@ -551,11 +554,12 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Credenciales inválidas.' });
     }
 
-    // Block login if any active role mandates 2FA but the employee hasn't configured it yet
+    // If role mandates 2FA but user hasn't set it up yet → allow login, flag setup required
     const requires2FAByRole = empleado.roles.some(r => r.require2FA)
     if (requires2FAByRole && !empleado.twoFactorEnabled) {
-      auditReq('auth:2fa_required_blocked', req, { email }, { userId: empleado.id, userName: empleado.nombre })
-      return res.status(403).json({ error: 'Tu rol requiere autenticación de 2 pasos. Por favor, contacta al administrador para configurarlo.' })
+      auditReq('auth:login_success', req, { email: empleado.email, needs2FASetup: true }, { userId: empleado.id, userName: empleado.nombre })
+      const payload = await completarLogin(empleado, req, res, rememberMe, true)
+      return res.json(payload)
     }
 
     // Detect suspicious IP (new location vs last known)
@@ -589,7 +593,10 @@ app.get('/api/auth/me', verificarJWT, async (req, res) => {
   try {
     const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorEnabled: true } })
     const permisos = Array.isArray(req.user.permisos) ? req.user.permisos : []
-    res.json({ id: req.user.sub, nombre: req.user.nombre, permisos, twoFactorEnabled: emp?.twoFactorEnabled ?? false })
+    const needs2FASetup = req.user.needs2FASetup === true && !emp?.twoFactorEnabled
+    const out = { id: req.user.sub, nombre: req.user.nombre, permisos, twoFactorEnabled: emp?.twoFactorEnabled ?? false }
+    if (needs2FASetup) out.needs2FASetup = true
+    res.json(out)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 

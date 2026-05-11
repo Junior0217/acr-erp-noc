@@ -3,13 +3,132 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, ShoppingCart, PackageSearch, Boxes, BookOpen,
   Users, Handshake, Globe, BarChart2, Settings, Menu, X, ChevronRight,
-  Zap, Wrench, AlertTriangle, ClipboardList, LogOut,
+  Zap, Wrench, AlertTriangle, ClipboardList, LogOut, ShieldCheck, Loader2,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useOfflineStatus } from '../hooks/useOfflineStatus'
 import CarritoSlideOver from '../components/CarritoSlideOver'
+
+function Setup2FAModal() {
+  const { refreshUser } = useAuth()
+  const [qrCode, setQrCode]   = useState(null)
+  const [secret, setSecret]   = useState('')
+  const [pin, setPin]         = useState('')
+  const [err, setErr]         = useState('')
+  const [busy, setBusy]       = useState(false)
+  const [step, setStep]       = useState('loading') // loading | qr | error
+
+  useEffect(() => {
+    apiFetch('/api/auth/2fa/setup')
+      .then(r => r.json())
+      .then(d => { setQrCode(d.qrCode); setSecret(d.secret); setStep('qr') })
+      .catch(() => setStep('error'))
+  }, [])
+
+  async function handleEnable(e) {
+    e.preventDefault()
+    if (pin.length !== 6) return
+    setBusy(true)
+    setErr('')
+    try {
+      const r = await apiFetch('/api/auth/2fa/enable', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ totp: pin }),
+      })
+      if (!r.ok) {
+        const j = await r.json()
+        setErr(j.error ?? 'PIN inválido.')
+        setPin('')
+        return
+      }
+      await refreshUser()
+    } catch {
+      setErr('Error de red. Intenta de nuevo.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md">
+      <div className="bg-slate-900 border border-blue-700/40 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+        <div className="bg-gradient-to-r from-blue-900/40 to-slate-900 px-6 py-5 border-b border-slate-800 flex items-center gap-3">
+          <ShieldCheck size={22} className="text-blue-400 flex-shrink-0" />
+          <div>
+            <h2 className="text-base font-semibold text-slate-100">Configura tu Autenticación de 2 Pasos</h2>
+            <p className="text-xs text-slate-400 mt-0.5">Tu rol de Propietario requiere 2FA. Hazlo ahora para continuar.</p>
+          </div>
+        </div>
+
+        <div className="px-6 py-6 space-y-5">
+          {step === 'loading' && (
+            <div className="flex items-center justify-center py-8 gap-2 text-slate-400">
+              <Loader2 size={20} className="animate-spin" />
+              <span className="text-sm">Generando código QR…</span>
+            </div>
+          )}
+
+          {step === 'error' && (
+            <div className="text-center py-6 text-red-400 text-sm">
+              Error generando el QR. Recarga la página e intenta de nuevo.
+            </div>
+          )}
+
+          {step === 'qr' && (
+            <>
+              <div className="space-y-2">
+                <p className="text-xs text-slate-400">
+                  <span className="font-semibold text-slate-300">Paso 1:</span> Escanea este código con <span className="text-blue-400">Google Authenticator</span> o <span className="text-blue-400">Authy</span>.
+                </p>
+                <div className="flex justify-center">
+                  <div className="bg-white p-2 rounded-lg">
+                    <img src={qrCode} alt="QR 2FA" className="w-44 h-44" />
+                  </div>
+                </div>
+                <details className="text-center">
+                  <summary className="text-[11px] text-slate-600 cursor-pointer hover:text-slate-400 transition-colors">
+                    ¿No puedes escanear? Ver clave manual
+                  </summary>
+                  <code className="block mt-2 text-[11px] text-blue-300 bg-slate-800 rounded px-3 py-2 font-mono tracking-widest break-all">
+                    {secret}
+                  </code>
+                </details>
+              </div>
+
+              <form onSubmit={handleEnable} className="space-y-3">
+                <p className="text-xs text-slate-400">
+                  <span className="font-semibold text-slate-300">Paso 2:</span> Ingresa el PIN de 6 dígitos que muestra tu app para confirmar.
+                </p>
+                <input
+                  type="text"
+                  inputMode="numeric"
+                  maxLength={6}
+                  placeholder="000000"
+                  value={pin}
+                  onChange={e => { setPin(e.target.value.replace(/\D/g, '')); setErr('') }}
+                  className="w-full text-center text-2xl font-mono tracking-[0.5em] bg-slate-800 border border-slate-700 focus:border-blue-500 focus:outline-none rounded-lg px-4 py-3 text-slate-100 placeholder-slate-600 transition-colors"
+                  autoFocus
+                />
+                {err && <p className="text-xs text-red-400 text-center">{err}</p>}
+                <button
+                  type="submit"
+                  disabled={pin.length !== 6 || busy}
+                  className="w-full flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 disabled:cursor-not-allowed text-white font-semibold rounded-lg py-2.5 text-sm transition-colors"
+                >
+                  {busy ? <Loader2 size={16} className="animate-spin" /> : <ShieldCheck size={16} />}
+                  {busy ? 'Verificando…' : 'Activar 2FA y Continuar'}
+                </button>
+              </form>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function useNocAlerts() {
   const [alerts, setAlerts] = useState({ stockCritico: 0, ordenesPendientes: 0 })
@@ -97,6 +216,7 @@ export default function AdminLayout() {
   const alerts    = useNocAlerts()
   const offline   = useOfflineStatus()
   const { user, logout } = useAuth()
+  const needs2FASetup = user?.needs2FASetup === true
   const { totalItems, setOpen: openCart } = useCart()
   const navigate  = useNavigate()
 
@@ -186,6 +306,7 @@ export default function AdminLayout() {
       </div>
 
       <CarritoSlideOver />
+      {needs2FASetup && <Setup2FAModal />}
     </div>
   )
 }
