@@ -40,6 +40,8 @@ export default defineConfig({
         ],
       },
       workbox: {
+        // Raise limit to 5 MB — logo-acr-eslogan.png is 4.38 MB
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         // Cache all build artifacts
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         // Runtime caching strategy for API calls
