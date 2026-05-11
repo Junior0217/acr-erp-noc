@@ -67,7 +67,7 @@ function ComingSoon({ title, desc }) {
   )
 }
 
-function ItemModal({ item, onClose, onSaved }) {
+function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
   const empty = { nombre: '', descripcion: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', activo: true }
   const [form, setForm] = useState(
     item
@@ -90,7 +90,7 @@ function ItemModal({ item, onClose, onSaved }) {
         tipo:        form.tipo,
         categoria:   form.categoria,
         precio:      parseFloat(form.precio),
-        costo:       parseFloat(form.costo) || 0,
+        ...(canSeeCosts ? { costo: parseFloat(form.costo) || 0 } : {}),
         stock:       form.tipo === 'VentaUnica' && form.stock !== '' ? parseInt(form.stock) : null,
         activo:      form.activo,
       }
@@ -148,19 +148,21 @@ function ItemModal({ item, onClose, onSaved }) {
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className={`grid gap-3 ${canSeeCosts ? 'grid-cols-2' : 'grid-cols-1'}`}>
             <div>
               <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Precio (DOP) *</label>
               <input type="number" min="0" step="0.01" value={form.precio} onChange={e => set('precio', e.target.value)}
                 placeholder="0.00"
                 className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors" />
             </div>
-            <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Costo (DOP)</label>
-              <input type="number" min="0" step="0.01" value={form.costo} onChange={e => set('costo', e.target.value)}
-                placeholder="0.00"
-                className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors" />
-            </div>
+            {canSeeCosts && (
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Costo (DOP)</label>
+                <input type="number" min="0" step="0.01" value={form.costo} onChange={e => set('costo', e.target.value)}
+                  placeholder="0.00"
+                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors" />
+              </div>
+            )}
           </div>
 
           {form.tipo === 'VentaUnica' && (
@@ -322,7 +324,8 @@ function PanelNCF() {
 export default function Ventas() {
   const [searchParams] = useSearchParams()
   const { tienePermiso } = useAuth()
-  const canEdit = tienePermiso('ventas:editar')
+  const canEdit = tienePermiso('catalogo:editar')
+  const canSeeCosts = tienePermiso('catalogo:ver_costos')
 
   const [tab,             setTab]             = useState('catalogo')
   const [items,           setItems]           = useState([])
@@ -355,7 +358,7 @@ export default function Ventas() {
     try {
       const r = await apiFetch(`/api/catalogo/${item.id}`, {
         method: 'PUT',
-        body: JSON.stringify({ ...item, precio: Number(item.precio), costo: Number(item.costo), activo: !item.activo }),
+        body: JSON.stringify({ ...item, precio: Number(item.precio), costo: Number(item.costo) || 0, activo: !item.activo }),
       })
       if (r.ok) { toast.success(`Item ${!item.activo ? 'activado' : 'desactivado'}.`); fetchCatalogo() }
       else toast.error((await r.json()).error)
@@ -437,8 +440,8 @@ export default function Ventas() {
                     <th className={TH}>Tipo</th>
                     <th className={TH}>Categoría</th>
                     <th className={TH}>Precio</th>
-                    <th className={TH}>Costo</th>
-                    <th className={TH}>Margen</th>
+                    {canSeeCosts && <th className={TH}>Costo</th>}
+                    {canSeeCosts && <th className={TH}>Margen</th>}
                     <th className={TH}>Stock</th>
                     <th className={TH}>Estado</th>
                     {canEdit && <th className="px-4 py-3" />}
@@ -446,11 +449,11 @@ export default function Ventas() {
                 </thead>
                 <tbody className="divide-y divide-slate-800/80">
                   {loading ? (
-                    <tr><td colSpan={9} className="text-center py-12">
+                    <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + (canEdit ? 1 : 0)} className="text-center py-12">
                       <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                     </td></tr>
                   ) : items.length === 0 ? (
-                    <tr><td colSpan={9} className="text-center py-12 text-slate-500 text-xs font-mono">
+                    <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + (canEdit ? 1 : 0)} className="text-center py-12 text-slate-500 text-xs font-mono">
                       No hay items en el catálogo.
                     </td></tr>
                   ) : items.map(item => {
@@ -468,12 +471,14 @@ export default function Ventas() {
                         <td className="px-4 py-3 whitespace-nowrap"><TipoBadge tipo={item.tipo} /></td>
                         <td className="px-4 py-3 whitespace-nowrap"><CatBadge cat={item.categoria} /></td>
                         <td className="px-4 py-3 font-mono text-sm text-emerald-400 whitespace-nowrap">{formatCurrency(precio)}</td>
-                        <td className="px-4 py-3 font-mono text-sm text-slate-500 whitespace-nowrap">{formatCurrency(costo)}</td>
-                        <td className="px-4 py-3 whitespace-nowrap">
-                          <span className={`text-xs font-mono font-bold ${margen >= 30 ? 'text-emerald-400' : margen >= 10 ? 'text-amber-400' : 'text-red-400'}`}>
-                            {margen}%
-                          </span>
-                        </td>
+                        {canSeeCosts && <td className="px-4 py-3 font-mono text-sm text-slate-500 whitespace-nowrap">{formatCurrency(costo)}</td>}
+                        {canSeeCosts && (
+                          <td className="px-4 py-3 whitespace-nowrap">
+                            <span className={`text-xs font-mono font-bold ${margen >= 30 ? 'text-emerald-400' : margen >= 10 ? 'text-amber-400' : 'text-red-400'}`}>
+                              {margen}%
+                            </span>
+                          </td>
+                        )}
                         <td className="px-4 py-3 text-xs font-mono whitespace-nowrap">
                           {item.stock != null
                             ? <span className={item.stock <= 0 ? 'text-red-400 font-semibold' : 'text-slate-300'}>{item.stock}</span>
@@ -512,7 +517,7 @@ export default function Ventas() {
             </div>
             <div className="px-4 py-2.5 border-t border-slate-700/50 flex items-center justify-between">
               <p className="text-xs text-slate-600 font-mono">{items.length} item{items.length !== 1 ? 's' : ''}</p>
-              <p className="text-[10px] text-slate-700 font-mono">Margen: verde ≥30% · ámbar ≥10% · rojo &lt;10%</p>
+              {canSeeCosts && <p className="text-[10px] text-slate-700 font-mono">Margen: verde ≥30% · ámbar ≥10% · rojo &lt;10%</p>}
             </div>
           </div>
         </div>
@@ -535,6 +540,7 @@ export default function Ventas() {
       {modalItem !== null && (
         <ItemModal
           item={modalItem === false ? null : modalItem}
+          canSeeCosts={canSeeCosts}
           onClose={() => setModalItem(null)}
           onSaved={() => { setModalItem(null); fetchCatalogo() }}
         />

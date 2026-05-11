@@ -1755,7 +1755,7 @@ const itemCatalogoSchema = z.object({
   tipo:        z.enum(['Recurrente', 'VentaUnica', 'Servicio']),
   categoria:   z.enum(['WISP', 'CCTV', 'Redes', 'CercoElectrico', 'VentaDirecta', 'Mixto', 'SoporteTecnico', 'Reparacion', 'ProyectoCCTV']),
   precio:      z.number().min(0),
-  costo:       z.number().min(0).default(0),
+  costo:       z.number().min(0).optional().default(0),
   stock:       z.number().int().optional().nullable(),
   activo:      z.boolean().default(true),
 })
@@ -1769,11 +1769,14 @@ app.get('/api/catalogo', verificarJWT, async (req, res) => {
     if (activo !== undefined && activo !== '') where.activo = activo === 'true'
     if (search) where.nombre = { contains: search, mode: 'insensitive' }
     const items = await prisma.itemCatalogo.findMany({ where, orderBy: [{ categoria: 'asc' }, { nombre: 'asc' }] })
-    res.json({ data: items })
+    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    const canSeeCosts = permisos.includes('sistema:owner') || permisos.includes('catalogo:ver_costos')
+    const data = canSeeCosts ? items : items.map(({ costo, ...rest }) => rest)
+    res.json({ data })
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-app.post('/api/catalogo', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+app.post('/api/catalogo', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = itemCatalogoSchema.parse(req.body)
     const item = await prisma.itemCatalogo.create({ data })
@@ -1784,9 +1787,15 @@ app.post('/api/catalogo', verificarJWT, requerirPermiso('ventas:editar'), async 
   }
 })
 
-app.put('/api/catalogo/:id', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+app.put('/api/catalogo/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = itemCatalogoSchema.parse(req.body)
+    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    const canSeeCosts = permisos.includes('sistema:owner') || permisos.includes('catalogo:ver_costos')
+    if (!canSeeCosts) {
+      const existing = await prisma.itemCatalogo.findUnique({ where: { id: req.params.id }, select: { costo: true } })
+      if (existing) data.costo = Number(existing.costo)
+    }
     const item = await prisma.itemCatalogo.update({ where: { id: req.params.id }, data })
     res.json(item)
   } catch (e) {
@@ -1795,7 +1804,7 @@ app.put('/api/catalogo/:id', verificarJWT, requerirPermiso('ventas:editar'), asy
   }
 })
 
-app.delete('/api/catalogo/:id', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+app.delete('/api/catalogo/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const count = await prisma.lineaOrdenTrabajo.count({ where: { itemCatalogoId: req.params.id } })
     if (count > 0) return res.status(409).json({ error: 'Item en uso en órdenes. Desactívalo en su lugar.' })
