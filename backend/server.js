@@ -146,20 +146,17 @@ const app = express();
 app.use(helmet());
 app.use(cookieParser(process.env.COOKIE_SECRET));
 
-const DEV_ORIGINS    = ['http://localhost:5173', 'http://127.0.0.1:5173']
-const PROD_ORIGINS   = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
-const CORS_WILDCARD  = PROD_ORIGINS.includes('*')
+const DEV_ORIGINS     = ['http://localhost:5173', 'http://127.0.0.1:5173']
+const PROD_ORIGINS    = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
+const CORS_WILDCARD   = PROD_ORIGINS.includes('*') || PROD_ORIGINS.length === 0  // open if not configured
 const ALLOWED_ORIGINS = new Set([...DEV_ORIGINS, ...PROD_ORIGINS.filter(o => o !== '*')])
 
 const corsOptions = {
   origin: (origin, cb) => {
-    // No origin = same-origin request or non-browser (curl, Render health-check) — always allow
     if (!origin) return cb(null, true)
-    // Wildcard mode: reflect the actual origin so credentials cookies still work
-    // (Access-Control-Allow-Origin: * is invalid with credentials: true per CORS spec)
     if (CORS_WILDCARD) return cb(null, true)
     if (ALLOWED_ORIGINS.has(origin)) return cb(null, true)
-    console.log(`[DEBUG CORS] Origin: ${origin} | Allowed: ${[...ALLOWED_ORIGINS].join(', ')}`)
+    console.warn(`[CORS BLOCKED] ${origin}. Set CORS_ORIGIN env var on Render.`)
     cb(new Error(`CORS: origen no permitido → ${origin}`))
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
