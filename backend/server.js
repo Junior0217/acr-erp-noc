@@ -471,7 +471,18 @@ app.get('/api/auth/challenge', async (req, res) => {
     const cid = crypto.randomUUID();
     challengeStore.set(cid, { privateKey, exp: Date.now() + 120_000 });
     res.json({ cid, publicKey: Buffer.from(publicKey).toString('base64') });
-  } catch { res.status(500).json({ error: 'Error generando challenge.' }); }
+  } catch (error) {
+    console.error('[CHALLENGE ERROR]', {
+      message: error.message,
+      code:    error.code,
+      stack:   error.stack,
+    });
+    res.status(500).json({
+      error:   'Error generando challenge.',
+      detail:  error.message,
+      code:    error.code ?? null,
+    });
+  }
 });
 
 const loginSchema = z.object({
@@ -2490,5 +2501,30 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Error interno del servidor.' });
 });
 
+// ─── Startup checks ───────────────────────────────────────────────────────────
+const REQUIRED_ENV = ['JWT_SECRET', 'COOKIE_SECRET', 'DATABASE_URL'];
+for (const key of REQUIRED_ENV) {
+  if (!process.env[key]) {
+    console.error(`CRITICAL: ${key} is missing — server cannot start safely.`);
+    process.exit(1);
+  }
+}
+
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`Servidor ERP seguro corriendo en el puerto ${PORT}`));
+
+async function startServer() {
+  try {
+    await prisma.$connect();
+    console.log('[DB] Prisma connected to Supabase successfully.');
+  } catch (err) {
+    console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);
+    process.exit(1);
+  }
+
+  app.listen(PORT, () => {
+    console.log(`[SERVER] ERP backend running on port ${PORT}`);
+    console.log(`[ENV] NODE_ENV=${process.env.NODE_ENV ?? 'development'} | CORS=${[...ALLOWED_ORIGINS].join(', ')}`);
+  });
+}
+
+startServer();
