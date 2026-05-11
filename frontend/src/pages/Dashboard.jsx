@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Users, Package, ClipboardList, Wifi, DollarSign, AlertTriangle, Wrench, TrendingUp, Loader2, RefreshCw, Receipt, CheckCircle, XCircle, Hammer } from 'lucide-react'
+import { Users, Package, ClipboardList, Wifi, DollarSign, AlertTriangle, Wrench, TrendingUp, Loader2, RefreshCw, Receipt, CheckCircle, XCircle, Hammer, BellRing } from 'lucide-react'
 import { apiFetch } from '../utils/api'
 const fmt = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 0 })
 const fmtMoney = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
@@ -103,6 +103,25 @@ export default function Dashboard() {
           {ts ? ts.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }) : 'Actualizar'}
         </button>
       </div>
+
+      {/* NCF Alert Banner */}
+      {data?.ncfAlerts?.length > 0 && (
+        <div className="flex flex-col gap-2">
+          {data.ncfAlerts.map(a => (
+            <div key={a.tipoNcf} className="flex items-center gap-3 px-4 py-3 rounded-xl bg-red-900/30 border border-red-600/50 text-red-300">
+              <BellRing size={16} className="text-red-400 flex-shrink-0 animate-pulse" />
+              <p className="text-sm font-semibold">
+                <span className="font-mono text-red-200">{a.tipoNcf}</span>
+                {' '}— Secuencia NCF al{' '}
+                <span className="text-red-100 font-bold">{a.pct}%</span>
+                {'. Solo quedan '}
+                <span className="text-red-100 font-bold">{a.restantes.toLocaleString()}</span>
+                {' comprobantes. Solicita un nuevo rango a la DGII urgente.'}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* KPI Cards */}
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">

@@ -400,13 +400,14 @@ model OrdenTrabajo {
   estado        String              @default("Pendiente")
   notasTecnicas String?
   metadatos     Json                @default("{}")
-  latitud       String?
-  longitud      String?
-  macAddress    String?
-  ipAsignada    String?
-  diaCorte      Int?
-  garantiaDias  Int?
-  completadaEn  DateTime?
+  latitud         String?
+  longitud        String?
+  macAddress      String?
+  ipAsignada      String?
+  diaCorte        Int?
+  garantiaDias    Int?
+  completadaEn    DateTime?
+  estaFacturada   Boolean  @default(false)
   cliente       Cliente             @relation(fields: [clienteId], references: [id], onDelete: Restrict)
   tecnico       Empleado?           @relation(fields: [tecnicoId], references: [id], onDelete: SetNull)
   lineas        LineaOrdenTrabajo[]

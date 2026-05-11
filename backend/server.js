@@ -13,7 +13,47 @@ const { authenticator } = require('otplib');
 const QRCode       = require('qrcode');
 const cron         = require('node-cron');
 const PDFDocument  = require('pdfkit');
+const nodemailer   = require('nodemailer');
 const PERMISSIONS_MAP = require('./shared/permissions.map.js');
+
+// ─── Sentry (descomenta en producción: npm install @sentry/node) ──────────────
+// const Sentry = require('@sentry/node')
+// Sentry.init({
+//   dsn: process.env.SENTRY_DSN,
+//   environment: process.env.NODE_ENV || 'development',
+//   tracesSampleRate: 0.1,
+// })
+
+// ─── Email (nodemailer) ───────────────────────────────────────────────────────
+
+const emailTransporter = nodemailer.createTransport({
+  host:   process.env.SMTP_HOST   || 'smtp.gmail.com',
+  port:   parseInt(process.env.SMTP_PORT || '587'),
+  secure: process.env.SMTP_SECURE === 'true',
+  auth: {
+    user: process.env.SMTP_USER || '',
+    pass: process.env.SMTP_PASS || '',
+  },
+})
+
+async function sendFacturaPDF(factura, pdfBuffer) {
+  if (!process.env.SMTP_USER || !factura.cliente?.email) return
+  try {
+    await emailTransporter.sendMail({
+      from:        `"ACR Networks" <${process.env.SMTP_USER}>`,
+      to:          factura.cliente.email,
+      subject:     `Factura ${factura.noFactura} — ACR Networks & Solutions`,
+      html: `<p>Estimado/a <strong>${factura.cliente.razonSocial}</strong>,</p>
+             <p>Adjuntamos su factura <strong>${factura.noFactura}</strong> (NCF: ${factura.ncf}) por un total de <strong>RD$ ${Number(factura.total).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</strong>.</p>
+             <p>Fecha de vencimiento: ${factura.fechaVence ? new Date(factura.fechaVence).toLocaleDateString('es-DO') : '—'}</p>
+             <p>Gracias por su preferencia.<br><em>ACR Networks & Solutions</em></p>`,
+      attachments: [{ filename: `factura-${factura.noFactura}.pdf`, content: pdfBuffer, contentType: 'application/pdf' }],
+    })
+    console.log(`[EMAIL] Factura ${factura.noFactura} enviada a ${factura.cliente.email}`)
+  } catch (err) {
+    console.error(`[EMAIL] Error enviando a ${factura.cliente.email}:`, err.message)
+  }
+}
 
 // ─── JWE-equivalent: AES-256-GCM wrapper (opaque cookie, RFC 7516 semantics) ──
 const jweKey  = crypto.createHash('sha256').update(process.env.JWT_SECRET || '').digest()
@@ -93,12 +133,19 @@ const app = express();
 app.use(helmet());
 app.use(cookieParser(process.env.COOKIE_SECRET));
 
+const DEV_ORIGINS  = ['http://localhost:5173', 'http://127.0.0.1:5173']
+const PROD_ORIGINS = process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : []
+const ALLOWED_ORIGINS = new Set([...DEV_ORIGINS, ...PROD_ORIGINS])
+
 const corsOptions = {
-  origin: ['http://localhost:5173', 'http://127.0.0.1:5173'],
+  origin: (origin, cb) => {
+    if (!origin || ALLOWED_ORIGINS.has(origin)) return cb(null, true)
+    cb(new Error(`CORS: origen no permitido → ${origin}`))
+  },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token'],
   credentials: true,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
 };
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
@@ -1579,6 +1626,14 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       prisma.ordenTrabajo.count({ where: { estado: 'Pendiente' } }),
       prisma.ordenTrabajo.count({ where: { estado: 'EnProceso' } }),
     ]);
+    const ncfConfigs = await prisma.configuracionNCF.findMany({ where: { activo: true } })
+    const ncfAlerts = ncfConfigs
+      .filter(c => c.limite > 0 && c.secuenciaActual / c.limite >= 0.90)
+      .map(c => ({
+        tipoNcf:   c.tipoNcf,
+        restantes: c.limite - c.secuenciaActual,
+        pct:       Math.round((c.secuenciaActual / c.limite) * 100),
+      }))
     dashCache = {
       servicios: { activos, pendientes, enInstalacion, suspendidos, cancelados },
       ordenesPendientes,
@@ -1587,14 +1642,15 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       clientes: { total: totalClientes, activos: clientesActivos },
       tecnicos: totalTecnicos,
       billing: {
-        facturadoMes:    Number(facturacionMes._sum.total    ?? 0),
-        facturasEmitidasMes: facturacionMes._count.id        ?? 0,
-        cobradoMes:      Number(cobradoMes._sum.total        ?? 0),
-        vencidasCount:   facturasVencidas._count.id          ?? 0,
-        vencidasMonto:   Number(facturasVencidas._sum.total  ?? 0),
+        facturadoMes:       Number(facturacionMes._sum.total    ?? 0),
+        facturasEmitidasMes: facturacionMes._count.id           ?? 0,
+        cobradoMes:         Number(cobradoMes._sum.total        ?? 0),
+        vencidasCount:      facturasVencidas._count.id          ?? 0,
+        vencidasMonto:      Number(facturasVencidas._sum.total  ?? 0),
         otsPendientes,
         otsEnProceso,
       },
+      ncfAlerts,
     };
     dashCacheExp = Date.now() + 60_000;
     res.json(dashCache);
@@ -2018,17 +2074,28 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
         },
       })
 
-      // 7. Marcar OT como Completada
+      // 7. Marcar OT como Completada + estaFacturada
       await tx.ordenTrabajo.update({
         where: { id: ordenId },
-        data:  { estado: 'Completada', completadaEn: new Date() },
+        data:  { estado: 'Completada', completadaEn: new Date(), estaFacturada: true },
       })
 
-      return f
+      return tx.factura.findUnique({
+        where:   { id: f.id },
+        include: { cliente: { select: { email: true, razonSocial: true } }, orden: { include: { lineas: true } } },
+      })
     })
 
     auditReq('factura:emitir', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
     res.status(201).json(factura)
+
+    // Fire-and-forget PDF email
+    setImmediate(async () => {
+      try {
+        const pdfBuf = await buildFacturaPDFBuffer(factura)
+        await sendFacturaPDF(factura, pdfBuf)
+      } catch (e) { console.error('[EMAIL FF]', e.message) }
+    })
   } catch (e) {
     const status = e.status ?? 500
     const msg    = e.status ? e.message : 'Error al generar la factura.'
@@ -2079,6 +2146,106 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
+// ─── PDF Builder (shared by route + email) ────────────────────────────────────
+
+async function buildFacturaPDFBuffer(factura) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const doc    = new PDFDocument({ size: 'A4', margin: 50 })
+      const chunks = []
+      doc.on('data', c => chunks.push(c))
+      doc.on('end',  () => resolve(Buffer.concat(chunks)))
+      doc.on('error', reject)
+
+      const fmtMoney = n => `RD$ ${Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })}`
+      const fmtDate  = d => d ? new Date(d).toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
+      const W = 495
+
+      // Header
+      doc.fontSize(20).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 50, 50)
+      doc.fontSize(9).font('Helvetica').fillColor('#555').text('Proveedor WISP · CCTV · Redes · Seguridad Electrónica', 50, 74)
+
+      // NCF box
+      doc.roundedRect(370, 45, 175, 40, 5).fillAndStroke('#1e3a5f', '#1e3a5f')
+      doc.fontSize(8).font('Helvetica').fillColor('#fff').text('COMPROBANTE FISCAL', 378, 51, { width: 160, align: 'center' })
+      doc.fontSize(12).font('Helvetica-Bold').fillColor('#fff').text(factura.ncf ?? 'N/A', 378, 63, { width: 160, align: 'center' })
+
+      doc.moveTo(50, 96).lineTo(545, 96).strokeColor('#1e3a5f').lineWidth(2).stroke()
+
+      doc.fontSize(14).font('Helvetica-Bold').fillColor('#1e3a5f').text('FACTURA', 50, 108)
+      doc.fontSize(9).font('Helvetica').fillColor('#333')
+        .text(`No. Factura: ${factura.noFactura}`, 50, 126)
+        .text(`Emisión: ${fmtDate(factura.fechaEmision)}`, 50, 140)
+        .text(`Vence: ${fmtDate(factura.fechaVence)}`, 50, 154)
+        .text(`Estado: ${factura.estado}`, 50, 168)
+
+      doc.roundedRect(280, 108, 265, 70, 4).fillAndStroke('#f4f7fb', '#dde5ef')
+      doc.fontSize(8).font('Helvetica-Bold').fillColor('#1e3a5f').text('CLIENTE', 292, 116)
+      doc.font('Helvetica').fillColor('#222')
+        .text(factura.cliente?.razonSocial ?? '—', 292, 128, { width: 240 })
+        .text(`RNC: ${factura.cliente?.rnc ?? '—'}`, 292, 140)
+        .text(factura.cliente?.direccion ?? '', 292, 152, { width: 240 })
+        .text(`Tel: ${factura.cliente?.telefonoPrincipal ?? '—'}`, 292, 164)
+
+      // QR DGII
+      if (factura.ncf) {
+        try {
+          const qrUrl = `https://dgii.gov.do/app/verificaNCF?ncf=${factura.ncf}`
+          const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 60, margin: 1 })
+          const qrBuf = Buffer.from(qrDataUrl.split(',')[1], 'base64')
+          doc.image(qrBuf, 490, 108, { width: 55 })
+          doc.fontSize(6).font('Helvetica').fillColor('#888').text('Verificar NCF', 490, 166, { width: 55, align: 'center' })
+        } catch {}
+      }
+
+      const tableTop = 200
+      doc.moveTo(50, tableTop).lineTo(545, tableTop).strokeColor('#1e3a5f').lineWidth(1.5).stroke()
+      doc.rect(50, tableTop, W, 18).fill('#1e3a5f')
+      doc.fontSize(8).font('Helvetica-Bold').fillColor('#fff')
+        .text('#',           55, tableTop + 5, { width: 18 })
+        .text('Descripción', 78, tableTop + 5, { width: 230 })
+        .text('Cant',       318, tableTop + 5, { width: 40,  align: 'right' })
+        .text('P. Unit.',   368, tableTop + 5, { width: 80,  align: 'right' })
+        .text('Total',      458, tableTop + 5, { width: 80,  align: 'right' })
+
+      const lineas = factura.orden?.lineas ?? []
+      let y = tableTop + 18
+      lineas.forEach((l, i) => {
+        const desc  = l.itemCatalogo?.nombre ?? l.descripcion
+        const total = Number(l.precioUnitario) * l.cantidad
+        if (i % 2 === 0) doc.rect(50, y, W, 16).fill('#f9fafc')
+        doc.fontSize(8).font('Helvetica').fillColor('#222')
+          .text(String(i + 1),              55,  y + 4, { width: 18 })
+          .text(desc,                        78,  y + 4, { width: 230 })
+          .text(String(l.cantidad),          318, y + 4, { width: 40,  align: 'right' })
+          .text(fmtMoney(l.precioUnitario),  368, y + 4, { width: 80,  align: 'right' })
+          .text(fmtMoney(total),             458, y + 4, { width: 80,  align: 'right' })
+        y += 16
+      })
+      doc.moveTo(50, y).lineTo(545, y).strokeColor('#ccc').lineWidth(0.5).stroke()
+      y += 10
+
+      const totRow = (label, val, bold = false) => {
+        doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(bold ? '#1e3a5f' : '#333')
+          .text(label, 360, y, { width: 100, align: 'right' })
+          .font('Helvetica-Bold').fillColor(bold ? '#1e3a5f' : '#333')
+          .text(val,   468, y, { width: 75,  align: 'right' })
+        y += 16
+      }
+      totRow('Subtotal:', fmtMoney(factura.subtotal))
+      totRow('ITBIS (18%):', fmtMoney(factura.itbis))
+      doc.moveTo(360, y).lineTo(543, y).strokeColor('#1e3a5f').lineWidth(1).stroke(); y += 6
+      totRow('TOTAL:', fmtMoney(factura.total), true)
+
+      doc.moveTo(50, 770).lineTo(545, 770).strokeColor('#1e3a5f').lineWidth(1).stroke()
+      doc.fontSize(7).font('Helvetica').fillColor('#888')
+        .text('ACR Networks & Solutions · Documento generado electrónicamente · Este documento es válido sin firma ni sello.', 50, 775, { align: 'center', width: W })
+
+      doc.end()
+    } catch (e) { reject(e) }
+  })
+}
+
 // ─── PDF Fiscal ───────────────────────────────────────────────────────────────
 
 app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
@@ -2091,94 +2258,12 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
       },
     })
     if (!factura) return res.status(404).json({ error: 'Factura no encontrada.' })
-
-    const doc = new PDFDocument({ size: 'A4', margin: 50 })
+    const buf = await buildFacturaPDFBuffer(factura)
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `inline; filename="factura-${factura.noFactura}.pdf"`)
-    doc.pipe(res)
-
-    const fmtMoney = n => `RD$ ${Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })}`
-    const fmtDate  = d => d ? new Date(d).toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
-    const W = 495
-
-    // ── Header ────────────────────────────────────────────────────────────────
-    doc.fontSize(20).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 50, 50)
-    doc.fontSize(9).font('Helvetica').fillColor('#555').text('Proveedor WISP · CCTV · Redes · Seguridad Electrónica', 50, 74)
-
-    // NCF box
-    doc.roundedRect(370, 45, 175, 40, 5).fillAndStroke('#1e3a5f', '#1e3a5f')
-    doc.fontSize(8).font('Helvetica').fillColor('#fff').text('COMPROBANTE FISCAL', 378, 51, { width: 160, align: 'center' })
-    doc.fontSize(12).font('Helvetica-Bold').fillColor('#fff').text(factura.ncf ?? 'N/A', 378, 63, { width: 160, align: 'center' })
-
-    // Divider
-    doc.moveTo(50, 96).lineTo(545, 96).strokeColor('#1e3a5f').lineWidth(2).stroke()
-
-    // Doc type + numbers
-    doc.y = 108
-    doc.fontSize(14).font('Helvetica-Bold').fillColor('#1e3a5f').text('FACTURA', 50, 108)
-    doc.fontSize(9).font('Helvetica').fillColor('#333')
-      .text(`No. Factura: ${factura.noFactura}`, 50, 126)
-      .text(`Emisión: ${fmtDate(factura.fechaEmision)}`, 50, 140)
-      .text(`Vence: ${fmtDate(factura.fechaVence)}`, 50, 154)
-      .text(`Estado: ${factura.estado}`, 50, 168)
-
-    // Client box
-    doc.roundedRect(280, 108, 265, 70, 4).fillAndStroke('#f4f7fb', '#dde5ef')
-    doc.fontSize(8).font('Helvetica-Bold').fillColor('#1e3a5f').text('CLIENTE', 292, 116)
-    doc.font('Helvetica').fillColor('#222')
-      .text(factura.cliente.razonSocial, 292, 128, { width: 240 })
-      .text(`RNC: ${factura.cliente.rnc ?? '—'}`, 292, 140)
-      .text(factura.cliente.direccion ?? '', 292, 152, { width: 240 })
-      .text(`Tel: ${factura.cliente.telefonoPrincipal}`, 292, 164)
-
-    // ── Lines table ───────────────────────────────────────────────────────────
-    const tableTop = 200
-    doc.moveTo(50, tableTop).lineTo(545, tableTop).strokeColor('#1e3a5f').lineWidth(1.5).stroke()
-    doc.rect(50, tableTop, W, 18).fill('#1e3a5f')
-    doc.fontSize(8).font('Helvetica-Bold').fillColor('#fff')
-      .text('#',           55, tableTop + 5, { width: 18 })
-      .text('Descripción', 78, tableTop + 5, { width: 230 })
-      .text('Cant',       318, tableTop + 5, { width: 40,  align: 'right' })
-      .text('P. Unit.',   368, tableTop + 5, { width: 80,  align: 'right' })
-      .text('Total',      458, tableTop + 5, { width: 80,  align: 'right' })
-
-    const lineas = factura.orden?.lineas ?? []
-    let y = tableTop + 18
-    lineas.forEach((l, i) => {
-      const desc  = l.itemCatalogo?.nombre ?? l.descripcion
-      const total = Number(l.precioUnitario) * l.cantidad
-      if (i % 2 === 0) doc.rect(50, y, W, 16).fill('#f9fafc')
-      doc.fontSize(8).font('Helvetica').fillColor('#222')
-        .text(String(i + 1),       55,  y + 4, { width: 18 })
-        .text(desc,                78,  y + 4, { width: 230 })
-        .text(String(l.cantidad),  318, y + 4, { width: 40,  align: 'right' })
-        .text(fmtMoney(l.precioUnitario), 368, y + 4, { width: 80, align: 'right' })
-        .text(fmtMoney(total),     458, y + 4, { width: 80,  align: 'right' })
-      y += 16
-    })
-    doc.moveTo(50, y).lineTo(545, y).strokeColor('#ccc').lineWidth(0.5).stroke()
-
-    // ── Totals ────────────────────────────────────────────────────────────────
-    y += 10
-    const totRow = (label, val, bold = false) => {
-      doc.fontSize(9)[bold ? 'font' : 'font']( bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(bold ? '#1e3a5f' : '#333')
-        .text(label, 360, y, { width: 100, align: 'right' })
-        .font('Helvetica-Bold').fillColor(bold ? '#1e3a5f' : '#333')
-        .text(val,   468, y, { width: 75,  align: 'right' })
-      y += 16
-    }
-    totRow('Subtotal:', fmtMoney(factura.subtotal))
-    totRow(`ITBIS (18%):`, fmtMoney(factura.itbis))
-    doc.moveTo(360, y).lineTo(543, y).strokeColor('#1e3a5f').lineWidth(1).stroke(); y += 6
-    totRow('TOTAL:', fmtMoney(factura.total), true)
-
-    // ── Footer ────────────────────────────────────────────────────────────────
-    doc.moveTo(50, 770).lineTo(545, 770).strokeColor('#1e3a5f').lineWidth(1).stroke()
-    doc.fontSize(7).font('Helvetica').fillColor('#888')
-      .text('ACR Networks & Solutions · Documento generado electrónicamente · Este documento es válido sin firma ni sello.', 50, 775, { align: 'center', width: W })
-
-    doc.end()
-  } catch (e) {
+    res.setHeader('Content-Length', buf.length)
+    res.end(buf)
+  } catch {
     if (!res.headersSent) res.status(500).json({ error: 'Error al generar PDF.' })
   }
 })
@@ -2281,6 +2366,22 @@ async function billarOTsISP() {
 }
 
 cron.schedule('5 0 * * *', billarOTsISP, { timezone: 'America/Santo_Domingo' })
+
+async function billarMoras() {
+  const hoy = new Date()
+  console.log(`[CRON MORA] Revisando facturas vencidas al ${hoy.toLocaleDateString('es-DO')}`)
+  try {
+    const { count } = await prisma.factura.updateMany({
+      where: { estado: 'Emitida', fechaVence: { lt: hoy } },
+      data:  { estado: 'Vencida' },
+    })
+    if (count > 0) console.log(`[CRON MORA] ${count} factura(s) marcadas como Vencida.`)
+  } catch (err) {
+    console.error('[CRON MORA] Error:', err.message)
+  }
+}
+
+cron.schedule('10 0 * * *', billarMoras, { timezone: 'America/Santo_Domingo' })
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
