@@ -1,20 +1,11 @@
-import { useState, Suspense, lazy } from 'react'
+import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Package, ClipboardList, FileText, Settings2, Loader2 } from 'lucide-react'
+import { Package, ClipboardList, FileText, Settings2 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-
-const PanelCatalogo = lazy(() => import('./panels/PanelCatalogo'))
-const PanelOrdenes  = lazy(() => import('./panels/PanelOrdenes'))
-const PanelFacturas = lazy(() => import('./panels/PanelFacturas'))
-const PanelNCF      = lazy(() => import('./panels/PanelNCF'))
-
-function TabFallback() {
-  return (
-    <div className="flex items-center justify-center py-12">
-      <Loader2 size={20} className="animate-spin text-blue-500" />
-    </div>
-  )
-}
+import PanelCatalogo from './panels/PanelCatalogo'
+import PanelOrdenes  from './panels/PanelOrdenes'
+import PanelFacturas from './panels/PanelFacturas'
+import PanelNCF      from './panels/PanelNCF'
 
 export default function Ventas() {
   const [searchParams] = useSearchParams()
@@ -52,12 +43,12 @@ export default function Ventas() {
         ))}
       </div>
 
-      <Suspense fallback={<TabFallback />}>
+      <div>
         {tab === 'catalogo' && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} />}
         {tab === 'ordenes'  && <PanelOrdenes  canEdit={canEdit} clienteIdInit={clienteIdInit} clienteNombreInit={clienteNombreInit} />}
         {tab === 'facturas' && <PanelFacturas />}
         {tab === 'ncf'      && <PanelNCF />}
-      </Suspense>
+      </div>
     </div>
   )
 }

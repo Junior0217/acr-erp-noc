@@ -1578,61 +1578,66 @@ app.patch('/api/ordenes/:id/completar', async (req, res) => {
 
 // ─── Dashboard (KPIs) ─────────────────────────────────────────────────────────
 
+// POOL NOTE FOR CTO: Supabase session-mode PgBouncer limits connections per session.
+// Add to your .env to cap Prisma's pool and prevent EMAXCONNSESSION:
+//   DATABASE_URL="postgresql://...?connection_limit=5&pool_timeout=10&pgbouncer=true"
+// connection_limit=5  → Prisma opens at most 5 simultaneous DB connections
+// pool_timeout=10     → queries wait up to 10s for a free slot before failing
+// pgbouncer=true      → disables Prisma's session-level prepared statements (required for PgBouncer)
+
 app.get('/api/dashboard', verificarJWT, async (req, res) => {
   try {
     if (dashCache && Date.now() < dashCacheExp) return res.json(dashCache);
     const now = new Date()
     const inicioMes = new Date(now.getFullYear(), now.getMonth(), 1)
-    const [
-      activos, pendientes, enInstalacion, suspendidos, cancelados,
-      ordenesPendientes,
-      stockCritico,
-      totalClientes, clientesActivos,
-      totalTecnicos,
-      ingresosMensuales,
-      facturadoMesSum,
-      facturadoMesCount,
-      cobradoMesSum,
-      vencidasCount,
-      vencidasSum,
-      otsPendientes,
-      otsEnProceso,
-    ] = await Promise.all([
-      prisma.servicio.count({ where: { estado: 'Activo'        } }),
-      prisma.servicio.count({ where: { estado: 'Pendiente'     } }),
-      prisma.servicio.count({ where: { estado: 'EnInstalacion' } }),
-      prisma.servicio.count({ where: { estado: 'Suspendido'    } }),
-      prisma.servicio.count({ where: { estado: 'Cancelado'     } }),
-      prisma.ordenInstalacion.count({ where: { estado: 'Pendiente' } }),
-      prisma.producto.findMany({
-        where: { stockActual: { lte: 5 } },
-        select: { id: true, nombre: true, sku: true, stockActual: true },
-        orderBy: { stockActual: 'asc' }, take: 10,
-      }),
-      prisma.cliente.count(),
-      prisma.cliente.count({ where: { activo: true } }),
-      prisma.empleado.count(),
-      prisma.servicio.aggregate({ where: { estado: 'Activo' }, _sum: { precioMensual: true } }),
-      // Billing — split into individual count + sum to avoid _count.field nullability issues
-      prisma.factura.aggregate({
-        where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
-        _sum: { total: true },
-      }),
-      prisma.factura.count({
-        where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
-      }),
-      prisma.factura.aggregate({
-        where: { estado: 'Pagada', fechaPago: { gte: inicioMes } },
-        _sum: { total: true },
-      }),
-      prisma.factura.count({ where: { estado: 'Vencida' } }),
-      prisma.factura.aggregate({
-        where: { estado: 'Vencida' },
-        _sum: { total: true },
-      }),
-      prisma.ordenTrabajo.count({ where: { estado: 'Pendiente' } }),
-      prisma.ordenTrabajo.count({ where: { estado: 'EnProceso' } }),
-    ]);
+
+    // Queries split into 3 sequential batches (≤6 concurrent each) to stay within
+    // Supabase PgBouncer session-mode pool_size:15 limit.
+    const [activos, pendientes, enInstalacion, suspendidos, cancelados, ordenesPendientes] =
+      await Promise.all([
+        prisma.servicio.count({ where: { estado: 'Activo'        } }),
+        prisma.servicio.count({ where: { estado: 'Pendiente'     } }),
+        prisma.servicio.count({ where: { estado: 'EnInstalacion' } }),
+        prisma.servicio.count({ where: { estado: 'Suspendido'    } }),
+        prisma.servicio.count({ where: { estado: 'Cancelado'     } }),
+        prisma.ordenInstalacion.count({ where: { estado: 'Pendiente' } }),
+      ]);
+
+    const [stockCritico, totalClientes, clientesActivos, totalTecnicos, ingresosMensuales] =
+      await Promise.all([
+        prisma.producto.findMany({
+          where: { stockActual: { lte: 5 } },
+          select: { id: true, nombre: true, sku: true, stockActual: true },
+          orderBy: { stockActual: 'asc' }, take: 10,
+        }),
+        prisma.cliente.count(),
+        prisma.cliente.count({ where: { activo: true } }),
+        prisma.empleado.count(),
+        prisma.servicio.aggregate({ where: { estado: 'Activo' }, _sum: { precioMensual: true } }),
+      ]);
+
+    // Billing — split into individual count + sum to avoid _count.field nullability issues
+    const [facturadoMesSum, facturadoMesCount, cobradoMesSum, vencidasCount, vencidasSum, otsPendientes, otsEnProceso] =
+      await Promise.all([
+        prisma.factura.aggregate({
+          where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
+          _sum: { total: true },
+        }),
+        prisma.factura.count({
+          where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
+        }),
+        prisma.factura.aggregate({
+          where: { estado: 'Pagada', fechaPago: { gte: inicioMes } },
+          _sum: { total: true },
+        }),
+        prisma.factura.count({ where: { estado: 'Vencida' } }),
+        prisma.factura.aggregate({
+          where: { estado: 'Vencida' },
+          _sum: { total: true },
+        }),
+        prisma.ordenTrabajo.count({ where: { estado: 'Pendiente' } }),
+        prisma.ordenTrabajo.count({ where: { estado: 'EnProceso' } }),
+      ]);
 
     let ncfAlerts = []
     try {
