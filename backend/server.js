@@ -1180,6 +1180,7 @@ const productoSchema = z.object({
   nombre:      z.string().min(2).max(200).transform(stripTags),
   precio:      z.coerce.number().nonnegative(),
   categoriaId: z.number().int().positive(),
+  tipoItem:    z.enum(['ARTICULO', 'SERVICIO']).optional(),
 });
 
 const productoUpdateSchema = productoSchema.omit({ sku: true }).partial();
@@ -1244,12 +1245,13 @@ app.delete('/api/categorias/:id', async (req, res) => {
 
 app.get('/api/productos', async (req, res) => {
   try {
-    const { search, categoriaId, page = '1', limit = '50' } = req.query;
+    const { search, categoriaId, tipoItem, page = '1', limit = '50' } = req.query;
     const take = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const skip = (pageNum - 1) * take;
     const where = {};
     if (categoriaId) { const cid = parseInt(categoriaId); if (cid > 0) where.categoriaId = cid; }
+    if (tipoItem && ['ARTICULO', 'SERVICIO'].includes(tipoItem)) where.tipoItem = tipoItem;
     if (search) where.OR = [
       { nombre: { contains: search, mode: 'insensitive' } },
       { sku:    { contains: search, mode: 'insensitive' } },

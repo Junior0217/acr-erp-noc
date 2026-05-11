@@ -1,0 +1,1 @@
+Genera una página completa en React para el directorio frontend/src/pages. Usa Tailwind CSS y lucide-react. Aplica estática Cyber-Industrial (Gris Pizarra, Azul Eléctrico). Cero texto introductorio, solo el código listo para producción.

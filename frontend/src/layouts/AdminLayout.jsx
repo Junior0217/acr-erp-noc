@@ -6,8 +6,10 @@ import {
   Zap, Wrench, AlertTriangle, ClipboardList, LogOut,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
+import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useOfflineStatus } from '../hooks/useOfflineStatus'
+import CarritoSlideOver from '../components/CarritoSlideOver'
 
 function useNocAlerts() {
   const [alerts, setAlerts] = useState({ stockCritico: 0, ordenesPendientes: 0 })
@@ -95,6 +97,7 @@ export default function AdminLayout() {
   const alerts    = useNocAlerts()
   const offline   = useOfflineStatus()
   const { user, logout } = useAuth()
+  const { totalItems, setOpen: openCart } = useCart()
   const navigate  = useNavigate()
 
   async function handleLogout() {
@@ -137,6 +140,18 @@ export default function AdminLayout() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            <button
+              onClick={() => openCart(true)}
+              title="Carrito POS"
+              className="relative w-9 h-9 rounded-full bg-slate-800 hover:bg-blue-900/30 border border-slate-700 hover:border-blue-700/40 flex items-center justify-center flex-shrink-0 transition-colors"
+            >
+              <ShoppingCart size={15} className="text-slate-400" />
+              {totalItems > 0 && (
+                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center">
+                  {totalItems > 9 ? '9+' : totalItems}
+                </span>
+              )}
+            </button>
             {alerts.ordenesPendientes > 0 && (
               <div title={`${alerts.ordenesPendientes} órdenes pendientes`}
                 className="flex items-center gap-1 px-2 py-1 rounded-full bg-amber-600/15 border border-amber-600/30 text-amber-400 text-xs font-semibold cursor-default">
@@ -169,6 +184,8 @@ export default function AdminLayout() {
           <Outlet />
         </main>
       </div>
+
+      <CarritoSlideOver />
     </div>
   )
 }

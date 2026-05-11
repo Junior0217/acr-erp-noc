@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Package, ClipboardList, FileText, Settings2 } from 'lucide-react'
+import { Package, ClipboardList, FileText, Settings2, ScrollText } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
-import PanelCatalogo from './panels/PanelCatalogo'
-import PanelOrdenes  from './panels/PanelOrdenes'
-import PanelFacturas from './panels/PanelFacturas'
-import PanelNCF      from './panels/PanelNCF'
+import PanelCatalogo      from './panels/PanelCatalogo'
+import PanelOrdenes       from './panels/PanelOrdenes'
+import PanelFacturas      from './panels/PanelFacturas'
+import PanelNCF           from './panels/PanelNCF'
+import PanelCotizaciones  from './panels/PanelCotizaciones'
 
 export default function Ventas() {
   const [searchParams] = useSearchParams()
@@ -19,10 +20,11 @@ export default function Ventas() {
   const [tab, setTab] = useState(clienteIdInit ? 'ordenes' : 'catalogo')
 
   const TABS = [
-    { key: 'catalogo', label: 'Catálogo',   Icon: Package       },
-    { key: 'ordenes',  label: 'Órdenes',    Icon: ClipboardList  },
-    { key: 'facturas', label: 'Facturas',   Icon: FileText       },
-    { key: 'ncf',      label: 'Config NCF', Icon: Settings2      },
+    { key: 'catalogo',      label: 'Catálogo',       Icon: Package       },
+    { key: 'ordenes',       label: 'Órdenes',         Icon: ClipboardList  },
+    { key: 'facturas',      label: 'Facturas',        Icon: FileText       },
+    { key: 'cotizaciones',  label: 'Cotizaciones',    Icon: ScrollText     },
+    { key: 'ncf',           label: 'Config NCF',      Icon: Settings2      },
   ]
 
   return (
@@ -44,10 +46,11 @@ export default function Ventas() {
       </div>
 
       <div>
-        {tab === 'catalogo' && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} />}
-        {tab === 'ordenes'  && <PanelOrdenes  canEdit={canEdit} clienteIdInit={clienteIdInit} clienteNombreInit={clienteNombreInit} />}
-        {tab === 'facturas' && <PanelFacturas />}
-        {tab === 'ncf'      && <PanelNCF />}
+        {tab === 'catalogo'     && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} />}
+        {tab === 'ordenes'      && <PanelOrdenes  canEdit={canEdit} clienteIdInit={clienteIdInit} clienteNombreInit={clienteNombreInit} />}
+        {tab === 'facturas'     && <PanelFacturas />}
+        {tab === 'cotizaciones' && <PanelCotizaciones />}
+        {tab === 'ncf'          && <PanelNCF />}
       </div>
     </div>
   )
