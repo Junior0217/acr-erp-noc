@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { X, Save, Trash2, UserCheck, MapPin, Crosshair, Map } from "lucide-react";
 import MapPicker from "./MapPicker";
 
-const API = "http://localhost:3000";
+const API = import.meta.env.VITE_API_URL || '';
 
 const SERVICIOS = [
   "Internet WISP", "Fibra Óptica", "CCTV / Videovigilancia",

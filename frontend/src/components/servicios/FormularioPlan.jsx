@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Loader2, Plus, Trash2, Search } from 'lucide-react'
 
-const API = 'http://localhost:3000'
+const API = import.meta.env.VITE_API_URL || ''
 const TIPOS = ['WISP','CCTV','Redes','CercosElectricos','VentaEquipos','Mixto']
 
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'

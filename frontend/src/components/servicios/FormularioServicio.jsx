@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Loader2, Search } from 'lucide-react'
 
-const API = 'http://localhost:3000'
+const API = import.meta.env.VITE_API_URL || ''
 const ESTADOS = ['Pendiente','EnInstalacion','Activo','Suspendido','Cancelado']
 
 const SIN_MENSUAL = new Set(['Reparacion','SoporteTecnico','VentaDirecta','ProyectoCCTV','CercoElectrico'])

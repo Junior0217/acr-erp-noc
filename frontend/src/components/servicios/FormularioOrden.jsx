@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Loader2, Trash2, Search, AlertTriangle, CheckCircle, Shield } from 'lucide-react'
 
-const API = 'http://localhost:3000'
+const API = import.meta.env.VITE_API_URL || ''
 
 const CON_DIAGNOSTICO = new Set(['ServicioTecnico','Mantenimiento'])
 

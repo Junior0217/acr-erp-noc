@@ -10,7 +10,7 @@ import markerIcon from "leaflet/dist/images/marker-icon.png";
 import markerShadow from "leaflet/dist/images/marker-shadow.png";
 import { Globe, Loader2, Search, Users, Truck, UserPlus, Wifi, SlidersHorizontal, X } from "lucide-react";
 
-const API = "http://localhost:3000";
+const API = import.meta.env.VITE_API_URL || '';
 
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({ iconRetinaUrl: markerIcon2x, iconUrl: markerIcon, shadowUrl: markerShadow });

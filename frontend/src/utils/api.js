@@ -1,4 +1,5 @@
-const BASE = 'http://localhost:3000'
+const BASE = import.meta.env.VITE_API_URL
+if (!BASE) console.error('[ACR ERP] VITE_API_URL is not set — all API calls will fail. Add it to .env.local (dev) or Vercel env vars (prod).')
 
 function getCsrfToken() {
   const m = document.cookie.match(/(?:^|;\s*)csrf=([^;]*)/)
