@@ -614,7 +614,7 @@ app.get('/api/admin/sessions', verificarJWT, requerirPermiso('sistema:owner'), a
   } catch { res.status(500).json({ error: 'Error obteniendo sesiones.' }) }
 })
 
-app.delete('/api/admin/sessions/:jti', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+app.delete('/api/admin/sessions/token/:jti', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
   const { jti } = req.params
   try {
     const session = await prisma.sessionToken.findUnique({ where: { jti }, include: { empleado: { select: { id: true } } } })
@@ -1746,6 +1746,97 @@ app.delete('/api/admin/sessions/:empleadoId', verificarJWT, requerirPermiso('sis
     res.status(204).end();
   } catch { res.status(500).json({ error: 'Error al cerrar sesiones.' }); }
 });
+
+// ─── Catálogo de Items (Ventas) ───────────────────────────────────────────────
+
+const itemCatalogoSchema = z.object({
+  nombre:      z.string().min(1).max(120),
+  descripcion: z.string().optional().nullable(),
+  tipo:        z.enum(['Recurrente', 'VentaUnica', 'Servicio']),
+  categoria:   z.enum(['WISP', 'CCTV', 'Redes', 'CercoElectrico', 'VentaDirecta', 'Mixto', 'SoporteTecnico', 'Reparacion', 'ProyectoCCTV']),
+  precio:      z.number().min(0),
+  costo:       z.number().min(0).default(0),
+  stock:       z.number().int().optional().nullable(),
+  activo:      z.boolean().default(true),
+})
+
+app.get('/api/catalogo', verificarJWT, async (req, res) => {
+  try {
+    const { tipo, categoria, activo, search } = req.query
+    const where = {}
+    if (tipo) where.tipo = tipo
+    if (categoria) where.categoria = categoria
+    if (activo !== undefined && activo !== '') where.activo = activo === 'true'
+    if (search) where.nombre = { contains: search, mode: 'insensitive' }
+    const items = await prisma.itemCatalogo.findMany({ where, orderBy: [{ categoria: 'asc' }, { nombre: 'asc' }] })
+    res.json({ data: items })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/catalogo', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+  try {
+    const data = itemCatalogoSchema.parse(req.body)
+    const item = await prisma.itemCatalogo.create({ data })
+    res.status(201).json(item)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.put('/api/catalogo/:id', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+  try {
+    const data = itemCatalogoSchema.parse(req.body)
+    const item = await prisma.itemCatalogo.update({ where: { id: req.params.id }, data })
+    res.json(item)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.delete('/api/catalogo/:id', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+  try {
+    const count = await prisma.lineaOrdenTrabajo.count({ where: { itemCatalogoId: req.params.id } })
+    if (count > 0) return res.status(409).json({ error: 'Item en uso en órdenes. Desactívalo en su lugar.' })
+    await prisma.itemCatalogo.delete({ where: { id: req.params.id } })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── Configuración NCF ────────────────────────────────────────────────────────
+
+const ncfSchema = z.object({
+  prefijo:         z.string().min(1).max(3),
+  tipoNcf:         z.string().min(1),
+  tipoDescripcion: z.string().min(1),
+  secuenciaActual: z.number().int().min(0).default(0),
+  limite:          z.number().int().min(1).default(9999999),
+  vencimiento:     z.string().datetime().optional().nullable(),
+  activo:          z.boolean().default(true),
+})
+
+app.get('/api/ncf-config', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+  try {
+    const configs = await prisma.configuracionNCF.findMany({ orderBy: { tipoNcf: 'asc' } })
+    res.json({ data: configs })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/ncf-config', verificarJWT, requerirPermiso('ventas:editar'), async (req, res) => {
+  try {
+    const data = ncfSchema.parse(req.body)
+    const config = await prisma.configuracionNCF.upsert({
+      where:  { tipoNcf: data.tipoNcf },
+      create: { ...data, vencimiento: data.vencimiento ? new Date(data.vencimiento) : null },
+      update: { ...data, vencimiento: data.vencimiento ? new Date(data.vencimiento) : null },
+    })
+    res.json(config)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 

@@ -46,6 +46,20 @@ enum TipoOrden {
   Mantenimiento
 }
 
+enum TipoFacturacion {
+  Recurrente
+  VentaUnica
+  Servicio
+}
+
+enum EstadoFactura {
+  Borrador
+  Emitida
+  Pagada
+  Vencida
+  Anulada
+}
+
 // ─── RRHH ─────────────────────────────────────────────────────────────────────
 
 model Rol {
@@ -75,6 +89,7 @@ model Empleado {
   creadoEn         DateTime           @default(now())
   asistencias    Asistencia[]
   ordenes        OrdenInstalacion[]
+  ordenesTrabajo OrdenTrabajo[]
   sessions       SessionToken[]
   roles          Rol[]
 
@@ -124,6 +139,7 @@ model Producto {
   movimientos      MovimientoInventario[]
   plantillaEquipos PlantillaEquipo[]
   detallesOrden    DetalleOrden[]
+  lineasOrden      LineaOrdenTrabajo[]
 
   @@index([categoriaId])
   @@index([nombre])
@@ -210,9 +226,11 @@ model Cliente {
   limiteCredito       Decimal    @default(0.00) @db.Decimal(12, 2)
   diasCredito         Int        @default(0)
   tipoNcf             String     @default("Consumidor Final")
-  servicios           Servicio[]
-  createdAt           DateTime   @default(now())
-  updatedAt           DateTime   @updatedAt
+  servicios      Servicio[]
+  ordenesTrabajo OrdenTrabajo[]
+  facturas       Factura[]
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
 
   @@index([rnc])
   @@index([activo])
@@ -351,4 +369,105 @@ model Prospecto {
   updatedAt          DateTime @updatedAt
 
   @@index([estado])
+}
+
+// ─── Ventas & Facturación ─────────────────────────────────────────────────────
+
+model ItemCatalogo {
+  id          String              @id @default(uuid())
+  nombre      String
+  descripcion String?
+  tipo        TipoFacturacion
+  categoria   TipoServicio
+  precio      Decimal             @db.Decimal(12, 2)
+  costo       Decimal             @default(0) @db.Decimal(12, 2)
+  stock       Int?
+  activo      Boolean             @default(true)
+  lineas      LineaOrdenTrabajo[]
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([tipo])
+  @@index([categoria])
+  @@index([activo])
+}
+
+model OrdenTrabajo {
+  id            String              @id @default(uuid())
+  clienteId     String
+  tecnicoId     Int?
+  estado        String              @default("Pendiente")
+  notasTecnicas String?
+  latitud       String?
+  longitud      String?
+  macAddress    String?
+  ipAsignada    String?
+  diaCorte      Int?
+  garantiaDias  Int?
+  completadaEn  DateTime?
+  cliente       Cliente             @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  tecnico       Empleado?           @relation(fields: [tecnicoId], references: [id], onDelete: SetNull)
+  lineas        LineaOrdenTrabajo[]
+  facturas      Factura[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([clienteId])
+  @@index([tecnicoId])
+  @@index([estado])
+  @@index([createdAt])
+}
+
+model LineaOrdenTrabajo {
+  id             Int           @id @default(autoincrement())
+  ordenId        String
+  itemCatalogoId String?
+  productoId     Int?
+  descripcion    String
+  cantidad       Int           @default(1)
+  precioUnitario Decimal       @db.Decimal(12, 2)
+  orden          OrdenTrabajo  @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  itemCatalogo   ItemCatalogo? @relation(fields: [itemCatalogoId], references: [id], onDelete: SetNull)
+  producto       Producto?     @relation(fields: [productoId], references: [id], onDelete: Restrict)
+
+  @@index([ordenId])
+}
+
+model Factura {
+  id           String        @id @default(uuid())
+  noFactura    String        @unique
+  clienteId    String
+  ordenId      String?
+  estado       EstadoFactura @default(Borrador)
+  subtotal     Decimal       @db.Decimal(12, 2)
+  itbis        Decimal       @default(0) @db.Decimal(12, 2)
+  total        Decimal       @db.Decimal(12, 2)
+  ncf          String?
+  tipoNcf      String        @default("Consumidor Final")
+  fechaEmision DateTime      @default(now())
+  fechaVence   DateTime?
+  fechaPago    DateTime?
+  notas        String?
+  cliente      Cliente       @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  orden        OrdenTrabajo? @relation(fields: [ordenId], references: [id], onDelete: SetNull)
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+
+  @@index([clienteId])
+  @@index([estado])
+  @@index([fechaEmision])
+  @@index([ncf])
+}
+
+model ConfiguracionNCF {
+  id              Int       @id @default(autoincrement())
+  prefijo         String
+  tipoNcf         String    @unique
+  tipoDescripcion String
+  secuenciaActual Int       @default(0)
+  limite          Int       @default(9999999)
+  vencimiento     DateTime?
+  activo          Boolean   @default(true)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }

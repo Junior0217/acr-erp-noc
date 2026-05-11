@@ -8,6 +8,8 @@ module.exports = [
   { key: 'inventario:kardex',      module: 'Inventario', label: 'Kardex',           desc: 'Ver movimientos de stock',              color: 'cyan'    },
   { key: 'servicios:ver',          module: 'Servicios',  label: 'Ver',              desc: 'Planes, contratos, órdenes',            color: 'violet'  },
   { key: 'servicios:crear',        module: 'Servicios',  label: 'Crear',            desc: 'Nuevas órdenes de instalación',         color: 'violet'  },
+  { key: 'ventas:ver',             module: 'Ventas',     label: 'Ver',              desc: 'Catálogo, órdenes de trabajo, facturas', color: 'blue'    },
+  { key: 'ventas:editar',          module: 'Ventas',     label: 'Editar',           desc: 'Crear y modificar catálogo y OT',        color: 'blue'    },
   { key: 'crm:ver',                module: 'CRM',        label: 'Ver',              desc: 'Clientes, suplidores, prospectos',       color: 'emerald' },
   { key: 'crm:crear',              module: 'CRM',        label: 'Crear/Editar',     desc: 'Alta y modificación de clientes',       color: 'emerald' },
   { key: 'crm:borrar',             module: 'CRM',        label: 'Borrar',           desc: 'Eliminar clientes (irreversible)',       color: 'emerald' },

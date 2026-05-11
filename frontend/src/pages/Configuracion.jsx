@@ -771,7 +771,7 @@ function PanelSesionesGlobales() {
   async function revocar(jti) {
     setRevoking(jti)
     try {
-      const r = await apiFetch(`/api/admin/sessions/${jti}`, { method: 'DELETE' })
+      const r = await apiFetch(`/api/admin/sessions/token/${jti}`, { method: 'DELETE' })
       if (r.status === 204) { toast.success('Sesión terminada.'); setSessions(s => s.filter(x => x.jti !== jti)) }
       else toast.error((await r.json()).error)
     } catch { toast.error('Error de conexión') }

@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   Users, Truck, UserPlus, Search, Plus, Eye, X,
   CheckCircle, XCircle, Loader2, ChevronLeft, ChevronRight, Download, ShieldOff,
+  ClipboardList,
 } from "lucide-react";
 import { exportCsv } from "../utils/exportCsv";
 import { apiFetch } from "../utils/api";
@@ -105,6 +107,7 @@ function Paginador({ meta, onPage, loading }) {
 
 export default function CRM() {
   const { tienePermiso } = useAuth();
+  const navigate = useNavigate();
   const [tab, setTab] = useState("clientes");
 
   const [searchClientes,   setSearchClientes]   = useState("");
@@ -359,12 +362,21 @@ export default function CRM() {
                       </td>
                       <td className="px-4 py-3"><Badge activo={c.activo} /></td>
                       <td className="px-4 py-3 text-right">
-                        <button
-                          onClick={() => { setRegistroEnEdicion(c); setModalOpen(true); }}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700/60 hover:bg-slate-600/60 border border-slate-600/50 hover:border-slate-500/50 text-slate-300 hover:text-white text-xs font-medium transition-all whitespace-nowrap"
-                        >
-                          <Eye size={13} />Ver / Editar
-                        </button>
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <button
+                            onClick={() => { setRegistroEnEdicion(c); setModalOpen(true); }}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700/60 hover:bg-slate-600/60 border border-slate-600/50 hover:border-slate-500/50 text-slate-300 hover:text-white text-xs font-medium transition-all whitespace-nowrap"
+                          >
+                            <Eye size={13} />Ver / Editar
+                          </button>
+                          <button
+                            onClick={() => navigate(`/ventas?cliente=${c.id}&nombre=${encodeURIComponent(c.razonSocial)}`)}
+                            title="Nueva Orden de Trabajo"
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 border border-blue-600/30 hover:border-blue-600/50 text-blue-400 hover:text-blue-300 text-xs font-medium transition-all whitespace-nowrap"
+                          >
+                            <ClipboardList size={13} />Nueva OT
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   ))}
