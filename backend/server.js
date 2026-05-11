@@ -840,7 +840,7 @@ app.get('/api/clientes', async (req, res) => {
     const take = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const skip = (pageNum - 1) * take;
-    const where = {};
+    const where = { deletedAt: null };
     if (activo !== undefined) where.activo = activo === 'true';
     if (search) {
       where.OR = [
@@ -897,12 +897,15 @@ app.put('/api/clientes/:id', async (req, res) => {
 app.delete('/api/clientes/:id', verificarJWT, requerirPermiso('crm:borrar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
-    await prisma.cliente.delete({ where: { id: req.params.id } });
+    const existing = await prisma.cliente.findUnique({ where: { id: req.params.id } })
+    if (!existing || existing.deletedAt) return res.status(404).json({ error: 'Cliente no encontrado.' })
+    await prisma.cliente.update({
+      where: { id: req.params.id },
+      data: { activo: false, deletedAt: new Date() },
+    })
     auditReq('crm:cliente_eliminado', req, { clienteId: req.params.id });
     res.status(204).end();
   } catch (error) {
-    if (error.code === 'P2025') return res.status(404).json({ error: 'Cliente no encontrado.' });
-    if (error.code === 'P2003') return res.status(409).json({ error: 'No se puede eliminar: el cliente tiene servicios activos.' });
     res.status(500).json({ error: 'Error al eliminar cliente.' });
   }
 });
@@ -1619,56 +1622,65 @@ app.patch('/api/ordenes/:id/completar', async (req, res) => {
 app.get('/api/dashboard', verificarJWT, async (req, res) => {
   try {
     if (dashCache && Date.now() < dashCacheExp) return res.json(dashCache);
-    const now = new Date()
-    const inicioMes = new Date(now.getFullYear(), now.getMonth(), 1)
+    const inicioMes = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
 
-    // Queries split into 3 sequential batches (≤6 concurrent each) to stay within
-    // Supabase PgBouncer session-mode pool_size:15 limit.
-    const [activos, pendientes, enInstalacion, suspendidos, cancelados, ordenesPendientes] =
-      await Promise.all([
-        prisma.servicio.count({ where: { estado: 'Activo'        } }),
-        prisma.servicio.count({ where: { estado: 'Pendiente'     } }),
-        prisma.servicio.count({ where: { estado: 'EnInstalacion' } }),
-        prisma.servicio.count({ where: { estado: 'Suspendido'    } }),
-        prisma.servicio.count({ where: { estado: 'Cancelado'     } }),
-        prisma.ordenInstalacion.count({ where: { estado: 'Pendiente' } }),
-      ]);
+    // Single CTE query — all 18 KPIs in ONE DB round-trip = ONE connection slot.
+    // Eliminates EMAXCONNSESSION: previously 18 parallel queries saturated PgBouncer
+    // session-mode pool. Now: 1 CTE + 1 stock findMany + 1 NCF findMany = 3 max.
+    const [kpi] = await prisma.$queryRaw`
+      WITH
+        svc AS (
+          SELECT
+            COUNT(*) FILTER (WHERE estado = 'Activo')::int        AS activos,
+            COUNT(*) FILTER (WHERE estado = 'Pendiente')::int     AS pendientes,
+            COUNT(*) FILTER (WHERE estado = 'EnInstalacion')::int AS "enInstalacion",
+            COUNT(*) FILTER (WHERE estado = 'Suspendido')::int    AS suspendidos,
+            COUNT(*) FILTER (WHERE estado = 'Cancelado')::int     AS cancelados,
+            COALESCE(SUM("precioMensual") FILTER (WHERE estado = 'Activo'), 0)::float8 AS ingresos
+          FROM "Servicio"
+        ),
+        cli AS (
+          SELECT
+            COUNT(*)::int                                    AS total,
+            COUNT(*) FILTER (WHERE activo = true)::int      AS activos
+          FROM "Cliente"
+          WHERE "deletedAt" IS NULL
+        ),
+        tec AS (SELECT COUNT(*)::int AS total FROM "Empleado"),
+        oi  AS (
+          SELECT COUNT(*) FILTER (WHERE estado = 'Pendiente')::int AS pendientes
+          FROM "OrdenInstalacion"
+        ),
+        fac AS (
+          SELECT
+            COALESCE(SUM(total) FILTER (WHERE "fechaEmision" >= ${inicioMes} AND estado != 'Anulada'), 0)::float8  AS "facturadoMes",
+            COUNT(*)            FILTER (WHERE "fechaEmision" >= ${inicioMes} AND estado != 'Anulada')::int          AS "facturasEmitidasMes",
+            COALESCE(SUM(total) FILTER (WHERE estado = 'Pagada' AND "fechaPago" >= ${inicioMes}), 0)::float8       AS "cobradoMes",
+            COUNT(*)            FILTER (WHERE estado = 'Vencida')::int                                              AS "vencidasCount",
+            COALESCE(SUM(total) FILTER (WHERE estado = 'Vencida'), 0)::float8                                       AS "vencidasMonto"
+          FROM "Factura"
+        ),
+        ots AS (
+          SELECT
+            COUNT(*) FILTER (WHERE estado = 'Pendiente')::int AS "otsPendientes",
+            COUNT(*) FILTER (WHERE estado = 'EnProceso')::int AS "otsEnProceso"
+          FROM "OrdenTrabajo"
+        )
+      SELECT
+        svc.activos, svc.pendientes, svc."enInstalacion", svc.suspendidos, svc.cancelados, svc.ingresos,
+        cli.total AS "totalClientes", cli.activos AS "clientesActivos",
+        tec.total AS tecnicos,
+        oi.pendientes AS "ordenesPendientes",
+        fac."facturadoMes", fac."facturasEmitidasMes", fac."cobradoMes", fac."vencidasCount", fac."vencidasMonto",
+        ots."otsPendientes", ots."otsEnProceso"
+      FROM svc, cli, tec, oi, fac, ots
+    `
 
-    const [stockCritico, totalClientes, clientesActivos, totalTecnicos, ingresosMensuales] =
-      await Promise.all([
-        prisma.producto.findMany({
-          where: { stockActual: { lte: 5 } },
-          select: { id: true, nombre: true, sku: true, stockActual: true },
-          orderBy: { stockActual: 'asc' }, take: 10,
-        }),
-        prisma.cliente.count(),
-        prisma.cliente.count({ where: { activo: true } }),
-        prisma.empleado.count(),
-        prisma.servicio.aggregate({ where: { estado: 'Activo' }, _sum: { precioMensual: true } }),
-      ]);
-
-    // Billing — split into individual count + sum to avoid _count.field nullability issues
-    const [facturadoMesSum, facturadoMesCount, cobradoMesSum, vencidasCount, vencidasSum, otsPendientes, otsEnProceso] =
-      await Promise.all([
-        prisma.factura.aggregate({
-          where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
-          _sum: { total: true },
-        }),
-        prisma.factura.count({
-          where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
-        }),
-        prisma.factura.aggregate({
-          where: { estado: 'Pagada', fechaPago: { gte: inicioMes } },
-          _sum: { total: true },
-        }),
-        prisma.factura.count({ where: { estado: 'Vencida' } }),
-        prisma.factura.aggregate({
-          where: { estado: 'Vencida' },
-          _sum: { total: true },
-        }),
-        prisma.ordenTrabajo.count({ where: { estado: 'Pendiente' } }),
-        prisma.ordenTrabajo.count({ where: { estado: 'EnProceso' } }),
-      ]);
+    const stockCritico = await prisma.producto.findMany({
+      where: { stockActual: { lte: 5 } },
+      select: { id: true, nombre: true, sku: true, stockActual: true },
+      orderBy: { stockActual: 'asc' }, take: 10,
+    })
 
     let ncfAlerts = []
     try {
@@ -1685,20 +1697,26 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
     }
 
     dashCache = {
-      servicios: { activos, pendientes, enInstalacion, suspendidos, cancelados },
-      ordenesPendientes,
+      servicios: {
+        activos:       Number(kpi.activos),
+        pendientes:    Number(kpi.pendientes),
+        enInstalacion: Number(kpi.enInstalacion),
+        suspendidos:   Number(kpi.suspendidos),
+        cancelados:    Number(kpi.cancelados),
+      },
+      ordenesPendientes:          Number(kpi.ordenesPendientes),
       stockCritico,
-      ingresosMensualesEstimados: Number(ingresosMensuales._sum?.precioMensual ?? 0),
-      clientes: { total: totalClientes, activos: clientesActivos },
-      tecnicos: totalTecnicos,
+      ingresosMensualesEstimados: Number(kpi.ingresos),
+      clientes: { total: Number(kpi.totalClientes), activos: Number(kpi.clientesActivos) },
+      tecnicos:                   Number(kpi.tecnicos),
       billing: {
-        facturadoMes:        Number(facturadoMesSum._sum?.total ?? 0),
-        facturasEmitidasMes: facturadoMesCount,
-        cobradoMes:          Number(cobradoMesSum._sum?.total   ?? 0),
-        vencidasCount,
-        vencidasMonto:       Number(vencidasSum._sum?.total     ?? 0),
-        otsPendientes,
-        otsEnProceso,
+        facturadoMes:        Number(kpi.facturadoMes),
+        facturasEmitidasMes: Number(kpi.facturasEmitidasMes),
+        cobradoMes:          Number(kpi.cobradoMes),
+        vencidasCount:       Number(kpi.vencidasCount),
+        vencidasMonto:       Number(kpi.vencidasMonto),
+        otsPendientes:       Number(kpi.otsPendientes),
+        otsEnProceso:        Number(kpi.otsEnProceso),
       },
       ncfAlerts,
     };

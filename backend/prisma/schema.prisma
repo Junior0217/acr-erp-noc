@@ -224,6 +224,7 @@ model Cliente {
   promHorasMes        Int?
   activo              Boolean    @default(true)
   fechaInactivo       DateTime?
+  deletedAt           DateTime?
   limiteCredito       Decimal    @default(0.00) @db.Decimal(12, 2)
   diasCredito         Int        @default(0)
   tipoNcf             String     @default("Consumidor Final")
