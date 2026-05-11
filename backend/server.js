@@ -2020,6 +2020,26 @@ app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (re
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
+app.patch('/api/facturas/:id/estado', verificarJWT, requerirPermiso('factura:editar'), async (req, res) => {
+  try {
+    const { estado } = req.body
+    const allowed = ['Pagada', 'Anulada', 'Vencida']
+    if (!allowed.includes(estado)) return res.status(400).json({ error: `Estado inválido. Permitidos: ${allowed.join(', ')}.` })
+
+    const existing = await prisma.factura.findUnique({ where: { id: req.params.id } })
+    if (!existing)                 return res.status(404).json({ error: 'Factura no encontrada.' })
+    if (existing.estado === 'Anulada') return res.status(409).json({ error: 'Factura ya anulada. No se puede modificar.' })
+    if (existing.estado === estado) return res.status(409).json({ error: `Factura ya está en estado ${estado}.` })
+
+    const data = { estado }
+    if (estado === 'Pagada') data.fechaPago = new Date()
+
+    const factura = await prisma.factura.update({ where: { id: req.params.id }, data })
+    auditReq('factura:estado', req, { facturaId: factura.id, estado, ncf: factura.ncf })
+    res.json(factura)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
 // ─── Server ───────────────────────────────────────────────────────────────────
 
 app.use((err, req, res, next) => {

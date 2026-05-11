@@ -32,6 +32,7 @@ module.exports = [
   // ── Facturación ───────────────────────────────────────────────────────────────
   { key: 'factura:ver',             module: 'Facturación',   label: 'Ver',              desc: 'Consultar facturas y estado NCF',               color: 'amber'   },
   { key: 'factura:emitir',          module: 'Facturación',   label: 'Emitir',           desc: 'Convertir borrador en factura oficial',         color: 'amber'   },
+  { key: 'factura:editar',          module: 'Facturación',   label: 'Editar Estado',    desc: 'Marcar factura como Pagada o Vencida',          color: 'amber'   },
   { key: 'factura:anular',          module: 'Facturación',   label: 'Anular',           desc: 'Anular factura emitida (irreversible)',          color: 'amber'   },
   { key: 'factura:exportar',        module: 'Facturación',   label: 'Exportar',         desc: 'Descargar facturas en PDF o CSV',               color: 'amber'   },
 

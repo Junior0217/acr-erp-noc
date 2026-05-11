@@ -796,6 +796,8 @@ function NuevaOTModal({ onClose, onSaved, clienteIdInit, clienteNombreInit }) {
 
 // ── OT: Panel principal ───────────────────────────────────────────────────────
 
+const PAGE_SIZE = 20
+
 function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
   const { tienePermiso }                   = useAuth()
   const canBill                            = tienePermiso('factura:emitir')
@@ -805,6 +807,8 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
   const [showModal,     setShowModal]     = useState(!!clienteIdInit)
   const [filtroEstado,  setFiltroEstado]  = useState('')
   const [filtroTipo,    setFiltroTipo]    = useState('')
+  const [page,          setPage]          = useState(0)
+  const [total,         setTotal]         = useState(0)
 
   const fetchOrdenes = useCallback(async () => {
     setLoading(true)
@@ -812,12 +816,15 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
       const p = new URLSearchParams()
       if (filtroEstado) p.set('estado', filtroEstado)
       if (filtroTipo)   p.set('tipoOT',  filtroTipo)
+      p.set('limit',  String(PAGE_SIZE))
+      p.set('offset', String(page * PAGE_SIZE))
       const r = await apiFetch(`/api/ordenes?${p}`)
-      if (r.ok) { const j = await r.json(); setOrdenes(j.data ?? []) }
+      if (r.ok) { const j = await r.json(); setOrdenes(j.data ?? []); setTotal(j.total ?? 0) }
     } catch {}
     finally { setLoading(false) }
-  }, [filtroEstado, filtroTipo])
+  }, [filtroEstado, filtroTipo, page])
 
+  useEffect(() => { setPage(0) }, [filtroEstado, filtroTipo])
   useEffect(() => { fetchOrdenes() }, [fetchOrdenes])
 
   async function facturarOT(ot) {
@@ -931,10 +938,29 @@ function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit }) {
             </tbody>
           </table>
         </div>
-        <div className="px-4 py-2.5 border-t border-slate-700/50">
+        <div className="px-4 py-2.5 border-t border-slate-700/50 flex items-center justify-between gap-4">
           <p className="text-xs text-slate-600 font-mono">
-            {ordenes.length} orden{ordenes.length !== 1 ? 'es' : ''}
+            {total} orden{total !== 1 ? 'es' : ''}
           </p>
+          {total > PAGE_SIZE && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={page === 0 || loading}
+                className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-colors">
+                Anterior
+              </button>
+              <span className="text-xs text-slate-500 font-mono">
+                {page + 1} / {Math.ceil(total / PAGE_SIZE)}
+              </span>
+              <button
+                onClick={() => setPage(p => p + 1)}
+                disabled={(page + 1) * PAGE_SIZE >= total || loading}
+                className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-colors">
+                Siguiente
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -972,22 +998,47 @@ function FacturaEstadoBadge({ estado }) {
 }
 
 function PanelFacturas() {
+  const { tienePermiso }                   = useAuth()
+  const canEdit                            = tienePermiso('factura:editar')
   const [facturas,      setFacturas]      = useState([])
   const [loading,       setLoading]       = useState(false)
+  const [updating,      setUpdating]      = useState(null)
   const [filtroEstado,  setFiltroEstado]  = useState('')
+  const [page,          setPage]          = useState(0)
+  const [total,         setTotal]         = useState(0)
 
   const fetchFacturas = useCallback(async () => {
     setLoading(true)
     try {
       const p = new URLSearchParams()
       if (filtroEstado) p.set('estado', filtroEstado)
+      p.set('limit',  String(PAGE_SIZE))
+      p.set('offset', String(page * PAGE_SIZE))
       const r = await apiFetch(`/api/facturas?${p}`)
-      if (r.ok) { const j = await r.json(); setFacturas(j.data ?? []) }
+      if (r.ok) { const j = await r.json(); setFacturas(j.data ?? []); setTotal(j.total ?? 0) }
     } catch {}
     finally { setLoading(false) }
-  }, [filtroEstado])
+  }, [filtroEstado, page])
 
+  useEffect(() => { setPage(0) }, [filtroEstado])
   useEffect(() => { fetchFacturas() }, [fetchFacturas])
+
+  async function actualizarEstado(f, nuevoEstado) {
+    if (nuevoEstado === 'Anulada') {
+      if (!window.confirm(`¿Anular la factura ${f.noFactura} (NCF: ${f.ncf})?\nEsta acción es irreversible.`)) return
+    }
+    setUpdating(f.id)
+    try {
+      const r = await apiFetch(`/api/facturas/${f.id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: nuevoEstado }) })
+      const j = await r.json()
+      if (!r.ok) { toast.error(j.error ?? 'Error al actualizar.'); return }
+      toast.success(`Factura ${nuevoEstado === 'Pagada' ? 'marcada como Pagada' : 'anulada'}.`)
+      fetchFacturas()
+    } catch { toast.error('Error de conexión.') }
+    finally { setUpdating(null) }
+  }
+
+  const colSpan = 9 + (canEdit ? 1 : 0)
 
   const totalEmitidas = facturas
     .filter(f => f.estado === 'Emitida' || f.estado === 'Pagada')
@@ -1030,15 +1081,16 @@ function PanelFacturas() {
                 <th className={TH}>Total</th>
                 <th className={TH}>Estado</th>
                 <th className={TH}>Emisión</th>
+                {canEdit && <th className="px-4 py-3" />}
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={9} className="text-center py-12">
+                <tr><td colSpan={colSpan} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : facturas.length === 0 ? (
-                <tr><td colSpan={9} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={colSpan} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay facturas emitidas aún.
                 </td></tr>
               ) : facturas.map(f => (
@@ -1067,13 +1119,53 @@ function PanelFacturas() {
                   <td className="px-4 py-3 font-mono text-sm text-emerald-400 font-bold whitespace-nowrap">{formatCurrency(f.total)}</td>
                   <td className="px-4 py-3 whitespace-nowrap"><FacturaEstadoBadge estado={f.estado} /></td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(f.fechaEmision)}</td>
+                  {canEdit && (
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      {f.estado === 'Emitida' && updating !== f.id && (
+                        <div className="flex items-center gap-1.5 justify-end">
+                          <button
+                            onClick={() => actualizarEstado(f, 'Pagada')}
+                            disabled={!!updating}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-400 text-xs font-semibold transition-all disabled:opacity-40">
+                            Pagada
+                          </button>
+                          <button
+                            onClick={() => actualizarEstado(f, 'Anulada')}
+                            disabled={!!updating}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-600/15 hover:bg-red-600/25 border border-red-600/30 text-red-400 text-xs font-semibold transition-all disabled:opacity-40">
+                            Anular
+                          </button>
+                        </div>
+                      )}
+                      {updating === f.id && <Loader2 size={14} className="animate-spin text-blue-500 ml-auto" />}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <div className="px-4 py-2.5 border-t border-slate-700/50">
-          <p className="text-xs text-slate-600 font-mono">{facturas.length} factura{facturas.length !== 1 ? 's' : ''}</p>
+        <div className="px-4 py-2.5 border-t border-slate-700/50 flex items-center justify-between gap-4">
+          <p className="text-xs text-slate-600 font-mono">{total} factura{total !== 1 ? 's' : ''}</p>
+          {total > PAGE_SIZE && (
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setPage(p => Math.max(0, p - 1))}
+                disabled={page === 0 || loading}
+                className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-colors">
+                Anterior
+              </button>
+              <span className="text-xs text-slate-500 font-mono">
+                {page + 1} / {Math.ceil(total / PAGE_SIZE)}
+              </span>
+              <button
+                onClick={() => setPage(p => p + 1)}
+                disabled={(page + 1) * PAGE_SIZE >= total || loading}
+                className="px-3 py-1 rounded-lg text-xs font-semibold bg-slate-800 border border-slate-700 text-slate-300 disabled:opacity-30 hover:bg-slate-700 transition-colors">
+                Siguiente
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>
