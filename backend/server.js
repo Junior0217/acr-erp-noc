@@ -237,7 +237,7 @@ const optIdent  = (max = 20) => z.string().min(1).max(max).or(emptyStr).optional
 
 const passwordSchema = z.string()
   .min(8, 'Mínimo 8 caracteres.')
-  .regex(/[!@#$%^&*]/, 'Requiere al menos un símbolo especial (!@#$%^&*).');
+  .regex(/[^a-zA-Z0-9\s]/, 'Requiere al menos un símbolo especial (ej. ! @ # $ % & *).');
 
 const empleadoSchema = z.object({
   nombre:   z.string().min(2).max(100),

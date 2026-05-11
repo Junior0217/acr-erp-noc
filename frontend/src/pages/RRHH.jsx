@@ -61,7 +61,7 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
     finally { setSaving(false) }
   }
 
-  const pwdValid = !password || (password.length >= 8 && /[!@#$%^&*]/.test(password))
+  const pwdValid = !password || (password.length >= 8 && /[^a-zA-Z0-9\s]/.test(password))
   const canSave  = nombre.trim() && email.trim() && pwdValid && (!!empleado || password.length >= 8)
 
   return (
@@ -86,16 +86,16 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
             <div className="relative">
               <input type={showPwd ? 'text' : 'password'} className={INPUT + ' pr-9'} value={password}
                 onChange={e => setPassword(e.target.value)}
-                placeholder={empleado ? 'Dejar vacío para no cambiar' : 'Mín 8 chars + 1 símbolo (!@#$%^&*)'}
+                placeholder={empleado ? 'Dejar vacío para no cambiar' : 'Mín 8 chars + 1 símbolo (! @ # $ %...)'}
               />
               <button type="button" onClick={() => setShowPwd(v => !v)}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300">
                 {showPwd ? <EyeOff size={13} /> : <Eye size={13} />}
               </button>
             </div>
-            {!empleado && <p className="text-[10px] text-slate-600 mt-1 font-mono">Requiere símbolo especial: ! @ # $ % ^ &amp; *</p>}
+            {!empleado && <p className="text-[10px] text-slate-600 mt-1 font-mono">Requiere símbolo especial: ! @ # $ % ^ &amp; * - _ etc.</p>}
             {empleado && password && !pwdValid && (
-              <p className="text-[10px] text-red-400 mt-1 font-mono">Mín. 8 caracteres + símbolo (!@#$%^&amp;*)</p>
+              <p className="text-[10px] text-red-400 mt-1 font-mono">Mín. 8 caracteres + 1 símbolo especial</p>
             )}
           </div>
           <div>
