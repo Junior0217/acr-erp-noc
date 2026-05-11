@@ -106,7 +106,18 @@ setInterval(() => {
   for (const [cid, e] of challengeStore) if (e.exp < now) challengeStore.delete(cid)
 }, 5 * 60_000)
 
-const prisma = new PrismaClient();
+// AuditLog is append-only. This extension blocks all mutations at the ORM layer.
+// The only permitted write path is prisma.auditLog.create (and $executeRaw for retention cleanup).
+const prisma = new PrismaClient().$extends({
+  query: {
+    auditLog: {
+      update:     () => { throw new Error('AuditLog es inmutable: update no permitido.') },
+      updateMany: () => { throw new Error('AuditLog es inmutable: updateMany no permitido.') },
+      delete:     () => { throw new Error('AuditLog es inmutable: delete no permitido.') },
+      deleteMany: () => { throw new Error('AuditLog es inmutable: deleteMany no permitido.') },
+    },
+  },
+});
 
 // ─── AuditLog helpers ─────────────────────────────────────────────────────────
 
@@ -120,11 +131,11 @@ function auditReq(evento, req, meta, overrides) {
   })
 }
 
-// Rolling 12-month cleanup (runs daily)
+// Rolling 12-month retention cleanup (raw SQL bypasses the ORM immutability guard intentionally)
 setInterval(async () => {
   try {
     const cutoff = new Date(); cutoff.setMonth(cutoff.getMonth() - 12)
-    await prisma.auditLog.deleteMany({ where: { creadoEn: { lt: cutoff } } })
+    await prisma.$executeRaw`DELETE FROM "AuditLog" WHERE "creadoEn" < ${cutoff}`
   } catch {}
 }, 24 * 60 * 60_000)
 
@@ -150,9 +161,18 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
+// Fingerprint = SHA-256(IP + User-Agent) — prevents shared-NAT users (same office IP)
+// from counting against each other's rate limit buckets.
+function reqFingerprint(req) {
+  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() ?? req.socket?.remoteAddress ?? ''
+  const ua = req.headers['user-agent'] ?? ''
+  return crypto.createHash('sha256').update(`${ip}|${ua}`).digest('hex')
+}
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
+  keyGenerator: reqFingerprint,
   message: { error: 'Demasiadas peticiones, intente de nuevo más tarde.' }
 });
 app.use('/api/', limiter);
@@ -160,6 +180,7 @@ app.use('/api/', limiter);
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
+  keyGenerator: reqFingerprint,
   message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
   skipSuccessfulRequests: true,
 });
@@ -167,6 +188,7 @@ const loginLimiter = rateLimit({
 const totpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
+  keyGenerator: reqFingerprint,
   message: { error: 'Demasiados intentos de PIN. Intente en 15 minutos.' },
   skipSuccessfulRequests: true,
 });
@@ -174,7 +196,8 @@ const totpLimiter = rateLimit({
 const billingLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
-  keyGenerator: (req) => req.user?.sub ? `billing:${req.user.sub}` : req.ip,
+  // Authenticated: key by user ID (immune to IP changes). Unauthenticated: fingerprint fallback.
+  keyGenerator: (req) => req.user?.sub ? `billing:${req.user.sub}` : reqFingerprint(req),
   message: { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
 });
 
@@ -488,6 +511,13 @@ app.post('/api/auth/login', loginLimiter, async (req, res) => {
     if (!valid) {
       auditReq('auth:login_fail', req, { email });
       return res.status(401).json({ error: 'Credenciales inválidas.' });
+    }
+
+    // Block login if any active role mandates 2FA but the employee hasn't configured it yet
+    const requires2FAByRole = empleado.roles.some(r => r.require2FA)
+    if (requires2FAByRole && !empleado.twoFactorEnabled) {
+      auditReq('auth:2fa_required_blocked', req, { email }, { userId: empleado.id, userName: empleado.nombre })
+      return res.status(403).json({ error: 'Tu rol requiere autenticación de 2 pasos. Por favor, contacta al administrador para configurarlo.' })
     }
 
     // Detect suspicious IP (new location vs last known)
