@@ -2019,7 +2019,7 @@ app.get('/api/catalogo', verificarJWT, async (req, res) => {
     const canSeeCosts = permisos.includes('sistema:owner') || permisos.includes('catalogo:ver_costos')
     const data = canSeeCosts ? items : items.map(({ costo, ...rest }) => rest)
     res.json({ data })
-  } catch { res.status(500).json({ error: 'Error interno.' }) }
+  } catch (e) { console.error('[GET /api/catalogo]', e.message); res.status(500).json({ error: 'Error interno.' }) }
 })
 
 app.post('/api/catalogo', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
