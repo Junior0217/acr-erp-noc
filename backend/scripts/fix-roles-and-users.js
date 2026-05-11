@@ -68,14 +68,33 @@ async function main() {
   // 2. Assign users by email
   console.log('\n[2/3] Assigning users...');
   for (const def of ROLES_DEF) {
-    const emp = await prisma.empleado.findUnique({ where: { email: def.email } });
+    const emp = await prisma.empleado.findUnique({
+      where:   { email: def.email },
+      include: { roles: { select: { nombre: true } } },
+    });
     if (!emp) { console.warn(`   ⚠  No encontrado: ${def.email}`); continue; }
+    const antes = emp.roles.map(r => r.nombre).join(', ') || '(ninguno)';
     await prisma.empleado.update({
       where: { id: emp.id },
       data:  { roles: { set: [{ id: rolIds[def.nombre] }] } },
     });
-    console.log(`   ✓ ${emp.nombre} → "${def.nombre}"`);
+    console.log(`   ✓ ${emp.nombre} (${def.email})`);
+    console.log(`       antes: [${antes}]  →  después: ["${def.nombre}"]`);
   }
+
+  // Explicit safety check: nobody besides crosario must hold Propietario
+  const propietarioId = rolIds['Propietario Absoluto'];
+  const propietarios = await prisma.empleado.findMany({
+    where: { roles: { some: { id: propietarioId } } },
+    select: { email: true, nombre: true },
+  });
+  const badOwners = propietarios.filter(e => e.email !== 'crosario@acrnetworks.do');
+  if (badOwners.length > 0) {
+    console.error('\n🚨 ALERTA: Propietario asignado a usuarios no autorizados:');
+    badOwners.forEach(e => console.error(`   • ${e.nombre} (${e.email})`));
+    process.exit(1);
+  }
+  console.log(`\n   ✓ Safety check OK — solo crosario tiene Propietario Absoluto`);
 
   // 3. Delete legacy roles (only if empty)
   console.log('\n[3/3] Removing legacy roles...');

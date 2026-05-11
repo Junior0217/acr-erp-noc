@@ -1,4 +1,5 @@
 require('dotenv').config();
+console.log('[RENDER SYNC] Backend API v2.1 started — Prisma Client regenerated');
 const util         = require('util');
 const express      = require('express');
 const cors         = require('cors');
@@ -1261,7 +1262,8 @@ app.get('/api/productos', async (req, res) => {
       prisma.producto.count({ where }),
     ]);
     res.json({ data: productos.map(formatProducto), meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1) } });
-  } catch {
+  } catch (e) {
+    console.error('[GET /api/productos]', e.message, e.stack);
     res.status(500).json({ error: 'Error al obtener productos.' });
   }
 });
