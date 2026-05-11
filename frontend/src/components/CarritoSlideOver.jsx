@@ -1,11 +1,19 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck } from 'lucide-react'
+import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useDebounce } from '../hooks/useDebounce'
 import { toast } from 'sonner'
 
 const fmt = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
+
+const NCF_OPTIONS = [
+  { value: '',     label: 'Auto (según cliente)' },
+  { value: 'Fiscal',           label: 'B01 — Crédito Fiscal' },
+  { value: 'Consumidor Final', label: 'B02 — Consumidor Final' },
+  { value: 'Gubernamental',    label: 'B14 — Gubernamental' },
+  { value: 'Regímenes Especiales', label: 'B15 — Régimenes Especiales' },
+]
 
 function ClienteSearch({ clienteActual, onSelect }) {
   const [query, setQuery]   = useState(clienteActual?.razonSocial ?? '')
@@ -164,6 +172,8 @@ function LineaRow({ linea, onUpdate, onRemove }) {
 
 export default function CarritoSlideOver() {
   const { carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout } = useCart()
+  const [tipoNcf, setTipoNcf]         = useState('')
+  const [nombreWalkIn, setNombreWalkIn] = useState('')
 
   if (!open) return null
 
@@ -173,12 +183,19 @@ export default function CarritoSlideOver() {
 
   async function handleCheckout(esCotizacion) {
     if (!lineas.length) { toast.warning('El carrito está vacío.'); return }
-    const f = await checkout(esCotizacion)
-    if (f) setOpen(false)
+    const nombre = !cliente && nombreWalkIn.trim() ? nombreWalkIn.trim() : undefined
+    const ncf    = tipoNcf || undefined
+    const f = await checkout(esCotizacion, ncf, nombre)
+    if (f) {
+      setTipoNcf('')
+      setNombreWalkIn('')
+      setOpen(false)
+    }
   }
 
   async function handleClienteSelect(c) {
     await updateCartMeta({ clienteId: c?.id ?? null })
+    if (c) setNombreWalkIn('')
   }
 
   return (
@@ -214,7 +231,32 @@ export default function CarritoSlideOver() {
                 <span className="text-xs text-slate-600">· {cliente.noCliente}</span>
               </div>
             )}
+            {!cliente && (
+              <input
+                className="mt-2 w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+                placeholder="Nombre walk-in (opcional)..."
+                value={nombreWalkIn}
+                onChange={e => setNombreWalkIn(e.target.value)}
+                maxLength={100}
+              />
+            )}
           </div>
+
+          <div>
+            <label className="block text-xs text-slate-500 mb-1.5 font-medium flex items-center gap-1.5">
+              <Receipt size={11} /> Tipo de Comprobante
+            </label>
+            <select
+              value={tipoNcf}
+              onChange={e => setTipoNcf(e.target.value)}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500 transition-colors"
+            >
+              {NCF_OPTIONS.map(o => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+
           <div className="flex items-center justify-between">
             <label className="text-xs text-slate-400 font-medium">Aplicar ITBIS (18%)</label>
             <button
@@ -257,6 +299,19 @@ export default function CarritoSlideOver() {
                 <span className="tabular-nums text-blue-300">RD$ {fmt(totales.total)}</span>
               </div>
             </div>
+
+            {tipoNcf && (
+              <div className="px-4 pb-1 flex items-center gap-1.5">
+                <Receipt size={11} className="text-amber-400" />
+                <span className="text-xs text-amber-400">{NCF_OPTIONS.find(o => o.value === tipoNcf)?.label}</span>
+              </div>
+            )}
+            {!cliente && nombreWalkIn.trim() && (
+              <div className="px-4 pb-1 flex items-center gap-1.5">
+                <UserCheck size={11} className="text-sky-400" />
+                <span className="text-xs text-sky-400">{nombreWalkIn.trim()}</span>
+              </div>
+            )}
 
             <div className="px-4 py-3 grid grid-cols-2 gap-2">
               <button
