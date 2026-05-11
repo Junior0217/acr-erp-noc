@@ -1,4 +1,5 @@
 require('dotenv').config();
+const util         = require('util');
 const express      = require('express');
 const cors         = require('cors');
 const rateLimit    = require('express-rate-limit');
@@ -473,24 +474,20 @@ function completarLogin(empleado, req, res, rememberMe = false) {
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
+const generateKeyPairAsync = util.promisify(crypto.generateKeyPair);
+
 app.get('/api/auth/challenge', async (req, res) => {
   try {
-    const { publicKey, privateKey } = await new Promise((resolve, reject) =>
-      crypto.generateKeyPair('rsa', {
-        modulusLength: 2048,
-        publicKeyEncoding:  { type: 'spki',  format: 'der' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
-      }, (err, pub, priv) => err ? reject(err) : resolve({ publicKey: pub, privateKey: priv }))
-    );
+    const { publicKey, privateKey } = await generateKeyPairAsync('rsa', {
+      modulusLength: 2048,
+      publicKeyEncoding:  { type: 'spki',  format: 'der' },
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    });
     const cid = crypto.randomUUID();
     challengeStore.set(cid, { privateKey, exp: Date.now() + 120_000 });
     res.json({ cid, publicKey: Buffer.from(publicKey).toString('base64') });
   } catch (error) {
-    console.error('[CHALLENGE ERROR]', {
-      message: error.message,
-      code:    error.code,
-      stack:   error.stack,
-    });
+    console.error('[CHALLENGE ERROR]', { message: error.message, code: error.code, stack: error.stack });
     res.status(500).json({ error: 'RSA_FAILURE', message: error.message });
   }
 });
@@ -602,7 +599,21 @@ app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
       include: { roles: { where: { activo: true } } },
     })
     if (!empleado || !empleado.twoFactorSecret) return res.status(400).json({ error: 'Error de configuración 2FA.' })
-    const secret = decryptTOTP(empleado.twoFactorSecret)
+
+    let secret
+    try {
+      secret = decryptTOTP(empleado.twoFactorSecret)
+    } catch (decryptErr) {
+      console.error('[2FA ERROR] decryptTOTP failed — JWT_SECRET mismatch between old and new server:', {
+        empleadoId: empleado.id,
+        message:    decryptErr.message,
+      })
+      return res.status(400).json({
+        error: '2FA_SECRET_INVALID',
+        message: 'El secreto 2FA no puede descifrarse. El administrador debe resetear el 2FA de este usuario.',
+      })
+    }
+
     if (!authenticator.verify({ token: totp, secret })) {
       auditReq('auth:2fa_fail', req, {}, { userId: empleado.id, userName: empleado.nombre })
       return res.status(401).json({ error: 'PIN inválido.' })
@@ -611,6 +622,7 @@ app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
     const payload = await completarLogin(empleado, req, res, entry.rememberMe ?? false)
     res.json(payload)
   } catch (e) {
+    console.error('[2FA ERROR]', { message: e.message, stack: e.stack })
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
     res.status(500).json({ error: 'Error interno.' })
   }
