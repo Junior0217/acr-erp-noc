@@ -5,7 +5,7 @@
   "scripts": {
     "build": "npx prisma generate",
     "postinstall": "npx prisma generate",
-    "start": "node server.js",
+    "start": "npx prisma generate && node server.js",
     "dev": "node server.js"
   },
   "type": "commonjs",

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: acr-erp-backend
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install && npx prisma generate
+    startCommand: node server.js
+    envVars:
+      - key: NODE_ENV
+        value: production
