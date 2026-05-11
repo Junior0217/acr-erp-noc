@@ -2,6 +2,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useAuth, AuthProvider } from './contexts/AuthContext'
 import { CartProvider } from './contexts/CartContext'
+import PWAUpdatePrompt from './components/PWAUpdatePrompt'
 import ErrorBoundary from './components/ErrorBoundary'
 import AdminLayout from './layouts/AdminLayout'
 import Dashboard from './pages/Dashboard'
@@ -66,6 +67,7 @@ export default function App() {
           <BrowserRouter>
             <Toaster position="top-right" richColors closeButton duration={4000} />
             <AppRoutes />
+            <PWAUpdatePrompt />
           </BrowserRouter>
         </CartProvider>
       </AuthProvider>

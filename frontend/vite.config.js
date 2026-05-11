@@ -6,14 +6,13 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
-      // Inject the service worker registration script automatically
+      registerType: 'prompt',
       injectRegister: 'auto',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
       manifest: {
         name: 'ACR Networks NOC',
         short_name: 'ACR NOC',
-        description: 'Panel de Control NOC — ACR Networks & Solutions',
+        description: 'Panel de Control NOC — ACR Networks & Solutions v2.1',
         theme_color: '#0f172a',
         background_color: '#0f172a',
         display: 'standalone',
@@ -40,10 +39,12 @@ export default defineConfig({
         ],
       },
       workbox: {
-        // Raise limit to 5 MB — logo-acr-eslogan.png is 4.38 MB
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
-        // Cache all build artifacts
+        cleanupOutdatedCaches: true,
+        cacheId: 'acr-noc-v2',
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        skipWaiting: true,
+        clientsClaim: true,
         // Runtime caching strategy for API calls
         runtimeCaching: [
           {

@@ -41,7 +41,8 @@
       "Bash(DATABASE_URL=\"postgresql://postgres.eqmovbodoqdwrvbusaqk:JptIHZlH0n5VBhhz@aws-1-us-east-1.pooler.supabase.com:6543/postgres?pgbouncer=true&connection_limit=5&pool_timeout=10\" node backend/scripts/reset-2fa.js)",
       "Bash(DATABASE_URL=\"postgresql://postgres.eqmovbodoqdwrvbusaqk:JptIHZlH0n5VBhhz@aws-1-us-east-1.pooler.supabase.com:5432/postgres?sslmode=require\" node backend/scripts/seed-mock-data.js)",
       "Bash(Select-Object FullName)",
-      "Bash(npx vite *)"
+      "Bash(npx vite *)",
+      "Bash(git commit *)"
     ]
   }
 }
