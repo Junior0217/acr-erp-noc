@@ -23,18 +23,28 @@ const ESTADO_COLOR = {
 
 export default function Dashboard() {
   const [data, setData]       = useState(null)
+  const [error, setError]     = useState(null)
   const [loading, setLoading] = useState(true)
   const [ts, setTs]           = useState(null)
 
   async function fetchData() {
     setLoading(true)
+    setError(null)
     try {
       const r = await apiFetch('/api/dashboard')
       const j = await r.json()
+      if (!r.ok || j.error) {
+        setError(j.error || `Error ${r.status}`)
+        setLoading(false)
+        return
+      }
       setData(j)
       setTs(new Date())
-    } catch {}
-    finally { setLoading(false) }
+    } catch (e) {
+      setError(e.message || 'No se pudo conectar con el servidor.')
+    } finally {
+      setLoading(false)
+    }
   }
 
   useEffect(() => { fetchData() }, [])
@@ -47,11 +57,14 @@ export default function Dashboard() {
     )
   }
 
-  const kpis = data ? [
-    { label: 'Servicios Activos',          value: fmt(data.servicios.activos),                    delta: null,      Icon: Wifi,          accent: 'emerald' },
-    { label: 'Ingresos Estimados (RD$)',   value: fmtMoney(data.ingresosMensualesEstimados),       delta: '/mes',    Icon: DollarSign,    accent: 'blue'    },
-    { label: 'Órdenes Pendientes',         value: fmt(data.ordenesPendientes),                    delta: null,      Icon: ClipboardList, accent: 'amber'   },
-    { label: 'Clientes Activos',           value: fmt(data.clientes.activos),                     delta: `/ ${fmt(data.clientes.total)} total`, Icon: Users, accent: 'cyan' },
+  const servicios = data?.servicios ?? {}
+  const clientes  = data?.clientes  ?? {}
+
+  const kpis = data?.servicios ? [
+    { label: 'Servicios Activos',        value: fmt(servicios.activos ?? 0),                              delta: null,      Icon: Wifi,          accent: 'emerald' },
+    { label: 'Ingresos Estimados (RD$)', value: fmtMoney(data.ingresosMensualesEstimados ?? 0),           delta: '/mes',    Icon: DollarSign,    accent: 'blue'    },
+    { label: 'Órdenes Pendientes',       value: fmt(data.ordenesPendientes ?? 0),                         delta: null,      Icon: ClipboardList, accent: 'amber'   },
+    { label: 'Clientes Activos',         value: fmt(clientes.activos ?? 0), delta: `/ ${fmt(clientes.total ?? 0)} total`, Icon: Users, accent: 'cyan' },
   ] : []
 
   const billingKpis = data?.billing ? [
@@ -85,7 +98,7 @@ export default function Dashboard() {
     },
   ] : []
 
-  const totalServicios = data ? Object.values(data.servicios).reduce((a, b) => a + b, 0) : 0
+  const totalServicios = Object.values(servicios).reduce((a, b) => a + b, 0)
 
   return (
     <div className="space-y-6">
@@ -103,6 +116,23 @@ export default function Dashboard() {
           {ts ? ts.toLocaleTimeString('es-DO', { hour: '2-digit', minute: '2-digit' }) : 'Actualizar'}
         </button>
       </div>
+
+      {/* Error banner */}
+      {error && (
+        <div className="flex items-center gap-3 px-4 py-3 rounded-xl bg-red-900/30 border border-red-600/50 text-red-300">
+          <AlertTriangle size={16} className="text-red-400 flex-shrink-0" />
+          <div className="flex-1 min-w-0">
+            <p className="text-sm font-semibold text-red-200">Error al cargar el dashboard</p>
+            <p className="text-xs font-mono text-red-400 truncate">{error}</p>
+          </div>
+          <button
+            onClick={fetchData}
+            className="text-xs text-red-300 hover:text-red-100 border border-red-600/40 hover:border-red-500 px-2 py-1 rounded transition-colors flex-shrink-0"
+          >
+            Reintentar
+          </button>
+        </div>
+      )}
 
       {/* NCF Alert Banner */}
       {data?.ncfAlerts?.length > 0 && (
@@ -124,26 +154,28 @@ export default function Dashboard() {
       )}
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {kpis.map(({ label, value, delta, Icon, accent }) => {
-          const c = ACCENT[accent]
-          return (
-            <div key={label} className={`rounded-lg border ${c.border} ${c.bg} p-5 flex flex-col gap-4 relative overflow-hidden`}>
-              <div className="flex items-start justify-between">
-                <p className="text-xs font-mono text-slate-400 uppercase tracking-widest leading-tight">{label}</p>
-                <div className={`w-8 h-8 rounded-md flex items-center justify-center ${c.bg} border ${c.border}`}>
-                  <Icon size={15} className={c.icon} />
+      {kpis.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+          {kpis.map(({ label, value, delta, Icon, accent }) => {
+            const c = ACCENT[accent]
+            return (
+              <div key={label} className={`rounded-lg border ${c.border} ${c.bg} p-5 flex flex-col gap-4 relative overflow-hidden`}>
+                <div className="flex items-start justify-between">
+                  <p className="text-xs font-mono text-slate-400 uppercase tracking-widest leading-tight">{label}</p>
+                  <div className={`w-8 h-8 rounded-md flex items-center justify-center ${c.bg} border ${c.border}`}>
+                    <Icon size={15} className={c.icon} />
+                  </div>
                 </div>
+                <div className="flex items-end justify-between">
+                  <span className="text-3xl font-bold text-slate-100 tracking-tight">{value}</span>
+                  {delta && <span className={`text-xs font-mono px-2 py-0.5 rounded ${c.badge}`}>{delta}</span>}
+                </div>
+                <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-transparent via-current to-transparent opacity-20" />
               </div>
-              <div className="flex items-end justify-between">
-                <span className="text-3xl font-bold text-slate-100 tracking-tight">{value}</span>
-                {delta && <span className={`text-xs font-mono px-2 py-0.5 rounded ${c.badge}`}>{delta}</span>}
-              </div>
-              <div className="absolute inset-x-0 bottom-0 h-0.5 bg-gradient-to-r from-transparent via-current to-transparent opacity-20" />
-            </div>
-          )
-        })}
-      </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* Billing KPI Cards */}
       {billingKpis.length > 0 && (
@@ -171,7 +203,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Distribución de Servicios */}
-        {data && (
+        {data?.servicios && (
           <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-300">Distribución de Servicios</h2>
@@ -179,7 +211,7 @@ export default function Dashboard() {
             </div>
             <div className="space-y-3">
               {Object.entries(ESTADO_COLOR).map(([key, cfg]) => {
-                const count = data.servicios[key] ?? 0
+                const count = servicios[key] ?? 0
                 const pct   = totalServicios > 0 ? (count / totalServicios) * 100 : 0
                 return (
                   <div key={key}>
@@ -196,7 +228,7 @@ export default function Dashboard() {
             </div>
             <div className="pt-2 border-t border-slate-800 flex items-center justify-between text-xs text-slate-500">
               <span className="flex items-center gap-1.5"><Wrench size={12} className="text-slate-500" /> {data.tecnicos} técnico{data.tecnicos !== 1 ? 's' : ''} registrado{data.tecnicos !== 1 ? 's' : ''}</span>
-              <span className="flex items-center gap-1.5"><TrendingUp size={12} className="text-slate-500" />{fmt(data.ingresosMensualesEstimados)} RD$ estimados</span>
+              <span className="flex items-center gap-1.5"><TrendingUp size={12} className="text-slate-500" />{fmt(data.ingresosMensualesEstimados ?? 0)} RD$ estimados</span>
             </div>
           </div>
         )}
@@ -208,15 +240,15 @@ export default function Dashboard() {
               <AlertTriangle size={14} className="text-orange-400" />
               Stock Crítico (≤ 5 unidades)
             </h2>
-            {data && <span className="text-xs text-slate-500">{data.stockCritico.length} productos</span>}
+            {data?.stockCritico && <span className="text-xs text-slate-500">{data.stockCritico.length} productos</span>}
           </div>
-          {!data && <div className="py-6 flex justify-center"><Loader2 size={18} className="animate-spin text-slate-500" /></div>}
-          {data && data.stockCritico.length === 0 && (
+          {!data && !error && <div className="py-6 flex justify-center"><Loader2 size={18} className="animate-spin text-slate-500" /></div>}
+          {data?.stockCritico?.length === 0 && (
             <div className="py-6 text-center text-sm text-slate-600">
-              ✅ Todos los productos tienen stock suficiente.
+              Todos los productos tienen stock suficiente.
             </div>
           )}
-          {data && data.stockCritico.length > 0 && (
+          {data?.stockCritico?.length > 0 && (
             <div className="space-y-2">
               {data.stockCritico.map(p => (
                 <div key={p.id} className={`flex items-center justify-between px-3 py-2 rounded-lg border ${

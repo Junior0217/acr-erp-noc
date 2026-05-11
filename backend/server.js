@@ -1590,17 +1590,19 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       totalClientes, clientesActivos,
       totalTecnicos,
       ingresosMensuales,
-      facturacionMes,
-      cobradoMes,
-      facturasVencidas,
+      facturadoMesSum,
+      facturadoMesCount,
+      cobradoMesSum,
+      vencidasCount,
+      vencidasSum,
       otsPendientes,
       otsEnProceso,
     ] = await Promise.all([
-      prisma.servicio.count({ where: { estado: 'Activo'         } }),
-      prisma.servicio.count({ where: { estado: 'Pendiente'      } }),
-      prisma.servicio.count({ where: { estado: 'EnInstalacion'  } }),
-      prisma.servicio.count({ where: { estado: 'Suspendido'     } }),
-      prisma.servicio.count({ where: { estado: 'Cancelado'      } }),
+      prisma.servicio.count({ where: { estado: 'Activo'        } }),
+      prisma.servicio.count({ where: { estado: 'Pendiente'     } }),
+      prisma.servicio.count({ where: { estado: 'EnInstalacion' } }),
+      prisma.servicio.count({ where: { estado: 'Suspendido'    } }),
+      prisma.servicio.count({ where: { estado: 'Cancelado'     } }),
       prisma.ordenInstalacion.count({ where: { estado: 'Pendiente' } }),
       prisma.producto.findMany({
         where: { stockActual: { lte: 5 } },
@@ -1611,42 +1613,54 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
       prisma.cliente.count({ where: { activo: true } }),
       prisma.empleado.count(),
       prisma.servicio.aggregate({ where: { estado: 'Activo' }, _sum: { precioMensual: true } }),
+      // Billing — split into individual count + sum to avoid _count.field nullability issues
       prisma.factura.aggregate({
         where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
-        _sum: { total: true }, _count: { id: true },
+        _sum: { total: true },
+      }),
+      prisma.factura.count({
+        where: { fechaEmision: { gte: inicioMes }, estado: { not: 'Anulada' } },
       }),
       prisma.factura.aggregate({
         where: { estado: 'Pagada', fechaPago: { gte: inicioMes } },
         _sum: { total: true },
       }),
+      prisma.factura.count({ where: { estado: 'Vencida' } }),
       prisma.factura.aggregate({
         where: { estado: 'Vencida' },
-        _sum: { total: true }, _count: { id: true },
+        _sum: { total: true },
       }),
       prisma.ordenTrabajo.count({ where: { estado: 'Pendiente' } }),
       prisma.ordenTrabajo.count({ where: { estado: 'EnProceso' } }),
     ]);
-    const ncfConfigs = await prisma.configuracionNCF.findMany({ where: { activo: true } })
-    const ncfAlerts = ncfConfigs
-      .filter(c => c.limite > 0 && c.secuenciaActual / c.limite >= 0.90)
-      .map(c => ({
-        tipoNcf:   c.tipoNcf,
-        restantes: c.limite - c.secuenciaActual,
-        pct:       Math.round((c.secuenciaActual / c.limite) * 100),
-      }))
+
+    let ncfAlerts = []
+    try {
+      const ncfConfigs = await prisma.configuracionNCF.findMany({ where: { activo: true } })
+      ncfAlerts = ncfConfigs
+        .filter(c => c.limite > 0 && c.secuenciaActual / c.limite >= 0.90)
+        .map(c => ({
+          tipoNcf:   c.tipoNcf,
+          restantes: c.limite - c.secuenciaActual,
+          pct:       Math.round((c.secuenciaActual / c.limite) * 100),
+        }))
+    } catch (ncfErr) {
+      console.error('[DASHBOARD] ncfAlerts query failed:', ncfErr.message)
+    }
+
     dashCache = {
       servicios: { activos, pendientes, enInstalacion, suspendidos, cancelados },
       ordenesPendientes,
       stockCritico,
-      ingresosMensualesEstimados: Number(ingresosMensuales._sum.precioMensual ?? 0),
+      ingresosMensualesEstimados: Number(ingresosMensuales._sum?.precioMensual ?? 0),
       clientes: { total: totalClientes, activos: clientesActivos },
       tecnicos: totalTecnicos,
       billing: {
-        facturadoMes:       Number(facturacionMes._sum.total    ?? 0),
-        facturasEmitidasMes: facturacionMes._count.id           ?? 0,
-        cobradoMes:         Number(cobradoMes._sum.total        ?? 0),
-        vencidasCount:      facturasVencidas._count.id          ?? 0,
-        vencidasMonto:      Number(facturasVencidas._sum.total  ?? 0),
+        facturadoMes:        Number(facturadoMesSum._sum?.total ?? 0),
+        facturasEmitidasMes: facturadoMesCount,
+        cobradoMes:          Number(cobradoMesSum._sum?.total   ?? 0),
+        vencidasCount,
+        vencidasMonto:       Number(vencidasSum._sum?.total     ?? 0),
         otsPendientes,
         otsEnProceso,
       },
@@ -1654,8 +1668,9 @@ app.get('/api/dashboard', verificarJWT, async (req, res) => {
     };
     dashCacheExp = Date.now() + 60_000;
     res.json(dashCache);
-  } catch {
-    res.status(500).json({ error: 'Error al obtener dashboard.' });
+  } catch (error) {
+    console.error('[DASHBOARD ERROR]', error);
+    res.status(500).json({ error: error.message || 'Error interno al obtener dashboard.' });
   }
 });
 
