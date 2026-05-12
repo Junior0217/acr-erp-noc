@@ -77,6 +77,19 @@ _Avoid_: activo, asset, inventario del cliente
 Equipo de ACR cedido temporalmente a cliente. Por defecto 15 días. Al crear: descuenta del Kardex (`MovimientoInventario` tipo Salida). Al devolver: incrementa Kardex (`Entrada`). Si pasa `fechaLimite` sin devolución → flag visual `vencido` (sin acción automática). No factura solo: la decisión de cobrar pérdida queda en Carmelo.
 _Avoid_: loan, comodato (sí jurídicamente, pero el sistema usa Préstamo)
 
+### Seguridad
+
+**SessionToken (sesión única)**:
+Una sola sesión activa por `Empleado`. Login elimina todos los `SessionToken` anteriores del usuario. JWT TTL = 30 min con sliding refresh: el middleware re-firma el cookie cuando quedan < 15 min y actualiza `SessionToken.expiresAt`. Inactividad 30 min → expira → logout forzado.
+_Avoid_: multi-device login, refresh token (no usamos refresh tokens, es sliding del mismo JWT)
+
+**IpBlock**:
+Bloqueo temporal de IP por intentos fallidos en `/api/track/:pin`. Tally en memoria: 5 fallos (404 o regex inválido) en 5 min → INSERT IpBlock con expiración 30 min. Cache de bloqueos activos en memoria, hidratada al startup desde DB. Middleware retorna 429 antes de tocar handler.
+
+**checkout / webhook Azul**:
+`/api/portal/checkout` (login requerido) valida items, calcula total + ITBIS, crea `Factura(Borrador)` con `noFactura=PAGO-XXXXXX` y devuelve `paymentRef` al frontend. La pasarela redirige al cliente al gateway Azul. Al confirmar, Azul envía webhook firmado HMAC-SHA256 a `/api/webhooks/azul`. Si firma válida + monto coincide + estadoPago=aprobado: Factura→Pagada, auto-crea OT(Pendiente) si hay items instalables (CCTV/Redes/CercoElectrico). NCF se asigna solo al emitir, no en checkout.
+_Avoid_: payment, transacción (en el sistema es Factura+webhook, no una entidad Pago separada)
+
 ### Inventario (Kardex)
 
 **Kardex**:

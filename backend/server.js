@@ -460,6 +460,29 @@ async function verificarJWT(req, res, next) {
       return res.status(401).json({ error: 'Sesión expirada.' });
     }
     req.user = payload;
+
+    // Sliding refresh: if JWT has < 15min left, re-sign and extend session
+    const nowSec    = Math.floor(Date.now() / 1000);
+    const remaining = (payload.exp ?? 0) - nowSec;
+    if (remaining > 0 && remaining < 900) {
+      const newJwt = jwt.sign(
+        { sub: payload.sub, nombre: payload.nombre, permisos: payload.permisos, jti: payload.jti, ua: payload.ua, ...(payload.needs2FASetup ? { needs2FASetup: true } : {}) },
+        process.env.JWT_SECRET,
+        { expiresIn: '30m' }
+      );
+      const newToken = wrapJWT(newJwt);
+      const isProd   = process.env.NODE_ENV === 'production';
+      const cookieOpts = {
+        httpOnly: true, signed: true,
+        secure:   isProd,
+        sameSite: isProd ? 'none' : 'lax',
+        maxAge:   30 * 60 * 1000,
+        ...(isProd ? { partitioned: true } : {}),
+      };
+      res.cookie('token', newToken, cookieOpts);
+      await prisma.sessionToken.update({ where: { jti: payload.jti }, data: { expiresAt: new Date(Date.now() + 30 * 60 * 1000) } });
+    }
+
     next();
   } catch {
     res.clearCookie('token');
@@ -503,14 +526,20 @@ async function protegerPropietario(req, res, next) {
 
 // ─── Auth Helpers ─────────────────────────────────────────────────────────────
 
+// Idle timeout: 30 min sliding session. JWT TTL = 30 min; renewed on activity
+// via sliding refresh in verificarJWT. RememberMe extends to 30d but keeps idle.
+const IDLE_TTL_MS = 30 * 60 * 1000
+
 function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = false) {
   const jti       = crypto.randomUUID()
   const ua        = req.headers['user-agent'] || ''
   const ip        = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
-  const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : 8 * 60 * 60 * 1000
-  const jwtTTL    = rememberMe ? '30d' : '8h'
+  const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : IDLE_TTL_MS
+  const jwtTTL    = rememberMe ? '30d' : '30m'
   const expiresAt = new Date(Date.now() + ttl)
-  return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } }).then(() => {
+  // Single-session enforcement: revoke all prior sessions of this user
+  return prisma.sessionToken.deleteMany({ where: { empleadoId: empleado.id } }).then(() =>
+  prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } })).then(() => {
     const permisos = [...new Set([
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
       ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
@@ -824,11 +853,22 @@ app.post('/api/portal/auth/reset-password', async (req, res) => {
   }
 })
 
+const SOS_QUOTA_PER_CLIENT = 3      // máx tickets B2B pendientes por cliente
+const SOS_QUOTA_WINDOW_MS  = 24 * 3600_000  // en 24h
+
 app.post('/api/portal/sos', verificarPortalJWT, async (req, res) => {
   try {
     const { descripcion } = z.object({ descripcion: z.string().max(500).optional() }).parse(req.body)
     const clienteId = req.portalUser.clienteId
     if (!clienteId) return res.status(422).json({ error: 'Tu cuenta no está vinculada a un cliente. Contacta a ACR para vincularla.' })
+    const desde = new Date(Date.now() - SOS_QUOTA_WINDOW_MS)
+    const recientes = await prisma.ordenTrabajo.count({
+      where: { clienteId, tipoOT: 'SoporteTecnico', createdAt: { gte: desde }, estado: { in: ['Pendiente','EnProceso'] }, deletedAt: null },
+    })
+    if (recientes >= SOS_QUOTA_PER_CLIENT) {
+      auditReq('portal:sos_quota', req, { clienteId, count: recientes }, { userId: null, userName: req.portalUser.nombre })
+      return res.status(429).json({ error: `Límite alcanzado (${SOS_QUOTA_PER_CLIENT} tickets/24h). Contacta a ACR si es urgente.` })
+    }
     const ot = await prisma.ordenTrabajo.create({
       data: {
         clienteId,
@@ -1126,6 +1166,149 @@ app.get('/api/reportes/comisiones', verificarJWT, requerirPermiso('sistema:owner
   }
 });
 
+// ─── E-commerce: Checkout + Webhook (Azul gateway prep) ───────────────────────
+
+const checkoutSchema = z.object({
+  items: z.array(z.object({
+    itemCatalogoId: z.string().uuid(),
+    cantidad:       z.number().int().min(1).max(99),
+  })).min(1).max(50),
+  metodoPago: z.enum(['Tarjeta','Transferencia']).default('Tarjeta'),
+})
+
+const checkoutLimiter = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false })
+
+app.post('/api/portal/checkout', checkoutLimiter, verificarPortalJWT, async (req, res) => {
+  try {
+    const { items } = checkoutSchema.parse(req.body)
+    const clienteId = req.portalUser.clienteId
+    if (!clienteId) return res.status(422).json({ error: 'Tu cuenta no está vinculada a un cliente.' })
+
+    const ids = items.map(i => i.itemCatalogoId)
+    const catalogo = await prisma.itemCatalogo.findMany({ where: { id: { in: ids }, activo: true } })
+    if (catalogo.length !== ids.length) return res.status(400).json({ error: 'Uno o más items no existen o están inactivos.' })
+    const catMap = Object.fromEntries(catalogo.map(c => [c.id, c]))
+
+    let subtotal = 0
+    const lineasData = items.map(i => {
+      const c = catMap[i.itemCatalogoId]
+      const precio = Number(c.precio)
+      subtotal += precio * i.cantidad
+      return { itemCatalogoId: c.id, descripcion: c.nombre, cantidad: i.cantidad, precioUnitario: precio }
+    })
+    const itbis = Math.round(subtotal * 0.18 * 100) / 100
+    const total = Math.round((subtotal + itbis) * 100) / 100
+
+    // Crea Factura(Borrador) como referencia de pago pendiente
+    const factura = await prisma.factura.create({
+      data: {
+        noFactura: `PAGO-${crypto.randomBytes(6).toString('hex').toUpperCase()}`,
+        clienteId, estado: 'Borrador',
+        subtotal, itbis, total,
+        notas: `Checkout portal: pendiente pago via ${req.body.metodoPago ?? 'Tarjeta'}.`,
+        esCotizacion: false,
+        lineas: { createMany: { data: lineasData } },
+      },
+    })
+    auditReq('ecommerce:checkout', req, { facturaId: factura.id, total, items: items.length }, { userId: null, userName: req.portalUser.nombre })
+    res.status(201).json({ paymentRef: factura.id, total, gateway: 'azul', sandbox: !process.env.AZUL_WEBHOOK_SECRET })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    console.error('[CHECKOUT]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// HMAC-SHA256 webhook verifier — gateway-agnostic
+function verificarFirmaWebhook(secret, payloadRaw, firmaHex) {
+  if (!secret || !firmaHex) return false
+  const computado = crypto.createHmac('sha256', secret).update(payloadRaw).digest('hex')
+  try {
+    return crypto.timingSafeEqual(Buffer.from(computado, 'hex'), Buffer.from(firmaHex, 'hex'))
+  } catch { return false }
+}
+
+const azulWebhookSchema = z.object({
+  paymentRef:     z.string().uuid(),
+  estadoPago:     z.enum(['aprobado','rechazado','reversado']),
+  transactionId:  z.string().min(1).max(120),
+  monto:          z.coerce.number().positive(),
+  fechaPago:      z.coerce.date().optional(),
+})
+
+app.post('/api/webhooks/azul', express.raw({ type: '*/*', limit: '50kb' }), async (req, res) => {
+  const secret = process.env.AZUL_WEBHOOK_SECRET
+  if (!secret) return res.status(503).json({ error: 'Pasarela no configurada. Define AZUL_WEBHOOK_SECRET.' })
+  const firma = req.headers['x-azul-signature']
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.from(JSON.stringify(req.body))
+  if (!verificarFirmaWebhook(secret, rawBody, firma)) {
+    auditReq('webhook:azul_signature_fail', req, { firma: firma?.slice(0, 12) }, { userId: null })
+    return res.status(401).json({ error: 'Firma inválida.' })
+  }
+  let payload
+  try {
+    const parsed = JSON.parse(rawBody.toString('utf8'))
+    payload = azulWebhookSchema.parse(parsed)
+  } catch (e) {
+    return res.status(400).json({ error: 'Payload inválido.' })
+  }
+  try {
+    const factura = await prisma.factura.findUnique({
+      where: { id: payload.paymentRef },
+      include: { lineas: { include: { itemCatalogo: true } }, cliente: true },
+    })
+    if (!factura) return res.status(404).json({ error: 'Pago no encontrado.' })
+    if (factura.estado === 'Pagada') return res.status(409).json({ error: 'Pago ya procesado.' })
+    if (Number(factura.total) !== payload.monto) {
+      auditReq('webhook:amount_mismatch', req, { paymentRef: payload.paymentRef, expected: Number(factura.total), got: payload.monto })
+      return res.status(422).json({ error: 'Monto no coincide.' })
+    }
+    if (payload.estadoPago !== 'aprobado') {
+      await prisma.factura.update({ where: { id: factura.id }, data: { estado: 'Anulada', notas: `${factura.notas ?? ''} | Rechazado: ${payload.estadoPago}` } })
+      return res.json({ ok: true, estado: 'rechazado' })
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.factura.update({
+        where: { id: factura.id },
+        data:  { estado: 'Pagada', fechaPago: payload.fechaPago ?? new Date(),
+                 notas: `${factura.notas ?? ''} | Azul tx: ${payload.transactionId}` },
+      })
+      const tieneInstalable = factura.lineas.some(l => ['CCTV','Redes','CercoElectrico'].includes(l.itemCatalogo?.categoria))
+      const tieneRecurrente = factura.lineas.some(l => l.itemCatalogo?.tipo === 'Recurrente')
+
+      if (tieneInstalable) {
+        const noOT = await nextNomenclatura(tx, 'OT')
+        await tx.ordenTrabajo.create({
+          data: {
+            clienteId: factura.clienteId, noOT,
+            tipoOT:    'Instalacion', estado: 'Pendiente',
+            metadatos: { origen: 'ecommerce', facturaId: factura.id, txAzul: payload.transactionId },
+            fechaVencimientoSLA: new Date(Date.now() + 7 * 24 * 3600_000),
+            lineas: { createMany: { data: factura.lineas.map(l => ({
+              itemCatalogoId: l.itemCatalogoId, descripcion: l.descripcion, cantidad: l.cantidad, precioUnitario: l.precioUnitario,
+            })) } },
+          },
+        })
+      }
+
+      if (tieneRecurrente) {
+        const planItem = factura.lineas.find(l => l.itemCatalogo?.tipo === 'Recurrente')
+        if (planItem) {
+          // Se asume que existe (o se creará) un Plan vinculado al ItemCatalogo. Por ahora se deja documentado en metadatos.
+          await tx.factura.update({ where: { id: factura.id }, data: { notas: `${factura.notas ?? ''} | Servicio recurrente: ${planItem.itemCatalogo.nombre}` } })
+        }
+      }
+    })
+
+    auditReq('webhook:azul_ok', req, { paymentRef: payload.paymentRef, transactionId: payload.transactionId, monto: payload.monto })
+    res.json({ ok: true, estado: 'pagado' })
+  } catch (e) {
+    console.error('[WEBHOOK AZUL]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // ─── MSP: Vault PAM (AES-256-GCM) ─────────────────────────────────────────────
 
 const VAULT_KEY_B64 = process.env.VAULT_KEY || ''
@@ -1234,8 +1417,19 @@ app.post('/api/taller', verificarJWT, requerirPermiso('ot:crear'), async (req, r
   }
 })
 
+const ESTADOS_FINALES_TALLER = new Set(['Entregado', 'Cancelado'])
+
+async function bloquearSiTallerFinal(id) {
+  const prev = await prisma.ticketTaller.findUnique({ where: { id }, select: { estado: true } })
+  if (!prev) return { status: 404, error: 'Ticket no encontrado.' }
+  if (ESTADOS_FINALES_TALLER.has(prev.estado)) return { status: 423, error: `Ticket ${prev.estado}. Datos inmutables.` }
+  return null
+}
+
 app.patch('/api/taller/:id/estado', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  const bloqueo = await bloquearSiTallerFinal(req.params.id)
+  if (bloqueo) return res.status(bloqueo.status).json({ error: bloqueo.error })
   try {
     const data = ticketEstadoSchema.parse(req.body)
     const update = { estado: data.estado }
@@ -1259,6 +1453,8 @@ app.patch('/api/taller/:id/estado', verificarJWT, requerirPermiso('ot:editar'), 
 
 app.patch('/api/taller/:id', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  const bloqueo = await bloquearSiTallerFinal(req.params.id)
+  if (bloqueo) return res.status(bloqueo.status).json({ error: bloqueo.error })
   try {
     const data = ticketTallerSchema.partial().parse(req.body)
     const ticket = await prisma.ticketTaller.update({ where: { id: req.params.id }, data })
@@ -1270,14 +1466,88 @@ app.patch('/api/taller/:id', verificarJWT, requerirPermiso('ot:editar'), async (
   }
 })
 
+app.patch('/api/taller/:id/reabrir', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const prev = await prisma.ticketTaller.findUnique({ where: { id: req.params.id }, select: { estado: true } })
+    if (!prev) return res.status(404).json({ error: 'Ticket no encontrado.' })
+    if (!ESTADOS_FINALES_TALLER.has(prev.estado)) return res.status(409).json({ error: 'Ticket no está en estado final.' })
+    const t = await prisma.ticketTaller.update({
+      where: { id: req.params.id },
+      data:  { estado: 'Diagnostico', entregadoEn: null },
+    })
+    auditReq('taller:reabrir', req, { ticketId: t.id, estadoPrevio: prev.estado })
+    res.json(t)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
 // Public tracking by PIN (no auth, no leaks of clienteId)
+// ─── Anti brute-force: in-memory tally + DB-persisted IpBlock ────────────────
+
+const TRACK_FAIL_WINDOW_MS  = 5  * 60 * 1000      // 5 min sliding window
+const TRACK_FAIL_THRESHOLD  = 5                   // 5 failures triggers block
+const TRACK_BLOCK_DURATION  = 30 * 60 * 1000      // 30 min block
+
+const failTally    = new Map()  // ip -> { count, firstFail }
+const activeBlocks = new Map()  // ip -> expiresAt(ms)
+
+async function hydrateIpBlocks() {
+  try {
+    const blocks = await prisma.ipBlock.findMany({ where: { expiraEn: { gt: new Date() } } })
+    for (const b of blocks) activeBlocks.set(b.ip, b.expiraEn.getTime())
+    console.log(`[IpBlock] hydrated ${blocks.length} active block(s)`)
+  } catch (e) { console.error('[IpBlock hydrate]', e.message) }
+}
+hydrateIpBlocks()
+
+function getClientIp(req) {
+  return (req.headers['x-forwarded-for']?.split(',')[0]?.trim()
+       || req.socket?.remoteAddress
+       || 'unknown').replace(/^::ffff:/, '')
+}
+
+function isIpBlocked(ip) {
+  const exp = activeBlocks.get(ip)
+  if (!exp) return false
+  if (exp < Date.now()) { activeBlocks.delete(ip); return false }
+  return true
+}
+
+async function registerTrackFailure(ip, motivo) {
+  const now = Date.now()
+  const entry = failTally.get(ip)
+  if (!entry || (now - entry.firstFail) > TRACK_FAIL_WINDOW_MS) {
+    failTally.set(ip, { count: 1, firstFail: now })
+    return false
+  }
+  entry.count++
+  if (entry.count >= TRACK_FAIL_THRESHOLD) {
+    failTally.delete(ip)
+    const expiraEn = new Date(now + TRACK_BLOCK_DURATION)
+    activeBlocks.set(ip, expiraEn.getTime())
+    try {
+      await prisma.ipBlock.create({ data: { ip, motivo, intentos: TRACK_FAIL_THRESHOLD, expiraEn } })
+      auditReq('security:ip_block', { headers: {}, socket: { remoteAddress: ip }, originalUrl: '/track' }, { ip, motivo, hasta: expiraEn })
+    } catch (e) { console.error('[IpBlock persist]', e.message) }
+    return true
+  }
+  return false
+}
+
 const trackingLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false })
 app.get('/api/track/:pin', trackingLimiter, async (req, res) => {
-  const pin = (req.params.pin || '').toUpperCase()
-  if (!/^[A-Z2-9]{6}$/.test(pin)) return res.status(400).json({ error: 'PIN inválido.' })
+  const ip = getClientIp(req)
+  if (isIpBlocked(ip)) {
+    return res.status(429).json({ error: 'Demasiados intentos. IP bloqueada temporalmente.' })
+  }
+  const pinRaw = (req.params.pin || '').toUpperCase()
+  if (!/^[A-Z2-9]{6}$/.test(pinRaw)) {
+    await registerTrackFailure(ip, 'PIN formato inválido')
+    return res.status(400).json({ error: 'PIN inválido.' })
+  }
   try {
     const t = await prisma.ticketTaller.findUnique({
-      where:  { codigoPin: pin },
+      where:  { codigoPin: pinRaw },
       select: {
         noTicket: true, equipo: true, marca: true, modelo: true, estado: true,
         recibidoEn: true, diagnosticadoEn: true, listoEn: true, entregadoEn: true,
@@ -1285,7 +1555,10 @@ app.get('/api/track/:pin', trackingLimiter, async (req, res) => {
         cliente: { select: { razonSocial: true } },
       },
     })
-    if (!t) return res.status(404).json({ error: 'Ticket no encontrado.' })
+    if (!t) {
+      await registerTrackFailure(ip, 'PIN no encontrado')
+      return res.status(404).json({ error: 'Ticket no encontrado.' })
+    }
     res.json(t)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
@@ -1513,6 +1786,9 @@ app.patch('/api/ordenes/:id/estado', verificarJWT, requerirPermiso('ot:editar'),
       include: { lineas: { select: { productoId: true, cantidad: true } } },
     })
     if (!ot) return res.status(404).json({ error: 'OT no encontrada.' })
+    if (ot.estado === 'Cerrada' && ot.estaFacturada) {
+      return res.status(423).json({ error: 'OT cerrada y facturada. Datos inmutables.' })
+    }
 
     const update = { estado: data.estado }
     if (data.fotosRequeridas   != null) update.fotosRequeridas   = data.fotosRequeridas

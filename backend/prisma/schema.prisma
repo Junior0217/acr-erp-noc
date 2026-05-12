@@ -638,6 +638,20 @@ model LineaCarrito {
   @@index([productoId])
 }
 
+// ─── Seguridad: IP blocking (anti brute-force) ────────────────────────────────
+
+model IpBlock {
+  id          Int       @id @default(autoincrement())
+  ip          String
+  motivo      String    @default("Brute force tracking")
+  intentos    Int       @default(0)
+  bloqueadoEn DateTime  @default(now())
+  expiraEn    DateTime
+
+  @@index([ip])
+  @@index([expiraEn])
+}
+
 // ─── Taller (RMA) ─────────────────────────────────────────────────────────────
 
 model TicketTaller {
