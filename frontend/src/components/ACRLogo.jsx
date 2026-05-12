@@ -1,6 +1,8 @@
-const PNG_SRC = '/logo-acr.png'
+import { useEmpresa } from '../contexts/EmpresaContext'
 
-function ACRSvg({ size, className }) {
+const PNG_FALLBACK = '/logo-acr.png'
+
+function ACRSvg({ size, className, label }) {
   return (
     <svg
       width={size}
@@ -9,7 +11,7 @@ function ACRSvg({ size, className }) {
       fill="none"
       xmlns="http://www.w3.org/2000/svg"
       className={className}
-      aria-label="ACR Networks"
+      aria-label={label}
     >
       <polygon points="32,4 58,18 58,46 32,60 6,46 6,18" fill="#1e3a5f" stroke="#2563eb" strokeWidth="2" />
       <path d="M20 38 Q32 20 44 38" stroke="#60a5fa" strokeWidth="2.5" fill="none" strokeLinecap="round" />
@@ -22,12 +24,16 @@ function ACRSvg({ size, className }) {
 }
 
 export default function ACRLogo({ className = '', size = 32, usePng = true }) {
-  if (!usePng) return <ACRSvg size={size} className={className} />
+  const { empresa } = useEmpresa()
+  const label = empresa.nombreComercial ?? empresa.razonSocial ?? 'Logo'
+  const src   = empresa.logoUrl && empresa.logoUrl.length > 4 ? empresa.logoUrl : PNG_FALLBACK
+
+  if (!usePng) return <ACRSvg size={size} className={className} label={label} />
 
   return (
     <img
-      src={PNG_SRC}
-      alt="ACR Networks"
+      src={src}
+      alt={label}
       width={size}
       height={size}
       className={className}

@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useAuth, AuthProvider } from './contexts/AuthContext'
 import { CartProvider } from './contexts/CartContext'
+import { EmpresaProvider } from './contexts/EmpresaContext'
 import PWAUpdatePrompt from './components/PWAUpdatePrompt'
 import ErrorBoundary from './components/ErrorBoundary'
 
@@ -105,13 +106,15 @@ export default function App() {
   return (
     <ErrorBoundary>
       <AuthProvider>
-        <CartProvider>
-          <BrowserRouter>
-            <Toaster position="top-right" richColors closeButton duration={4000} />
-            <AppRoutes />
-            <PWAUpdatePrompt />
-          </BrowserRouter>
-        </CartProvider>
+        <EmpresaProvider>
+          <CartProvider>
+            <BrowserRouter>
+              <Toaster position="top-right" richColors closeButton duration={4000} />
+              <AppRoutes />
+              <PWAUpdatePrompt />
+            </BrowserRouter>
+          </CartProvider>
+        </EmpresaProvider>
       </AuthProvider>
     </ErrorBoundary>
   )

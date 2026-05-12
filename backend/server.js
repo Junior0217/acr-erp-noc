@@ -2454,6 +2454,78 @@ app.post('/api/usuarios-portal/:id/bloquear', verificarJWT, requerirNivel(NIVEL_
   }
 })
 
+// ─── EmpresaPerfil (Singleton ID=1) ──────────────────────────────────────────
+
+// GET público — solo campos del membrete (sin PII del representante)
+const empresaPublicLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false })
+app.get('/api/configuracion/empresa/publico', empresaPublicLimiter, async (req, res) => {
+  try {
+    const e = await prisma.empresaPerfil.findUnique({
+      where:  { id: 1 },
+      select: {
+        rnc: true, razonSocial: true, nombreComercial: true, registroMercantil: true,
+        direccion: true, sector: true, provincia: true, pais: true,
+        telefono: true, email: true, website: true, logoUrl: true, eslogan: true,
+      },
+    })
+    if (!e) return res.status(404).json({ error: 'Perfil no inicializado.' })
+    res.json(e)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// GET full — autenticado, incluye PII representante
+app.get('/api/configuracion/empresa', verificarJWT, async (req, res) => {
+  try {
+    const e = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
+    if (!e) return res.status(404).json({ error: 'Perfil no inicializado.' })
+    res.json(e)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// PATCH — SOLO Propietario Absoluto (nivel >= 100). REGLA DE ORO.
+const empresaPatchSchema = z.object({
+  rnc:                   z.string().min(9).max(20).optional(),
+  razonSocial:           z.string().min(2).max(200).optional(),
+  nombreComercial:       z.string().max(200).optional().nullable(),
+  registroMercantil:     z.string().max(50).optional().nullable(),
+  representanteNombre:   z.string().max(100).optional().nullable(),
+  representanteApellido: z.string().max(100).optional().nullable(),
+  representanteCedula:   z.string().max(20).optional().nullable().refine(
+    v => !v || validarCedulaRD(v),
+    { message: 'Cédula RD inválida (dígito verificador no coincide).' }
+  ),
+  representanteCargo:    z.string().max(80).optional().nullable(),
+  direccion:             z.string().max(300).optional().nullable(),
+  sector:                z.string().max(100).optional().nullable(),
+  provincia:             z.string().max(100).optional().nullable(),
+  pais:                  z.string().max(80).optional(),
+  tipoEmpresa:           z.string().max(40).optional().nullable(),
+  fechaInicio:           z.coerce.date().optional().nullable(),
+  telefono:              z.string().max(40).optional().nullable(),
+  fax:                   z.string().max(40).optional().nullable(),
+  email:                 z.string().email().max(150).optional().nullable().or(z.literal('').transform(() => null)),
+  website:               z.string().max(200).optional().nullable().or(z.literal('').transform(() => null)),
+  logoUrl:               z.string().max(500).optional().nullable().or(z.literal('').transform(() => null)),
+  eslogan:               z.string().max(200).optional().nullable(),
+})
+
+app.patch('/api/configuracion/empresa', verificarJWT, requerirNivel(NIVEL_PROPIETARIO_ABSOLUTO), async (req, res) => {
+  try {
+    const data = empresaPatchSchema.parse(req.body)
+    const e = await prisma.empresaPerfil.upsert({
+      where:  { id: 1 },
+      update: data,
+      create: { id: 1, rnc: data.rnc ?? '', razonSocial: data.razonSocial ?? 'Empresa', ...data },
+    })
+    auditReq('empresa:perfil_update', req, { campos: Object.keys(data) })
+    res.json(e)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    console.error('[EMPRESA PATCH]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
 const generateKeyPairAsync = util.promisify(crypto.generateKeyPair);

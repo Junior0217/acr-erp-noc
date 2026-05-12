@@ -4,10 +4,12 @@ import {
   ShieldCheck, Lock, Ban, CheckCircle, LogOut, Loader2, Eye, EyeOff,
   RefreshCw, KeyRound, Crown, Users, Shield, Plus, Trash2, Save, Sparkles,
   QrCode, Smartphone, User, Monitor, Trash, Globe, MapPin, Store, Activity, AlertTriangle,
+  Building2 as Building2Icon,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
 import PanelApiEstado from './panels/PanelApiEstado'
+import PanelMiEmpresa from './panels/PanelMiEmpresa'
 
 function buildPermGroups(flat) {
   const map = new Map()
@@ -1230,6 +1232,14 @@ export default function Configuracion() {
             <Store size={14} />Portal B2C
           </button>
         )}
+        {isAdmin && (
+          <button onClick={() => setActiveTab('empresa')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'empresa' ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'
+            }`}>
+            <Building2Icon size={14} />Mi Empresa
+          </button>
+        )}
         {isOwner && (
           <button onClick={() => setActiveTab('sesiones')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -1258,6 +1268,7 @@ export default function Configuracion() {
 
       {activeTab === 'api'         && isOwner && <PanelApiEstado />}
       {activeTab === 'incidencias' && isOwner && <PanelIncidencias />}
+      {activeTab === 'empresa'     && isAdmin && <PanelMiEmpresa />}
 
       {/* ── Tab: Mi Perfil ──────────────────────────────────────────────────── */}
       {activeTab === 'mi-perfil' && (

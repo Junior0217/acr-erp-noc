@@ -1,5 +1,6 @@
 import { useEffect } from "react"
 import ACRLogo from "../components/ACRLogo"
+import { useEmpresa } from "../contexts/EmpresaContext"
 
 const ITEMS = [
   {
@@ -43,7 +44,11 @@ function fechaVence() {
 }
 
 export default function CotizacionDGII() {
-  useEffect(() => { document.title = "Cotización ACR Networks · DGII" }, [])
+  const { empresa } = useEmpresa()
+  useEffect(() => { document.title = `Cotización ${empresa.nombreComercial ?? empresa.razonSocial} · DGII` }, [empresa])
+
+  const representanteFull = [empresa.representanteNombre, empresa.representanteApellido].filter(Boolean).join(" ").toUpperCase()
+  const direccionCompleta = [empresa.direccion, empresa.sector, empresa.provincia].filter(Boolean).join(", ")
 
   const subtotal = ITEMS.reduce((s, i) => s + i.precio * i.cant, 0)
   const itbis    = +(subtotal * 0.18).toFixed(2)
@@ -99,14 +104,14 @@ export default function CotizacionDGII() {
             <div className="flex items-start gap-3">
               <ACRLogo size={54} />
               <div>
-                <h1 className="text-[18px] font-extrabold text-slate-900 leading-tight">ACR NETWORKS &amp; SOLUTIONS, S.R.L.</h1>
-                <p className="text-[10px] text-slate-600 tracking-wide leading-snug">Soluciones en Seguridad Electrónica, Redes y Soporte IT Corporativo</p>
+                <h1 className="text-[18px] font-extrabold text-slate-900 leading-tight uppercase">{empresa.razonSocial}</h1>
+                {empresa.eslogan && <p className="text-[10px] text-slate-600 tracking-wide leading-snug">{empresa.eslogan}</p>}
                 <div className="mt-1.5 grid grid-cols-2 gap-x-5 text-[10px] text-slate-700 leading-tight">
-                  <div><span className="font-semibold text-slate-500">RNC:</span> <span className="label-mono">133-69267-8</span></div>
-                  <div><span className="font-semibold text-slate-500">Reg. Mercantil:</span> <span className="label-mono">161830SD</span></div>
-                  <div className="col-span-2"><span className="font-semibold text-slate-500">Dirección:</span> Calle Feliz Evaristo Mejía No. 406, Cristo Rey, D.N.</div>
-                  <div><span className="font-semibold text-slate-500">Tel.:</span> <span className="label-mono">849-458-9955</span></div>
-                  <div className="truncate"><span className="font-semibold text-slate-500">Email:</span> ranetworkssolutions@gmail.com</div>
+                  <div><span className="font-semibold text-slate-500">RNC:</span> <span className="label-mono">{empresa.rnc}</span></div>
+                  {empresa.registroMercantil && <div><span className="font-semibold text-slate-500">Reg. Mercantil:</span> <span className="label-mono">{empresa.registroMercantil}</span></div>}
+                  {direccionCompleta && <div className="col-span-2"><span className="font-semibold text-slate-500">Dirección:</span> {direccionCompleta}</div>}
+                  {empresa.telefono && <div><span className="font-semibold text-slate-500">Tel.:</span> <span className="label-mono">{empresa.telefono}</span></div>}
+                  {empresa.email && <div className="truncate"><span className="font-semibold text-slate-500">Email:</span> {empresa.email}</div>}
                 </div>
               </div>
             </div>
@@ -238,8 +243,8 @@ export default function CotizacionDGII() {
             </div>
             <div className="text-center">
               <div className="border-t-2 border-slate-700 w-56 mt-6" />
-              <p className="mt-1 text-[12px] font-bold text-slate-900 whitespace-nowrap">CARMELO JUNIOR ROSARIO LOPEZ</p>
-              <p className="text-[10px] text-slate-600">Gerente · ACR Networks &amp; Solutions, S.R.L.</p>
+              <p className="mt-1 text-[12px] font-bold text-slate-900 whitespace-nowrap">{representanteFull || "—"}</p>
+              <p className="text-[10px] text-slate-600">{empresa.representanteCargo ?? "Gerente"} · {empresa.razonSocial}</p>
             </div>
           </section>
 
@@ -247,7 +252,7 @@ export default function CotizacionDGII() {
           <footer className="mt-3 pt-2 border-t border-slate-200 flex items-center justify-between text-[9px] text-slate-500">
             <div className="flex items-center gap-2">
               <ACRLogo size={14} />
-              <span>ACR Networks &amp; Solutions, S.R.L. · RNC 133-69267-8 · Cristo Rey, D.N.</span>
+              <span>{empresa.razonSocial} · RNC {empresa.rnc}{empresa.sector ? ` · ${empresa.sector}, ${empresa.provincia ?? ''}` : ''}</span>
             </div>
             <div className="label-mono">Generado: {fechaLarga()}</div>
           </footer>

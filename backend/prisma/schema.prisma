@@ -644,6 +644,34 @@ model LineaCarrito {
   @@index([productoId])
 }
 
+// ─── Singleton: Perfil legal y de contacto de la empresa ────────────────────
+
+model EmpresaPerfil {
+  id                    Int       @id @default(1)
+  rnc                   String
+  razonSocial           String
+  nombreComercial       String?
+  registroMercantil     String?
+  representanteNombre   String?
+  representanteApellido String?
+  representanteCedula   String?
+  representanteCargo    String?
+  direccion             String?
+  sector                String?
+  provincia             String?
+  pais                  String    @default("República Dominicana")
+  tipoEmpresa           String?
+  fechaInicio           DateTime?
+  telefono              String?
+  fax                   String?
+  email                 String?
+  website               String?
+  logoUrl               String?
+  eslogan               String?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+}
+
 // ─── Anti-fraude: incidencias de reconciliación diaria ──────────────────────
 
 model IncidenciaReconciliacion {
