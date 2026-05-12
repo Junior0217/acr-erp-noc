@@ -449,6 +449,7 @@ model OrdenTrabajo {
   garantiaDias    Int?
   completadaEn    DateTime?
   estaFacturada   Boolean  @default(false)
+  deletedAt       DateTime?
   cliente       Cliente             @relation(fields: [clienteId], references: [id], onDelete: Restrict)
   tecnico       Empleado?           @relation(fields: [tecnicoId], references: [id], onDelete: SetNull)
   lineas        LineaOrdenTrabajo[]
@@ -461,6 +462,7 @@ model OrdenTrabajo {
   @@index([tipoOT])
   @@index([estado])
   @@index([createdAt])
+  @@index([deletedAt])
 }
 
 model LineaOrdenTrabajo {

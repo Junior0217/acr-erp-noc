@@ -6,7 +6,8 @@
     "build": "npx prisma generate",
     "postinstall": "npx prisma generate",
     "start": "npx prisma generate && npx prisma migrate resolve --applied 20260510062138_modulo_servicios_inventario 2>/dev/null; npx prisma migrate deploy && node server.js",
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "test": "node --test tests/*.test.js"
   },
   "type": "commonjs",
   "dependencies": {

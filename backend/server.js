@@ -186,7 +186,7 @@ app.use(cookieParser(process.env.COOKIE_SECRET));
 
 const DEV_ORIGINS     = ['http://localhost:5173', 'http://127.0.0.1:5173']
 const PROD_ORIGINS    = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
-const CORS_WILDCARD   = PROD_ORIGINS.includes('*') || PROD_ORIGINS.length === 0  // open if not configured
+const CORS_WILDCARD   = process.env.NODE_ENV !== 'production' && (PROD_ORIGINS.includes('*') || PROD_ORIGINS.length === 0)
 const ALLOWED_ORIGINS = new Set([...DEV_ORIGINS, ...PROD_ORIGINS.filter(o => o !== '*')])
 
 const corsOptions = {
@@ -559,7 +559,7 @@ async function verificarPortalJWT(req, res, next) {
 
 const portalLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 10,
+  max: 5,
   keyGenerator: (req) => {
     try {
       const raw = req.cookies?.pct
@@ -1073,6 +1073,49 @@ app.post('/api/auth/logout', verificarJWT, async (req, res) => {
   res.clearCookie('csrf');
   res.status(204).end();
 });
+
+app.post('/api/auth/refresh', async (req, res) => {
+  try {
+    const wrapped = req.signedCookies?.token
+    if (!wrapped) return res.status(401).json({ error: 'No autenticado.' })
+    const jwtStr  = unwrapJWT(wrapped)
+    const payload = jwt.verify(jwtStr, process.env.JWT_SECRET, { ignoreExpiration: true })
+    const session = await prisma.sessionToken.findUnique({ where: { jti: payload.jti } })
+    if (!session) return res.status(401).json({ error: 'Sesión inválida.' })
+    // Allow refresh within 7 days after session expiry
+    const maxRefreshAt = new Date(session.expiresAt.getTime() + 7 * 24 * 60 * 60 * 1000)
+    if (maxRefreshAt < new Date()) return res.status(401).json({ error: 'Sesión expirada. Inicia sesión de nuevo.' })
+    const empleado = await prisma.empleado.findUnique({
+      where:   { id: payload.sub },
+      include: { roles: { where: { activo: true }, select: { permisos: true } } },
+    })
+    if (!empleado || empleado.deletedAt || empleado.bloqueado) return res.status(401).json({ error: 'Cuenta inactiva.' })
+    const newJti    = crypto.randomUUID()
+    const ttl       = 8 * 60 * 60 * 1000
+    const expiresAt = new Date(Date.now() + ttl)
+    await prisma.$transaction([
+      prisma.sessionToken.delete({ where: { jti: payload.jti } }),
+      prisma.sessionToken.create({ data: { jti: newJti, empleadoId: empleado.id, userAgent: session.userAgent, ip: session.ip, expiresAt } }),
+    ])
+    const permisos = [...new Set([
+      ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
+      ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
+    ])]
+    const ua        = req.headers['user-agent'] || ''
+    const newJwt    = jwt.sign({ sub: empleado.id, nombre: empleado.nombre, permisos, jti: newJti, ua }, process.env.JWT_SECRET, { expiresIn: '8h' })
+    const newToken  = wrapJWT(newJwt)
+    const csrf      = crypto.randomBytes(32).toString('hex')
+    const isProd    = process.env.NODE_ENV === 'production'
+    const cookieOpts = { httpOnly: true, secure: isProd, sameSite: isProd ? 'none' : 'lax', maxAge: ttl, ...(isProd ? { partitioned: true } : {}) }
+    res.cookie('token', newToken, cookieOpts)
+    res.cookie('csrf',  csrf,     { ...cookieOpts, httpOnly: false })
+    res.setHeader('X-CSRF-Token', csrf)
+    auditReq('auth:refresh', req, { empleadoId: empleado.id })
+    res.json({ id: empleado.id, nombre: empleado.nombre, permisos, csrfToken: csrf })
+  } catch {
+    res.status(401).json({ error: 'Token inválido.' })
+  }
+})
 
 // ─── 2FA Endpoints ────────────────────────────────────────────────────────────
 
@@ -2637,7 +2680,7 @@ const ordenTrabajoSchema = z.object({
 app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
   try {
     const { estado, tipoOT, clienteId, tecnicoId, limit = '50', offset = '0' } = req.query
-    const where = {}
+    const where = { deletedAt: null }
     if (estado)    where.estado    = estado
     if (tipoOT)    where.tipoOT    = tipoOT
     if (clienteId) where.clienteId = clienteId
@@ -2864,18 +2907,7 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
     }
 
     // 3. Stock check — only ARTICULO items, only for real invoices
-    if (!esCotizacion) {
-      const cantPorArticulo = {}
-      for (const l of lineas) {
-        if (pMap[l.productoId].tipoItem !== 'SERVICIO')
-          cantPorArticulo[l.productoId] = (cantPorArticulo[l.productoId] || 0) + l.cantidad
-      }
-      for (const [pid, cant] of Object.entries(cantPorArticulo)) {
-        const p = pMap[Number(pid)]
-        if (p.stockActual < cant)
-          throw Object.assign(new Error(`Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${cant}.`), { status: 400 })
-      }
-    }
+    // Performed later via atomic UPDATE to avoid TOCTOU race conditions
 
     // 4. Build enriched lines + totals (with discounts)
     const lineasEnriquecidas = lineas.map(l => {
@@ -2940,19 +2972,27 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
       },
     })
 
-    // 7. Deduct stock + Kardex (ARTICULO only, real invoices only)
+    // 7. Atomic stock deduction + Kardex (ARTICULO only, real invoices only)
+    // Single SQL UPDATE checks and decrements in one step — no race condition
     if (!esCotizacion) {
       const cantPorArticulo = {}
       for (const l of lineasEnriquecidas) {
         if (l._tipoItem !== 'SERVICIO')
           cantPorArticulo[l.productoId] = (cantPorArticulo[l.productoId] || 0) + l.cantidad
       }
-      await Promise.all(
-        Object.entries(cantPorArticulo).flatMap(([pid, cant]) => [
-          tx.producto.update({ where: { id: Number(pid) }, data: { stockActual: { decrement: cant } } }),
-          tx.movimientoInventario.create({ data: { productoId: Number(pid), tipo: 'Salida', cantidad: cant } }),
-        ])
-      )
+      for (const [pid, cant] of Object.entries(cantPorArticulo)) {
+        const rows = await tx.$queryRaw`
+          UPDATE "Producto"
+          SET    "stockActual" = "stockActual" - ${cant}
+          WHERE  id = ${Number(pid)} AND "stockActual" >= ${cant}
+          RETURNING id, nombre, "stockActual"
+        `
+        if (!rows || rows.length === 0) {
+          const p = pMap[Number(pid)]
+          throw Object.assign(new Error(`Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${cant}.`), { status: 400 })
+        }
+        await tx.movimientoInventario.create({ data: { productoId: Number(pid), tipo: 'Salida', cantidad: cant } })
+      }
     }
     return f
   })
@@ -3173,6 +3213,8 @@ app.patch('/api/carrito/item/:lineaId', verificarJWT, async (req, res) => {
     const linea = await prisma.lineaCarrito.findUnique({ where: { id: lineaId }, include: { carrito: { select: { empleadoId: true } } } })
     if (!linea || linea.carrito.empleadoId !== req.user.sub) return res.status(404).json({ error: 'Línea no encontrada.' })
     await prisma.lineaCarrito.update({ where: { id: lineaId }, data })
+    if (data.precioUnitario !== undefined)
+      auditReq('pos:precio_override', req, { lineaId, precioAnterior: Number(linea.precioUnitario), precioNuevo: data.precioUnitario })
     const full = await prisma.carritoTemp.findUnique({ where: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
     res.json(formatCarrito(full))
   } catch (e) {
@@ -3392,6 +3434,7 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
 
     const factura = await prisma.factura.update({ where: { id: req.params.id }, data })
     auditReq('factura:estado', req, { facturaId: factura.id, estado, ncf: factura.ncf })
+    if (estado === 'Anulada') auditReq('factura:anulada', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(existing.total) })
     res.json(factura)
 
     // Fire-and-forget: sync RouterOS Address List for ISP clients (Pagada → activo, Vencida → moroso)
