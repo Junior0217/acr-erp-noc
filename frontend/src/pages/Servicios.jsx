@@ -249,6 +249,7 @@ function TabServicios() {
           <table className="w-full border-collapse">
             <thead className="bg-slate-800/60">
               <tr>
+                <th className={TH}>Código</th>
                 <th className={TH}>Cliente</th>
                 <th className={TH}>Plan</th>
                 <th className={TH}>Tipo</th>
@@ -260,11 +261,16 @@ function TabServicios() {
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-600">Cargando...</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-600">Cargando...</td></tr>
               ) : servicios.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-600">Sin servicios registrados</td></tr>
+                <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-600">Sin servicios registrados</td></tr>
               ) : servicios.map(s => (
                 <tr key={s.id} className="hover:bg-slate-800/50 transition-colors">
+                  <td className={TD}>
+                    <span className="text-xs font-mono font-bold text-blue-400 bg-blue-600/10 border border-blue-600/20 px-2 py-0.5 rounded">
+                      {s.noServicio ?? '—'}
+                    </span>
+                  </td>
                   <td className={TD}>
                     <p className="font-medium text-slate-100 leading-tight">{s.cliente?.razonSocial}</p>
                     <p className="text-xs text-slate-600 font-mono">{s.cliente?.noCliente}</p>

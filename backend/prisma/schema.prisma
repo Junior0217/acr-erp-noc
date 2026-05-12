@@ -278,6 +278,7 @@ model PortalSettings {
 
 model Servicio {
   id                   String             @id @default(uuid())
+  noServicio           String?            @unique
   clienteId            String
   planId               String
   estado               EstadoServicio     @default(Pendiente)
@@ -433,6 +434,7 @@ model ItemCatalogo {
 
 model OrdenTrabajo {
   id            String              @id @default(uuid())
+  noOT          String?             @unique
   clienteId     String
   tecnicoId     Int?
   tipoOT        String              @default("General")

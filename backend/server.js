@@ -1980,7 +1980,10 @@ app.get('/api/servicios', async (req, res) => {
 app.post('/api/servicios', async (req, res) => {
   try {
     const data = servicioSchema.parse(req.body);
-    const servicio = await prisma.servicio.create({ data, include: { cliente: { select: { id: true, razonSocial: true, noCliente: true, telefonoPrincipal: true } }, plan: { select: { id: true, nombre: true, tipo: true } } } });
+    const servicio = await prisma.$transaction(async (tx) => {
+      const noServicio = await nextNomenclatura(tx, 'SV')
+      return tx.servicio.create({ data: { ...data, noServicio }, include: { cliente: { select: { id: true, razonSocial: true, noCliente: true, telefonoPrincipal: true } }, plan: { select: { id: true, nombre: true, tipo: true } } } })
+    })
     res.status(201).json(formatServicio(servicio));
   } catch (error) {
     res.status(400).json({ error: 'Datos inválidos' });
@@ -2661,7 +2664,8 @@ app.post('/api/ordenes', verificarJWT, billingLimiter, requerirPermiso('ot:crear
   try {
     const { lineas, ...otData } = ordenTrabajoSchema.parse(req.body)
     const orden = await prisma.$transaction(async (tx) => {
-      const ot = await tx.ordenTrabajo.create({ data: otData })
+      const noOT = await nextNomenclatura(tx, 'OT')
+      const ot = await tx.ordenTrabajo.create({ data: { ...otData, noOT } })
       await tx.lineaOrdenTrabajo.createMany({
         data: lineas.map(l => ({ ...l, ordenId: ot.id })),
       })
@@ -2775,6 +2779,18 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
 
 const CONSUMIDOR_FINAL_NO = 'CF-0001'
 
+// Generate next sequential code using ConfiguracionNCF (e.g. 'SV-001', 'OT-001', 'COT-001')
+async function nextNomenclatura(tx, tipo) {
+  const rows = await tx.$queryRaw`
+    UPDATE "ConfiguracionNCF"
+    SET    "secuenciaActual" = "secuenciaActual" + 1
+    WHERE  "tipoNcf" = ${tipo}
+    RETURNING "prefijo", "secuenciaActual"
+  `
+  if (!rows || rows.length === 0) throw new Error(`Contador de nomenclatura "${tipo}" no encontrado.`)
+  return `${rows[0].prefijo}${String(rows[0].secuenciaActual).padStart(3, '0')}`
+}
+
 // Compute effective unit price after sequential discounts (% first, then fixed)
 function efectivoUnitario(pu, pct, monto) {
   const afterPct = pu * (1 - pct / 100)
@@ -2881,7 +2897,7 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
     let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
 
     if (esCotizacion) {
-      noFactura = `COT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
+      noFactura = await nextNomenclatura(tx, 'COT')
       estado    = 'Borrador'
     } else {
       // 5. Smart NCF: override > PYME/Empresa → Fiscal (B01); else → Consumidor Final (B02)
@@ -2951,6 +2967,128 @@ app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
     console.error('[FACTURA MANUAL]', e.message)
     res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error al generar la factura.' })
+  }
+})
+
+// ─── POS — Venta directa desde ItemCatalogo ───────────────────────────────────
+
+const lineaPOSCatalogoSchema = z.object({
+  itemCatalogoId:      z.string().uuid(),
+  cantidad:            z.number().int().positive(),
+  precioUnitario:      z.number().positive().optional(),
+  descuentoPorcentaje: z.number().min(0).max(100).optional().default(0),
+  descuentoMonto:      z.number().min(0).optional().default(0),
+})
+
+const posVentaSchema = z.object({
+  clienteId:           z.string().uuid().optional(),
+  nombreTemporal:      z.string().max(120).optional(),
+  tipoNcf:             z.string().optional(),
+  applyItbis:          z.boolean().optional().default(true),
+  diasVence:           z.number().int().min(0).max(365).optional().default(30),
+  esCotizacion:        z.boolean().optional().default(false),
+  descuentoGlobalPct:  z.number().min(0).max(100).optional().default(0),
+  descuentoGlobalMonto:z.number().min(0).optional().default(0),
+  lineas:              z.array(lineaPOSCatalogoSchema).min(1),
+})
+
+app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
+  try {
+    const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, lineas } = posVentaSchema.parse(req.body)
+    const permReq = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
+    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
+      return res.status(403).json({ error: `Se requiere permiso "${permReq}".` })
+
+    const factura = await prisma.$transaction(async (tx) => {
+      // 1. Resolve client
+      let cliente
+      if (inputClienteId) {
+        cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
+        if (!cliente) throw Object.assign(new Error('Cliente no encontrado.'), { status: 404 })
+      } else {
+        cliente = await tx.cliente.upsert({
+          where:  { noCliente: CONSUMIDOR_FINAL_NO },
+          update: {},
+          create: {
+            noCliente: CONSUMIDOR_FINAL_NO, razonSocial: 'Consumidor Final', nombreContacto: 'Consumidor Final',
+            tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', telefonoPrincipal: '000-000-0000',
+            email: 'consumidor@acr.do', direccion: 'N/A', sector: 'N/A', provincia: 'Santo Domingo',
+            itbis: false, tipoNcf: 'Consumidor Final', activo: true,
+          },
+        })
+      }
+
+      // 2. Load catalog items
+      const ids = [...new Set(lineas.map(l => l.itemCatalogoId))]
+      const items = await tx.itemCatalogo.findMany({ where: { id: { in: ids } }, select: { id: true, nombre: true, precio: true, tipoItem: true, stock: true } })
+      const iMap = Object.fromEntries(items.map(i => [i.id, i]))
+      for (const l of lineas) {
+        if (!iMap[l.itemCatalogoId]) throw Object.assign(new Error(`Item ${l.itemCatalogoId} no encontrado.`), { status: 404 })
+      }
+
+      // 3. Build enriched lines + totals
+      const lineasEnriquecidas = lineas.map(l => {
+        const item = iMap[l.itemCatalogoId]
+        const pu  = l.precioUnitario ?? Number(item.precio)
+        const pct = l.descuentoPorcentaje ?? 0
+        const mon = l.descuentoMonto ?? 0
+        return { descripcion: item.nombre, cantidad: l.cantidad, precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon }
+      })
+      const subtotalBruto = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
+      const globalDesc    = descuentoGlobalPct > 0 ? Math.round(subtotalBruto * (descuentoGlobalPct / 100) * 100) / 100 : Math.min(descuentoGlobalMonto, subtotalBruto)
+      const subtotal      = Math.round((subtotalBruto - globalDesc) * 100) / 100
+      const itbisAmt      = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+      const total         = Math.round((subtotal + itbisAmt) * 100) / 100
+
+      // 4. NCF / noFactura
+      let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
+      if (esCotizacion) {
+        noFactura = await nextNomenclatura(tx, 'COT')
+        estado    = 'Borrador'
+      } else {
+        tipoNcf = tipoNcfOverride || (['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final')
+        const rows = await tx.$queryRaw`
+          UPDATE "ConfiguracionNCF"
+          SET    "secuenciaActual" = "secuenciaActual" + 1
+          WHERE  "tipoNcf"         = ${tipoNcf}
+            AND  "activo"          = true
+            AND  "secuenciaActual" < "limite"
+            AND  ("vencimiento" IS NULL OR "vencimiento" > NOW())
+          RETURNING *
+        `
+        if (!rows || rows.length === 0) throw Object.assign(new Error(`Sin secuencia NCF para "${tipoNcf}". Verifica Config NCF.`), { status: 422 })
+        const seq = String(rows[0].secuenciaActual).padStart(8, '0')
+        ncf       = `${rows[0].prefijo}${seq}`
+        noFactura = `FAC${new Date().getFullYear()}${seq}`
+        estado    = 'Emitida'
+      }
+
+      // 5. Create Factura (no productoId — catalog items don't deduct stock)
+      return tx.factura.create({
+        data: {
+          noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
+          ncf, tipoNcf, esCotizacion,
+          notas: esCotizacion
+            ? `Cotización POS (catálogo) — ${lineas.length} línea(s)`
+            : nombreTemporal
+              ? `[WALK-IN] ${nombreTemporal} — ${lineas.length} línea(s)`
+              : `Factura POS (catálogo) — ${lineas.length} línea(s)`,
+          fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
+          lineas: { createMany: { data: lineasEnriquecidas } },
+        },
+        include: {
+          cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
+          lineas:  true,
+        },
+      })
+    })
+    auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:pos_catalogo', req, { facturaId: factura.id, total: Number(factura.total) })
+    res.status(201).json(factura)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
+    console.error('[POS VENTA]', e.message)
+    res.status(e.status ?? 500).json({ error: e.status ? e.message : 'Error al procesar venta.' })
   }
 })
 
@@ -3679,10 +3817,27 @@ for (const key of REQUIRED_ENV) {
 
 const PORT = process.env.PORT || 3000;
 
+async function seedNomenclaturas() {
+  const counters = [
+    { prefijo: 'SV-',  tipoNcf: 'SV',  tipoDescripcion: 'Servicios' },
+    { prefijo: 'OT-',  tipoNcf: 'OT',  tipoDescripcion: 'Ordenes de Trabajo' },
+    { prefijo: 'COT-', tipoNcf: 'COT', tipoDescripcion: 'Cotizaciones' },
+  ]
+  for (const c of counters) {
+    await prisma.configuracionNCF.upsert({
+      where:  { tipoNcf: c.tipoNcf },
+      update: {},
+      create: { ...c, secuenciaActual: 0, limite: 99999, activo: true },
+    })
+  }
+  console.log('[SEED] Nomenclature counters ready (SV/OT/COT).')
+}
+
 async function startServer() {
   try {
     await prisma.$connect();
     console.log('[DB] Prisma connected to Supabase successfully.');
+    await seedNomenclaturas();
   } catch (err) {
     console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);
     process.exit(1);

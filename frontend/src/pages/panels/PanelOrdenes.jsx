@@ -491,6 +491,7 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700/70 bg-slate-800/60">
+                <th className={TH}>Código</th>
                 <th className={TH}>Cliente</th>
                 <th className={TH}>Tipo</th>
                 <th className={TH}>Técnico</th>
@@ -503,17 +504,22 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={7 + (canBill ? 1 : 0)} className="text-center py-12">
+                <tr><td colSpan={8 + (canBill ? 1 : 0)} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : ordenes.length === 0 ? (
-                <tr><td colSpan={7 + (canBill ? 1 : 0)} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={8 + (canBill ? 1 : 0)} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay órdenes de trabajo.
                 </td></tr>
               ) : ordenes.map(ot => {
                 const total = ot.lineas?.reduce((s, l) => s + Number(l.precioUnitario) * (l.cantidad ?? 1), 0) ?? 0
                 return (
                   <tr key={ot.id} className="hover:bg-slate-800/50 transition-colors">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className="text-xs font-mono font-bold text-purple-400 bg-purple-600/10 border border-purple-600/20 px-2 py-0.5 rounded">
+                        {ot.noOT ?? '—'}
+                      </span>
+                    </td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-slate-100 truncate max-w-[180px]">
                         {ot.cliente?.razonSocial ?? '—'}

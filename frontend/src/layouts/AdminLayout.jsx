@@ -3,13 +3,14 @@ import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
   LayoutDashboard, ShoppingCart, PackageSearch, Boxes, BookOpen,
   Users, Handshake, Globe, BarChart2, Settings, Menu, X, ChevronRight,
-  Zap, Wrench, AlertTriangle, ClipboardList, LogOut, ShieldCheck, Loader2,
+  Wrench, AlertTriangle, ClipboardList, LogOut, ShieldCheck, Loader2,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useOfflineStatus } from '../hooks/useOfflineStatus'
 import CarritoSlideOver from '../components/CarritoSlideOver'
+import ACRLogo from '../components/ACRLogo'
 
 function Setup2FAModal() {
   const { refreshUser } = useAuth()
@@ -172,7 +173,7 @@ function SidebarContent({ onClose }) {
     <div className="flex flex-col h-full">
       <div className="h-14 flex items-center justify-between px-4 border-b border-slate-800 flex-shrink-0">
         <div className="flex items-center gap-2">
-          <Zap size={16} className="text-blue-400" />
+          <ACRLogo size={28} />
           <span className="text-xs font-mono text-blue-400 tracking-widest uppercase">ACR&nbsp;NOC</span>
         </div>
         {onClose && (
@@ -252,10 +253,9 @@ export default function AdminLayout() {
             <button onClick={() => setIsMobileMenuOpen(true)} className="lg:hidden text-slate-400 hover:text-slate-100 transition-colors">
               <Menu size={20} />
             </button>
-            <img src="/logo-acr.png" alt="ACR Networks" className="h-7 hidden sm:block" onError={e => { e.target.style.display = 'none' }} />
-            <div className="flex items-center gap-1.5 sm:hidden">
-              <Zap size={14} className="text-blue-400" />
-              <span className="text-xs font-mono text-blue-400 tracking-widest uppercase">ACR NOC</span>
+            <div className="flex items-center gap-2">
+              <ACRLogo size={28} />
+              <span className="hidden sm:block text-xs font-mono text-blue-400 tracking-widest uppercase">ACR&nbsp;NOC</span>
             </div>
           </div>
 

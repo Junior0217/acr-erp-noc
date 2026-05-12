@@ -215,6 +215,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
         <table className="w-full min-w-[640px]">
           <thead className="sticky top-0 z-10">
             <tr>
+              <th className={TH}>Código</th>
               <th className={TH}>SKU</th>
               <th className={TH}>Nombre</th>
               <th className={TH}>Categoría</th>
@@ -225,13 +226,18 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading && rows.length === 0 && (
-              <tr><td colSpan={esServicio ? 5 : 6} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
+              <tr><td colSpan={esServicio ? 6 : 7} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={esServicio ? 5 : 6} className="px-4 py-8 text-center text-sm text-slate-600">Sin {esServicio ? 'servicios' : 'artículos'}.</td></tr>
+              <tr><td colSpan={esServicio ? 6 : 7} className="px-4 py-8 text-center text-sm text-slate-600">Sin {esServicio ? 'servicios' : 'artículos'}.</td></tr>
             )}
             {rows.map(p => (
               <tr key={p.id} onClick={() => setViewModal(p)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <span className="text-xs font-mono font-bold text-amber-400 bg-amber-600/10 border border-amber-600/20 px-2 py-0.5 rounded">
+                    ART-{String(p.id).padStart(3, '0')}
+                  </span>
+                </td>
                 <td className={TD + ' font-mono text-xs text-slate-400'}>{p.sku}</td>
                 <td className={TD + ' font-medium text-slate-200'}>{p.nombre}</td>
                 <td className={TD}>
