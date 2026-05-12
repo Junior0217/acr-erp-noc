@@ -3,10 +3,11 @@ import { toast } from 'sonner'
 import {
   ShieldCheck, Lock, Ban, CheckCircle, LogOut, Loader2, Eye, EyeOff,
   RefreshCw, KeyRound, Crown, Users, Shield, Plus, Trash2, Save, Sparkles,
-  QrCode, Smartphone, User, Monitor, Trash, Globe, MapPin, Store,
+  QrCode, Smartphone, User, Monitor, Trash, Globe, MapPin, Store, Activity, AlertTriangle,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
+import PanelApiEstado from './panels/PanelApiEstado'
 
 function buildPermGroups(flat) {
   const map = new Map()
@@ -1034,6 +1035,120 @@ function PanelPortalB2C() {
   )
 }
 
+function PanelIncidencias() {
+  const [data, setData]       = useState([])
+  const [loading, setLoading] = useState(true)
+  const [filtro, setFiltro]   = useState('pendientes')
+  const [resolviendo, setResolviendo] = useState(null)
+  const [resolucion, setResolucion]   = useState('')
+
+  async function cargar() {
+    setLoading(true)
+    try {
+      const params = new URLSearchParams()
+      if (filtro === 'pendientes') params.set('resueltas', 'false')
+      if (filtro === 'resueltas')  params.set('resueltas', 'true')
+      const r = await apiFetch(`/api/incidencias?${params}`)
+      const j = await r.json()
+      setData(Array.isArray(j.data) ? j.data : [])
+    } catch { setData([]) }
+    finally { setLoading(false) }
+  }
+  useEffect(() => { cargar() }, [filtro]) // eslint-disable-line
+
+  async function resolver() {
+    if (!resolviendo || resolucion.length < 3) { toast.error('Describe la resolución (min 3 chars).'); return }
+    try {
+      const r = await apiFetch(`/api/incidencias/${resolviendo.id}/resolver`, { method: 'PATCH', body: JSON.stringify({ resolucion }) })
+      if (r.ok) { toast.success('Incidencia resuelta.'); setResolviendo(null); setResolucion(''); cargar() }
+      else      { toast.error('Error al resolver.') }
+    } catch { toast.error('Error de red.') }
+  }
+
+  const SEV_COLOR = {
+    CRITICA: 'bg-red-500/15 text-red-400 border-red-500/30',
+    ALTA:    'bg-orange-500/15 text-orange-400 border-orange-500/30',
+    MEDIA:   'bg-yellow-500/15 text-yellow-400 border-yellow-500/30',
+  }
+  const TIPO_LABEL = {
+    ROBO_EQUIPO:        '🚨 Posible robo',
+    FUGA_EFECTIVO:      '💸 Fuga efectivo',
+    DISCREPANCIA_STOCK: '📦 Discrepancia stock',
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <AlertTriangle size={18} className="text-red-400" />
+        <h2 className="text-lg font-bold text-slate-100">Incidencias de Reconciliación · {data.length}</h2>
+        <button onClick={cargar} className="ml-auto p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800"><RefreshCw size={14} className={loading ? 'animate-spin' : ''} /></button>
+      </div>
+      <div className="flex gap-1 bg-slate-800/50 rounded-lg p-1 w-fit">
+        {[
+          { id: 'pendientes', label: 'Pendientes' },
+          { id: 'resueltas',  label: 'Resueltas'  },
+          { id: 'todas',      label: 'Todas'      },
+        ].map(o => (
+          <button key={o.id} onClick={() => setFiltro(o.id)}
+            className={`px-3 py-1.5 rounded text-xs font-semibold transition ${filtro === o.id ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'}`}>
+            {o.label}
+          </button>
+        ))}
+      </div>
+      <p className="text-xs text-slate-500">Generadas por <code>backend/scripts/reconciliar.js</code>. Programa cron diario 23:00.</p>
+
+      {loading ? (
+        <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-blue-500" /></div>
+      ) : data.length === 0 ? (
+        <p className="text-center text-sm text-slate-600 py-12">Sin incidencias {filtro === 'pendientes' ? 'pendientes' : ''}.</p>
+      ) : (
+        <div className="space-y-2">
+          {data.map(inc => (
+            <div key={inc.id} className="bg-slate-800/40 border border-slate-700/50 rounded-lg p-4">
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className="text-sm font-bold text-slate-100">{TIPO_LABEL[inc.tipo] ?? inc.tipo}</span>
+                    <span className={`text-[10px] px-2 py-0.5 rounded-full border ${SEV_COLOR[inc.severidad] ?? 'bg-slate-700/30 text-slate-400 border-slate-600/30'}`}>{inc.severidad}</span>
+                    <span className="text-[10px] text-slate-600">#{inc.id} · {new Date(inc.createdAt).toLocaleDateString('es-DO')}</span>
+                  </div>
+                  <p className="text-xs text-slate-300">{inc.descripcion}</p>
+                  {inc.resueltoEn && (
+                    <p className="text-[10px] text-emerald-400 mt-1.5">
+                      ✓ Resuelta {new Date(inc.resueltoEn).toLocaleDateString('es-DO')} por {inc.empleado?.nombre ?? 'sistema'}: {inc.resolucion}
+                    </p>
+                  )}
+                </div>
+                {!inc.resueltoEn && (
+                  <button onClick={() => setResolviendo(inc)} className="px-3 py-1.5 rounded bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-400 text-xs font-semibold flex items-center gap-1">
+                    <CheckCircle size={11} />Resolver
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {resolviendo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-slate-900 border border-emerald-600/30 rounded-xl max-w-md w-full p-5 space-y-3">
+            <h3 className="text-sm font-bold text-slate-100">Resolver incidencia #{resolviendo.id}</h3>
+            <p className="text-xs text-slate-400">{resolviendo.descripcion}</p>
+            <textarea rows={3} value={resolucion} onChange={e => setResolucion(e.target.value)}
+              placeholder="Explica la resolución (ej. 'Equipo encontrado en cajón B'/'Factura emitida #FAC-0042')"
+              className="w-full bg-slate-800 border border-slate-700 rounded px-3 py-2 text-sm text-slate-200" autoFocus />
+            <div className="flex justify-end gap-2">
+              <button onClick={() => { setResolviendo(null); setResolucion('') }} className="px-3 py-1.5 text-xs text-slate-400 hover:text-slate-200">Cancelar</button>
+              <button onClick={resolver} className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold rounded">Confirmar</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 export default function Configuracion() {
   const { tienePermiso } = useAuth()
   const isAdmin = tienePermiso('sistema:admin')
@@ -1123,7 +1238,26 @@ export default function Configuracion() {
             <Globe size={14} />Sesiones
           </button>
         )}
+        {isOwner && (
+          <button onClick={() => setActiveTab('api')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'api' ? 'bg-cyan-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'
+            }`}>
+            <Activity size={14} />API
+          </button>
+        )}
+        {isOwner && (
+          <button onClick={() => setActiveTab('incidencias')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'incidencias' ? 'bg-red-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'
+            }`}>
+            <AlertTriangle size={14} />Incidencias
+          </button>
+        )}
       </div>
+
+      {activeTab === 'api'         && isOwner && <PanelApiEstado />}
+      {activeTab === 'incidencias' && isOwner && <PanelIncidencias />}
 
       {/* ── Tab: Mi Perfil ──────────────────────────────────────────────────── */}
       {activeTab === 'mi-perfil' && (

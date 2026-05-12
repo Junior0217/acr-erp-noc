@@ -38,18 +38,28 @@ const CRISTO_REY_POLYGON = [
 
 // ─── Services catalog ─────────────────────────────────────────────────────────
 
-const SERVICES = [
-  { id: 1, category: 'WISP',    icon: Wifi,    color: 'blue',    nombre: 'Internet Residencial Basic',   descripcion: '15 Mbps simétrico. Ideal para hogares.',              precio: 1500,  features: ['15 Mbps simétrico', 'IP dinámica', 'Soporte 24/7'] },
-  { id: 2, category: 'WISP',    icon: Wifi,    color: 'blue',    nombre: 'Internet Residencial Pro',     descripcion: '30 Mbps. Streaming y trabajo desde casa.',            precio: 2500,  features: ['30 Mbps simétrico', 'IP dinámica', 'Router incluido', 'Soporte 24/7'], badge: 'Popular' },
-  { id: 3, category: 'WISP',    icon: Globe,   color: 'indigo',  nombre: 'Internet Empresarial',         descripcion: '100 Mbps + IP estática. Para negocios exigentes.',   precio: 6000,  features: ['100 Mbps simétrico', 'IP estática', 'SLA 99.8%', 'Soporte prioritario'], badge: 'Business' },
-  { id: 4, category: 'CCTV',    icon: Shield,  color: 'emerald', nombre: 'Kit CCTV Básico 4 Cámaras',   descripcion: 'Sistema HD con DVR 4 canales y disco 1TB.',           precio: 18500, features: ['4 cámaras HD 1080p', 'DVR 4 canales', '1TB almacenamiento', 'Acceso remoto'] },
-  { id: 5, category: 'CCTV',    icon: Shield,  color: 'emerald', nombre: 'Kit CCTV Pro 8 Cámaras',      descripcion: 'Cámaras IP 4K, NVR y visión nocturna avanzada.',      precio: 42000, features: ['8 cámaras IP 4K', 'NVR 8 canales', '2TB almacenamiento', 'Analíticas IA', 'Nube'], badge: 'Pro' },
-  { id: 6, category: 'Redes',   icon: Wrench,  color: 'amber',   nombre: 'Instalación Red LAN',          descripcion: 'Cableado Cat6, puntos de red, switches configurados.', precio: 12000, features: ['Cableado Cat6', 'Hasta 8 puntos', 'Switch incluido', 'Certificación'] },
-  { id: 7, category: 'Redes',   icon: Wrench,  color: 'amber',   nombre: 'WiFi Corporativo Mesh',        descripcion: 'APs UniFi mesh para alta densidad empresarial.',      precio: 25000, features: ['3 APs UniFi', 'Cobertura 200m²', 'Gestión centralizada', 'VLANs'], badge: 'Enterprise' },
-  { id: 8, category: 'Soporte', icon: Wrench,  color: 'purple',  nombre: 'Mantenimiento Mensual',        descripcion: 'Soporte preventivo y correctivo con visita mensual.',  precio: 3500,  features: ['1 visita mensual', 'Soporte remoto', 'Reporte de estado', 'Prioridad alta'] },
-]
+// Catalog now sourced dynamically from /api/catalogo-publico (public) or /api/portal/catalogo (auth).
+// Visual mappings remain client-side.
+const CATEGORY_ICON = {
+  CCTV: Shield, ProyectoCCTV: Shield,
+  Redes: Wrench, CercoElectrico: Shield,
+  SoporteTecnico: Wrench, Reparacion: Wrench,
+  VentaDirecta: Globe, Mixto: Wrench,
+}
+const CATEGORY_COLOR = {
+  CCTV: 'emerald', ProyectoCCTV: 'emerald',
+  Redes: 'amber', CercoElectrico: 'purple',
+  SoporteTecnico: 'purple', Reparacion: 'blue',
+  VentaDirecta: 'indigo', Mixto: 'amber',
+}
+const CATEGORY_LABEL = {
+  CCTV: 'CCTV', ProyectoCCTV: 'CCTV',
+  Redes: 'Redes', CercoElectrico: 'Seguridad',
+  SoporteTecnico: 'Soporte', Reparacion: 'Reparación',
+  VentaDirecta: 'Equipos', Mixto: 'Mixto',
+}
 
-const CATEGORIES = ['Todos', 'WISP', 'CCTV', 'Redes', 'Soporte']
+const CATEGORIES = ['Todos', 'CCTV', 'Redes', 'Seguridad', 'Soporte', 'Reparación', 'Equipos']
 
 const COLOR_MAP = {
   blue:    { bg: 'bg-blue-600/10',    border: 'border-blue-600/20',    icon: 'text-blue-400',    badge: 'bg-blue-600/20 text-blue-300 border-blue-600/30'    },
@@ -142,8 +152,17 @@ function ServiceCard({ service, onAdd, blockedByDebt }) {
         <div className="flex items-end justify-between mt-auto">
           <div>
             <div className="text-[10px] text-slate-600 uppercase tracking-wider">Desde</div>
-            <div className="text-xl font-black text-slate-100">RD$ {fmt(service.precio)}</div>
-            <div className="text-[10px] text-slate-600">/mes o instalación</div>
+            {service.precio != null ? (
+              <>
+                <div className="text-xl font-black text-slate-100">RD$ {fmt(service.precio)}</div>
+                <div className="text-[10px] text-slate-600">/mes o instalación</div>
+              </>
+            ) : (
+              <>
+                <div className="text-sm font-bold text-blue-400">Inicia sesión</div>
+                <div className="text-[10px] text-slate-600">para ver precio</div>
+              </>
+            )}
           </div>
           <div className="relative group/btn">
             <button
@@ -1155,26 +1174,45 @@ export default function CustomerPortal() {
   const [sessionLoading,  setSessionLoading]  = useState(true)
   const [cartItems,       setCartItems]       = useState([])
   const [cartOpen,        setCartOpen]        = useState(false)
+  const [services,        setServices]        = useState([])
+  const [servicesLoading, setServicesLoading] = useState(true)
 
   const blockedByDebt = false
 
-  // Restore session + fetch settings on mount
+  // Restore session + fetch settings + catalog on mount
   useEffect(() => {
     let cancelled = false
     async function init() {
-      const [meRes, settingsRes] = await Promise.allSettled([
+      const [meRes, settingsRes, catRes] = await Promise.allSettled([
         fetch(`${API}/api/portal/auth/me`, { credentials: 'include' }),
         fetch(`${API}/api/portal/settings`),
+        fetch(`${API}/api/catalogo-publico`),
       ])
       if (cancelled) return
+      let hasSession = false
       if (meRes.status === 'fulfilled' && meRes.value.ok) {
         const data = await meRes.value.json()
         setCliente(data)
+        hasSession = true
       }
       if (settingsRes.status === 'fulfilled' && settingsRes.value.ok) {
         const data = await settingsRes.value.json()
         setSettings(prev => ({ ...prev, ...data }))
       }
+      // If user is logged in, fetch with prices; otherwise use public catalog already loaded.
+      if (hasSession) {
+        try {
+          const r = await fetch(`${API}/api/portal/catalogo`, { credentials: 'include' })
+          if (r.ok) {
+            const j = await r.json()
+            if (!cancelled) setServices(Array.isArray(j.data) ? j.data : [])
+          }
+        } catch {}
+      } else if (catRes.status === 'fulfilled' && catRes.value.ok) {
+        const j = await catRes.value.json()
+        if (!cancelled) setServices(Array.isArray(j.data) ? j.data : [])
+      }
+      setServicesLoading(false)
       setSessionLoading(false)
     }
     init()
@@ -1213,7 +1251,21 @@ export default function CustomerPortal() {
   }
 
   const cartCount = cartItems.reduce((s, i) => s + i.qty, 0)
-  const serviciosFiltrados = catActiva === 'Todos' ? SERVICES : SERVICES.filter(s => s.category === catActiva)
+  // Map BD items to portal view-model (icon/color/category-label) — never WISP (filtered server-side)
+  const enrichedServices = services.map(s => ({
+    id:          s.id,
+    nombre:      s.nombre,
+    descripcion: s.descripcion ?? '',
+    precio:      s.precio,
+    category:    CATEGORY_LABEL[s.categoria] ?? 'Otros',
+    icon:        CATEGORY_ICON[s.categoria]  ?? Wrench,
+    color:       CATEGORY_COLOR[s.categoria] ?? 'blue',
+    features:    s.tipo === 'Recurrente' ? ['Mensualidad', 'Soporte incluido'] : ['Servicio único'],
+    badge:       s.tipo === 'Recurrente' ? 'Recurrente' : null,
+  }))
+  const serviciosFiltrados = catActiva === 'Todos'
+    ? enrichedServices
+    : enrichedServices.filter(s => s.category === catActiva)
 
   if (sessionLoading) {
     return (

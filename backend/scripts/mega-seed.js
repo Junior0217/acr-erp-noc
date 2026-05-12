@@ -691,6 +691,66 @@ async function main() {
     console.log(`  ↷ AuditLog ya tiene ${auditCount} eventos — saltando`)
   }
 
+  // ─── 21. PlantillaEquipo (vincula productos a Plan, legacy) ────────────────
+  const pleqCount = await prisma.plantillaEquipo.count()
+  if (pleqCount < 6) {
+    const planes = await prisma.plan.findMany({ take: 3 })
+    const prodSample = await prisma.producto.findMany({ take: 3 })
+    if (planes.length && prodSample.length) {
+      for (const plan of planes) {
+        for (let i = 0; i < prodSample.length; i++) {
+          await prisma.plantillaEquipo.create({
+            data: { planId: plan.id, productoId: prodSample[i].id, cantidad: i + 1 },
+          }).catch(() => {})
+        }
+      }
+      console.log(`  ✓ PlantillaEquipo (${planes.length * prodSample.length})`)
+    }
+  } else { console.log(`  ↷ PlantillaEquipo ya tiene ${pleqCount} entradas — saltando`) }
+
+  // ─── 22. OrdenInstalacion + DetalleOrden (legacy compat) ───────────────────
+  const oinstCount = await prisma.ordenInstalacion.count()
+  if (oinstCount < 2) {
+    const servSample = await prisma.servicio.findMany({ take: 2 })
+    const prodSample = await prisma.producto.findMany({ take: 2 })
+    if (servSample.length && prodSample.length) {
+      for (let i = 0; i < servSample.length; i++) {
+        const ord = await prisma.ordenInstalacion.create({
+          data: {
+            servicioId: servSample[i].id,
+            tipo:       'Instalacion',
+            estado:     i === 0 ? 'Completada' : 'EnProceso',
+            tecnicoId:  empTec1.id,
+            notas:      i === 0 ? 'Instalación completada y entregada al cliente.' : 'En proceso — pendiente certificación.',
+            fechaProgramada: dAgo(7 - i),
+            fechaCompletada: i === 0 ? dAgo(5) : null,
+          },
+        }).catch(() => null)
+        if (ord) {
+          for (const prod of prodSample) {
+            await prisma.detalleOrden.create({
+              data: { ordenId: ord.id, productoId: prod.id, cantidad: 1 },
+            }).catch(() => {})
+          }
+        }
+      }
+      console.log(`  ✓ OrdenInstalacion (2) + DetalleOrden (4) — legacy`)
+    }
+  } else { console.log(`  ↷ OrdenInstalacion ya tiene ${oinstCount} entradas — saltando`) }
+
+  // ─── 23. Cierre algunas OTs para que ActivoCliente / reportes muestren ─────
+  const otsCerradas = await prisma.ordenTrabajo.count({ where: { estado: 'Cerrada' } })
+  if (otsCerradas < 3) {
+    const ots = await prisma.ordenTrabajo.findMany({ where: { estado: { not: 'Cerrada' }, deletedAt: null }, take: 3 })
+    for (const ot of ots) {
+      await prisma.ordenTrabajo.update({
+        where: { id: ot.id },
+        data:  { estado: 'Cerrada', completadaEn: dAgo(2), limpiezaRealizada: true, garantiaDias: 365 },
+      })
+    }
+    console.log(`  ✓ ${ots.length} OT(s) cerradas para reportes`)
+  } else { console.log(`  ↷ OTs cerradas ya hay ${otsCerradas} — saltando`) }
+
   // ─── Final summary ────────────────────────────────────────────────────────
   const [fClientes, fProds, fItems, fFacts, fCots, fOTs, fSvcs, fMovs, fEmps, fSups, fPros, fAsis, fUsr, fTick, fCred, fAct, fPres, fFoto, fAud] = await Promise.all([
     prisma.cliente.count(),

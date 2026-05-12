@@ -1073,7 +1073,7 @@ app.get('/api/reportes/semanal', verificarJWT, requerirPermiso('sistema:owner'),
       }),
       prisma.ordenTrabajo.findMany({
         where:   { deletedAt: null, estado: 'Cerrada', updatedAt: { gte: inicioSemana } },
-        select:  { id: true, noOT: true, tipoOT: true, updatedAt: true, tecnicoNombre: true },
+        select:  { id: true, noOT: true, tipoOT: true, updatedAt: true, tecnico: { select: { id: true, nombre: true } } },
       }),
       prisma.factura.findMany({
         where:   { esCotizacion: false, deletedAt: null, estado: 'Pagada',
@@ -1110,11 +1110,21 @@ app.get('/api/reportes/semanal', verificarJWT, requerirPermiso('sistema:owner'),
       ingresosPorCategoria,
       ingresoPorDia,
       otsCerradas: ots.length,
-      otsDetalle:  ots,
+      otsDetalle:  ots.map(o => ({ id: o.id, noOT: o.noOT, tipoOT: o.tipoOT, updatedAt: o.updatedAt, tecnicoNombre: o.tecnico?.nombre ?? null })),
     });
   } catch (e) {
-    console.error('[REPORTE SEMANAL]', e.message);
-    res.status(500).json({ error: 'Error interno.' });
+    console.error('[REPORTE SEMANAL]', e.message, e.stack);
+    // Never explode the frontend: return safe empty shape on backend errors
+    res.json({
+      semana:               { inicio: null, fin: null },
+      totalSemana:          0,
+      totalMes:             0,
+      ingresosPorCategoria: {},
+      ingresoPorDia:        {},
+      otsCerradas:          0,
+      otsDetalle:           [],
+      _error:               'Datos incompletos. Reintenta en unos segundos.',
+    });
   }
 });
 
@@ -1128,15 +1138,16 @@ app.get('/api/reportes/comisiones', verificarJWT, requerirPermiso('sistema:owner
 
     const ots = await prisma.ordenTrabajo.findMany({
       where:   {
-        deletedAt:    null,
-        estado:       'Cerrada',
-        tecnicoNombre: { not: null },
-        tipoOT:       { in: ['Reparacion', 'Instalacion', 'CCTV'] },
-        updatedAt:    { gte: inicio, lt: fin },
+        deletedAt: null,
+        estado:    'Cerrada',
+        tecnicoId: { not: null },
+        tipoOT:    { in: ['Reparacion', 'Instalacion', 'CCTV'] },
+        updatedAt: { gte: inicio, lt: fin },
       },
       select: {
-        id: true, noOT: true, tipoOT: true, tecnicoNombre: true, updatedAt: true,
-        factura: { select: { total: true, estado: true } },
+        id: true, noOT: true, tipoOT: true, updatedAt: true,
+        tecnico:  { select: { id: true, nombre: true } },
+        facturas: { select: { total: true, estado: true }, take: 1 },
       },
     });
 
@@ -1144,10 +1155,11 @@ app.get('/api/reportes/comisiones', verificarJWT, requerirPermiso('sistema:owner
 
     const porTecnico = {};
     for (const ot of ots) {
-      const total  = Number(ot.factura?.total ?? 0);
+      const fact = (ot.facturas || [])[0];
+      const total  = Number(fact?.total ?? 0);
       const tasa   = TASA[ot.tipoOT] ?? 0.08;
       const comision = total * tasa;
-      const nombre = ot.tecnicoNombre;
+      const nombre = ot.tecnico?.nombre ?? 'Desconocido';
       if (!porTecnico[nombre]) porTecnico[nombre] = { nombre, ots: 0, totalFacturado: 0, comisionTotal: 0, detalle: [] };
       porTecnico[nombre].ots++;
       porTecnico[nombre].totalFacturado += total;
@@ -1161,8 +1173,8 @@ app.get('/api/reportes/comisiones', verificarJWT, requerirPermiso('sistema:owner
       totalComisiones: Object.values(porTecnico).reduce((s, t) => s + t.comisionTotal, 0),
     });
   } catch (e) {
-    console.error('[REPORTE COMISIONES]', e.message);
-    res.status(500).json({ error: 'Error interno.' });
+    console.error('[REPORTE COMISIONES]', e.message, e.stack);
+    res.json({ periodo: { mes: null, anio: null }, tecnicos: [], totalComisiones: 0, _error: 'Datos incompletos.' });
   }
 });
 
@@ -1983,6 +1995,87 @@ app.get('/api/portal/catalogo', verificarPortalJWT, async (req, res) => {
     })
     res.json({ data: items.map(i => ({ ...i, precio: Number(i.precio) })) })
   } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── Reconciliación: lectura de incidencias ──────────────────────────────────
+
+app.get('/api/incidencias', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const { tipo, severidad, resueltas } = req.query
+    const where = {}
+    if (tipo)      where.tipo      = tipo
+    if (severidad) where.severidad = severidad
+    if (resueltas === 'true')  where.resueltoEn = { not: null }
+    if (resueltas === 'false') where.resueltoEn = null
+    const data = await prisma.incidenciaReconciliacion.findMany({
+      where,
+      orderBy: [{ resueltoEn: 'asc' }, { createdAt: 'desc' }],
+      take: 200,
+      include: { empleado: { select: { id: true, nombre: true } } },
+    })
+    res.json({ data })
+  } catch { res.json({ data: [], _error: 'Error obteniendo incidencias' }) }
+})
+
+app.patch('/api/incidencias/:id/resolver', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  const id = parseInt(req.params.id)
+  if (!id) return res.status(400).json({ error: 'ID inválido.' })
+  const { resolucion } = z.object({ resolucion: z.string().min(3).max(500) }).parse(req.body)
+  try {
+    const inc = await prisma.incidenciaReconciliacion.update({
+      where: { id },
+      data:  { resueltoEn: new Date(), resolucion, asignadoA: req.user.sub },
+    })
+    auditReq('reconciliacion:resolver', req, { incidenciaId: id })
+    res.json(inc)
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Incidencia no encontrada.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── API Dictionary: endpoint meta / introspección ────────────────────────────
+
+function _scanRoutes(app) {
+  const out = []
+  function walk(stack, basePath = '') {
+    for (const layer of stack) {
+      if (layer.route) {
+        const path = basePath + layer.route.path
+        const methods = Object.keys(layer.route.methods).filter(m => layer.route.methods[m])
+        for (const m of methods) {
+          // Inferir guard de auth a partir del nombre de middlewares
+          const handlers = layer.route.stack.map(s => s.name).filter(Boolean)
+          const auth =
+            handlers.includes('verificarJWT')        ? 'JWT' :
+            handlers.includes('verificarPortalJWT')  ? 'PortalJWT' :
+            handlers.some(h => h.includes('Limiter'))? 'rate-limit' : 'public'
+          out.push({ method: m.toUpperCase(), path, auth, handlers })
+        }
+      } else if (layer.name === 'router' && layer.handle?.stack) {
+        walk(layer.handle.stack, basePath)
+      }
+    }
+  }
+  walk(app._router.stack)
+  return out
+}
+
+let _routesCache = null
+app.get('/api/_meta/endpoints', verificarJWT, requerirPermiso('sistema:owner'), (req, res) => {
+  try {
+    if (!_routesCache) _routesCache = _scanRoutes(app).sort((a, b) => a.path.localeCompare(b.path))
+    // Health public ping (no auth) — we expose generic info, no secrets
+    const grouped = _routesCache.reduce((acc, r) => {
+      const grupo = r.path.split('/')[2] || 'root'
+      ;(acc[grupo] = acc[grupo] || []).push(r)
+      return acc
+    }, {})
+    res.json({ total: _routesCache.length, endpoints: _routesCache, grouped, generadoEn: new Date() })
+  } catch (e) {
+    console.error('[META ENDPOINTS]', e.message)
+    res.json({ total: 0, endpoints: [], grouped: {}, _error: 'Error escaneando rutas.' })
+  }
 })
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────

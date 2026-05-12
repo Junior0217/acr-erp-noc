@@ -134,7 +134,7 @@ export default function Reportes() {
                 <StatCard icon={DollarSign}  label="Ingresos Semana"  value={formatCurrency(semanal.totalSemana)}  color="emerald" />
                 <StatCard icon={CalendarDays} label="Ingresos Mes"   value={formatCurrency(semanal.totalMes)}      color="blue" />
                 <StatCard icon={Wrench}       label="OTs Cerradas"   value={semanal.otsCerradas}                    color="orange" />
-                <StatCard icon={BarChart2}    label="Categorías"     value={Object.keys(semanal.ingresosPorCategoria).length} color="purple" />
+                <StatCard icon={BarChart2}    label="Categorías"     value={Object.keys((semanal.ingresosPorCategoria ?? {})).length} color="purple" />
               </div>
 
               <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -142,8 +142,8 @@ export default function Reportes() {
                 <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-slate-300 mb-4">Ingresos por Día (últimos 7 días)</h3>
                   <div className="flex items-end gap-2 h-28">
-                    {Object.entries(semanal.ingresoPorDia).map(([day, val]) => {
-                      const max = Math.max(...Object.values(semanal.ingresoPorDia), 1);
+                    {Object.entries((semanal.ingresoPorDia ?? {})).map(([day, val]) => {
+                      const max = Math.max(...Object.values((semanal.ingresoPorDia ?? {})), 1);
                       return <BarMini key={day} label={day} value={val} max={max} />;
                     })}
                   </div>
@@ -153,13 +153,13 @@ export default function Reportes() {
                 <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
                   <h3 className="text-sm font-semibold text-slate-300 mb-4">Ingresos por Categoría (semana)</h3>
                   <div className="space-y-2">
-                    {Object.entries(semanal.ingresosPorCategoria).length === 0 && (
+                    {Object.entries((semanal.ingresosPorCategoria ?? {})).length === 0 && (
                       <p className="text-xs text-slate-600 text-center py-4">Sin datos esta semana.</p>
                     )}
-                    {Object.entries(semanal.ingresosPorCategoria)
+                    {Object.entries((semanal.ingresosPorCategoria ?? {}))
                       .sort((a, b) => b[1] - a[1])
                       .map(([cat, val]) => {
-                        const maxVal = Math.max(...Object.values(semanal.ingresosPorCategoria), 1);
+                        const maxVal = Math.max(...Object.values((semanal.ingresosPorCategoria ?? {})), 1);
                         const pct = (val / maxVal) * 100;
                         return (
                           <div key={cat}>

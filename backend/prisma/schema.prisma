@@ -127,6 +127,7 @@ model Empleado {
   carritoTemp    CarritoTemp?
   ticketsTaller  TicketTaller[]
   fotosOT        OrdenFoto[]
+  incidencias    IncidenciaReconciliacion[]
 
   @@index([nombre])
   @@index([deletedAt])
@@ -638,6 +639,26 @@ model LineaCarrito {
 
   @@index([carritoId])
   @@index([productoId])
+}
+
+// ─── Anti-fraude: incidencias de reconciliación diaria ──────────────────────
+
+model IncidenciaReconciliacion {
+  id          Int       @id @default(autoincrement())
+  tipo        String
+  severidad   String    @default("ALTA")
+  descripcion String
+  datos       Json      @default("{}")
+  asignadoA   Int?
+  resueltoEn  DateTime?
+  resolucion  String?
+  empleado    Empleado? @relation(fields: [asignadoA], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+
+  @@index([tipo])
+  @@index([severidad])
+  @@index([resueltoEn])
+  @@index([createdAt])
 }
 
 // ─── Anti-fraude: foto-evidencia geo-etiquetada de OT ─────────────────────────
