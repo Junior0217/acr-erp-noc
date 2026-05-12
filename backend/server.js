@@ -2768,7 +2768,7 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
       if (ot.estado === 'Cancelada') throw Object.assign(new Error('No se puede facturar una OT cancelada.'), { status: 422 })
 
       // 2. Tipo NCF del cliente
-      const tipoNcf = ot.cliente.tipoNcf ?? 'B02'
+      const tipoNcf = ot.cliente.tipoNcf ?? 'Consumidor Final'
 
       // 3. UPDATE atómico — acquire exclusive row lock, increment counter
       const rows = await tx.$queryRaw`
@@ -2917,15 +2917,20 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
       })
     }
 
-    // 2. Load all products in one query
-    const productoIds = [...new Set(lineas.map(l => l.productoId))]
-    const productos = await tx.producto.findMany({
-      where:  { id: { in: productoIds } },
-      select: { id: true, nombre: true, sku: true, stockActual: true, precio: true, tipoItem: true },
-    })
+    // 2. Load products (only lines that have a productoId — description-only lines skip this)
+    const productoIds = [...new Set(lineas.map(l => l.productoId).filter(Boolean))]
+    const productos = productoIds.length > 0
+      ? await tx.producto.findMany({
+          where:  { id: { in: productoIds } },
+          select: { id: true, nombre: true, sku: true, stockActual: true, precio: true, tipoItem: true },
+        })
+      : []
     const pMap = Object.fromEntries(productos.map(p => [p.id, p]))
     for (const l of lineas) {
-      if (!pMap[l.productoId]) throw Object.assign(new Error(`Producto ID ${l.productoId} no encontrado.`), { status: 404 })
+      if (l.productoId && !pMap[l.productoId])
+        throw Object.assign(new Error(`Producto ID ${l.productoId} no encontrado.`), { status: 404 })
+      if (!l.productoId && !l.descripcion)
+        throw Object.assign(new Error('Línea sin productoId requiere campo descripción.'), { status: 400 })
     }
 
     // 3. Stock check — only ARTICULO items, only for real invoices
@@ -2933,13 +2938,20 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
 
     // 4. Build enriched lines + totals (with discounts)
     const lineasEnriquecidas = lineas.map(l => {
-      const p   = pMap[l.productoId]
-      const pu  = l.precioUnitario ?? Number(p.precio)
+      if (l.productoId) {
+        const p   = pMap[l.productoId]
+        const pu  = l.precioUnitario ?? Number(p.precio)
+        const pct = l.descuentoPorcentaje ?? 0
+        const mon = l.descuentoMonto ?? 0
+        return { productoId: l.productoId, descripcion: l.descripcion ?? p.nombre, cantidad: l.cantidad,
+                 precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon, _tipoItem: p.tipoItem }
+      }
+      // Description-only line (POS catalog item — no inventory tracking)
+      const pu  = l.precioUnitario ?? 0
       const pct = l.descuentoPorcentaje ?? 0
       const mon = l.descuentoMonto ?? 0
-      return { productoId: l.productoId, descripcion: p.nombre, cantidad: l.cantidad,
-               precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon,
-               _tipoItem: p.tipoItem }
+      return { productoId: null, descripcion: l.descripcion, cantidad: l.cantidad,
+               precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon, _tipoItem: 'SERVICIO' }
     })
     const subtotalBruto = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
     const globalDesc    = descuentoGlobalPct > 0
@@ -3345,30 +3357,51 @@ app.post('/api/cotizaciones/:id/revivir', verificarJWT, requerirPermiso('factura
       include: { cliente: true, lineas: { include: { producto: { select: { id: true, precio: true, stockActual: true, tipoItem: true } } } } },
     })
     if (!original || !original.esCotizacion) return res.status(404).json({ error: 'Cotización no encontrada.' })
-    if (original.lineas.some(l => !l.productoId))
-      return res.status(422).json({ error: 'Cotización contiene líneas sin referencia de producto. Recrea manualmente.' })
 
-    // Re-check current prices
-    const productoIds = original.lineas.map(l => l.productoId)
-    const prods = await prisma.producto.findMany({ where: { id: { in: productoIds } }, select: { id: true, nombre: true, precio: true, stockActual: true, tipoItem: true } })
+    // Re-check current prices for lines that have a productoId
+    const productoIds = original.lineas.map(l => l.productoId).filter(Boolean)
+    const prods = productoIds.length > 0
+      ? await prisma.producto.findMany({ where: { id: { in: productoIds } }, select: { id: true, nombre: true, precio: true, stockActual: true, tipoItem: true } })
+      : []
     const pMap = Object.fromEntries(prods.map(p => [p.id, p]))
 
     const lineasRevividas = original.lineas.map(l => {
-      const actual = pMap[l.productoId]
-      const precioActual = actual ? Number(actual.precio) : Number(l.precioUnitario)
+      if (l.productoId) {
+        const actual = pMap[l.productoId]
+        const precioActual = actual ? Number(actual.precio) : Number(l.precioUnitario)
+        return {
+          productoId:          l.productoId,
+          descripcion:         l.descripcion,
+          cantidad:            l.cantidad,
+          precioUnitario:      precioActual,
+          descuentoPorcentaje: Number(l.descuentoPorcentaje ?? 0),
+          descuentoMonto:      Number(l.descuentoMonto ?? 0),
+          _meta: {
+            descripcion:        l.descripcion,
+            precioEnCotizacion: Number(l.precioUnitario),
+            precioActual,
+            precioActualizado:  actual !== null && precioActual !== Number(l.precioUnitario),
+            stockDisponible:    actual?.stockActual ?? null,
+            tipoItem:           actual?.tipoItem ?? null,
+          },
+        }
+      }
+      // Description-only line (POS catalog cotización — no productoId)
+      const storedPrice = Number(l.precioUnitario)
       return {
-        productoId:          l.productoId,
+        productoId:          null,
+        descripcion:         l.descripcion,
         cantidad:            l.cantidad,
-        precioUnitario:      precioActual,
+        precioUnitario:      storedPrice,
         descuentoPorcentaje: Number(l.descuentoPorcentaje ?? 0),
         descuentoMonto:      Number(l.descuentoMonto ?? 0),
         _meta: {
-          descripcion:         l.descripcion,
-          precioEnCotizacion:  Number(l.precioUnitario),
-          precioActual,
-          precioActualizado:   actual !== null && precioActual !== Number(l.precioUnitario),
-          stockDisponible:     actual?.stockActual ?? null,
-          tipoItem:            actual?.tipoItem ?? null,
+          descripcion:        l.descripcion,
+          precioEnCotizacion: storedPrice,
+          precioActual:       storedPrice,
+          precioActualizado:  false,
+          stockDisponible:    null,
+          tipoItem:           'SERVICIO',
         },
       }
     })
@@ -3698,7 +3731,7 @@ async function billarOTsISP() {
           })
           if (!otFull || !otFull.lineas.length) return
 
-          const tipoNcf = otFull.cliente.tipoNcf ?? 'B02'
+          const tipoNcf = otFull.cliente.tipoNcf ?? 'Consumidor Final'
           const rows = await tx.$queryRaw`
             UPDATE "ConfiguracionNCF"
             SET    "secuenciaActual" = "secuenciaActual" + 1

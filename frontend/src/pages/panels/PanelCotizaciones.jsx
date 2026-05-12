@@ -36,15 +36,24 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
       .finally(() => setLoading(false))
   }, [cot.id])
 
+  const tieneProductos = preview?.lineas?.some(l => l.productoId) ?? false
+
   async function cargarAlCarrito() {
     setEmitting(true)
     try {
+      const lineasConProducto = preview.lineas.filter(l => l.productoId)
+      if (lineasConProducto.length === 0) {
+        toast.error('Cotización sin productos — usa "Convertir a Factura".')
+        return
+      }
       await clearCart()
       if (cot.clienteId) await updateCartMeta({ clienteId: cot.clienteId })
-      for (const l of preview.lineas) {
+      for (const l of lineasConProducto) {
         await addItem(l.productoId, l.cantidad)
       }
-      toast.success('Cotización cargada al carrito.')
+      const omitidas = preview.lineas.length - lineasConProducto.length
+      if (omitidas > 0) toast.warning(`${omitidas} línea(s) de servicio omitidas del carrito.`)
+      else toast.success('Cotización cargada al carrito.')
       setOpen(true)
       onLoaded()
       onClose()
@@ -191,8 +200,9 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
           <div className="px-5 pb-5 pt-3 border-t border-slate-800 grid grid-cols-2 gap-3 flex-shrink-0">
             <button
               onClick={cargarAlCarrito}
-              disabled={emitting}
-              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium transition-colors disabled:opacity-50"
+              disabled={emitting || !tieneProductos}
+              title={!tieneProductos ? 'Solo servicios — no hay productos para cargar' : undefined}
+              className="flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {emitting ? <Loader2 size={14} className="animate-spin" /> : <RotateCcw size={14} />}
               Cargar al carrito
