@@ -1790,6 +1790,14 @@ app.patch('/api/ordenes/:id/estado', verificarJWT, requerirPermiso('ot:editar'),
       return res.status(423).json({ error: 'OT cerrada y facturada. Datos inmutables.' })
     }
 
+    // Anti-fraude: cerrar OT requiere fotos suficientes
+    if (data.estado === 'Cerrada' && (ot.fotosRequeridas ?? 0) > 0) {
+      const fotosCount = await prisma.ordenFoto.count({ where: { ordenId: ot.id } })
+      if (fotosCount < ot.fotosRequeridas) {
+        return res.status(422).json({ error: `Faltan fotos: requieres ${ot.fotosRequeridas}, hay ${fotosCount}.` })
+      }
+    }
+
     const update = { estado: data.estado }
     if (data.fotosRequeridas   != null) update.fotosRequeridas   = data.fotosRequeridas
     if (data.limpiezaRealizada != null) update.limpiezaRealizada = data.limpiezaRealizada
@@ -1827,6 +1835,154 @@ app.patch('/api/ordenes/:id/estado', verificarJWT, requerirPermiso('ot:editar'),
     console.error('[OT ESTADO]', e.message)
     res.status(500).json({ error: 'Error interno.' })
   }
+})
+
+// ─── OrdenFoto (foto-evidencia anti-fraude) ───────────────────────────────────
+
+const ordenFotoSchema = z.object({
+  url:         z.string().url().max(1000),
+  latitud:     z.string().max(30).optional().nullable(),
+  longitud:    z.string().max(30).optional().nullable(),
+  descripcion: z.string().max(200).optional().nullable(),
+})
+
+app.get('/api/ordenes/:id/fotos', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const fotos = await prisma.ordenFoto.findMany({
+      where:   { ordenId: req.params.id },
+      include: { empleado: { select: { id: true, nombre: true } } },
+      orderBy: { takenAt: 'desc' },
+    })
+    res.json({ data: fotos })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/ordenes/:id/fotos', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const data = ordenFotoSchema.parse(req.body)
+    const ot = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, estado: true, estaFacturada: true } })
+    if (!ot) return res.status(404).json({ error: 'OT no encontrada.' })
+    if (ot.estado === 'Cerrada' && ot.estaFacturada) return res.status(423).json({ error: 'OT inmutable.' })
+    const foto = await prisma.ordenFoto.create({
+      data: {
+        ordenId:     ot.id,
+        url:         data.url,
+        latitud:     data.latitud  ?? null,
+        longitud:    data.longitud ?? null,
+        descripcion: data.descripcion ?? null,
+        subidoPor:   req.user.sub,
+      },
+    })
+    auditReq('ot:foto_upload', req, { ordenId: ot.id, fotoId: foto.id, geo: !!data.latitud })
+    res.status(201).json(foto)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    console.error('[FOTO POST]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.delete('/api/ordenes/:ordenId/fotos/:fotoId', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.ordenId) || !validUUID(req.params.fotoId)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const foto = await prisma.ordenFoto.findUnique({ where: { id: req.params.fotoId }, include: { orden: { select: { estado: true, estaFacturada: true } } } })
+    if (!foto) return res.status(404).json({ error: 'Foto no encontrada.' })
+    if (foto.orden.estado === 'Cerrada' && foto.orden.estaFacturada) return res.status(423).json({ error: 'OT inmutable.' })
+    await prisma.ordenFoto.delete({ where: { id: req.params.fotoId } })
+    auditReq('ot:foto_delete', req, { ordenId: req.params.ordenId, fotoId: req.params.fotoId })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── Offboarding de empleados ─────────────────────────────────────────────────
+
+app.post('/api/empleados/:id/offboard', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  const empleadoId = parseInt(req.params.id)
+  if (!empleadoId) return res.status(400).json({ error: 'ID inválido.' })
+  if (empleadoId === req.user.sub) return res.status(409).json({ error: 'No puedes desactivarte a ti mismo.' })
+  try {
+    const result = await prisma.$transaction(async (tx) => {
+      const emp = await tx.empleado.findUnique({ where: { id: empleadoId }, select: { id: true, nombre: true, bloqueado: true } })
+      if (!emp) throw Object.assign(new Error('Empleado no encontrado.'), { status: 404 })
+
+      // 1. Bloquear y soft-delete
+      await tx.empleado.update({
+        where: { id: empleadoId },
+        data:  { bloqueado: true, deletedAt: new Date() },
+      })
+
+      // 2. Revocar TODAS las sesiones activas
+      const sessionsDeleted = await tx.sessionToken.deleteMany({ where: { empleadoId } })
+
+      // 3. Limpiar carrito temporal
+      await tx.carritoTemp.deleteMany({ where: { empleadoId } })
+
+      // 4. Liberar OTs pendientes/en proceso (unassign + flag huérfana)
+      const otsActivas = await tx.ordenTrabajo.findMany({
+        where:  { tecnicoId: empleadoId, estado: { in: ['Pendiente', 'EnProceso'] }, deletedAt: null },
+        select: { id: true, noOT: true, metadatos: true },
+      })
+      for (const ot of otsActivas) {
+        await tx.ordenTrabajo.update({
+          where: { id: ot.id },
+          data:  {
+            tecnicoId: null,
+            metadatos: { ...(ot.metadatos ?? {}), huerfana: true, motivo: 'offboarding', ofrecidaPor: empleadoId, marcadaEn: new Date().toISOString() },
+          },
+        })
+      }
+
+      // 5. Liberar tickets de taller pendientes
+      const ticketsActivos = await tx.ticketTaller.updateMany({
+        where: { tecnicoId: empleadoId, estado: { in: ['Recibido', 'Diagnostico', 'EsperandoPieza'] } },
+        data:  { tecnicoId: null },
+      })
+
+      return {
+        empleado: emp,
+        sessionsRevocadas: sessionsDeleted.count,
+        otsLiberadas:      otsActivas.length,
+        otsHuerfanas:      otsActivas.map(o => o.noOT),
+        ticketsLiberados:  ticketsActivos.count,
+      }
+    })
+
+    auditReq('rrhh:offboard', req, result)
+    res.json(result)
+  } catch (e) {
+    if (e.status === 404) return res.status(404).json({ error: e.message })
+    console.error('[OFFBOARD]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── Catálogo público (sin precio para anti-scraping) ─────────────────────────
+
+const catalogoPublicoLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false })
+app.get('/api/catalogo-publico', catalogoPublicoLimiter, async (req, res) => {
+  try {
+    const items = await prisma.itemCatalogo.findMany({
+      where: { activo: true, tipoItem: 'SERVICIO', categoria: { not: 'WISP' } },
+      select: { id: true, nombre: true, descripcion: true, categoria: true, tipo: true },
+      orderBy: { categoria: 'asc' },
+    })
+    res.json({ data: items })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── Catálogo del portal (con precio, requiere login) ─────────────────────────
+
+app.get('/api/portal/catalogo', verificarPortalJWT, async (req, res) => {
+  try {
+    const items = await prisma.itemCatalogo.findMany({
+      where: { activo: true, tipoItem: 'SERVICIO', categoria: { not: 'WISP' } },
+      select: { id: true, nombre: true, descripcion: true, categoria: true, tipo: true, precio: true },
+      orderBy: { categoria: 'asc' },
+    })
+    res.json({ data: items.map(i => ({ ...i, precio: Number(i.precio) })) })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────

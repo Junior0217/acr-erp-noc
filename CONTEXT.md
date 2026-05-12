@@ -1,6 +1,40 @@
 # ACR Networks & Solutions — ERP NOC
 
-Sistema de gestión interna para ACR Networks (dueños Carmelo y Cristian Adams): instalación de CCTV, redes estructuradas, reparación de equipos en taller y soporte técnico. Cubre clientes, servicios, inventario (Kardex), órdenes de trabajo de campo, taller (RMA), bóveda de credenciales (PAM), CMDB de activos instalados y préstamos de equipo.
+## Identidad
+
+**Empresa**: ACR Networks & Solutions
+**Dueños**: Carmelo y Cristian Adams
+**Modelo de negocio**: MSP (Managed Service Provider) técnico B2B + B2C.
+
+**Misión**: Ser la firma de referencia en seguridad electrónica, redes corporativas y reparación de hardware en República Dominicana — combinando velocidad de respuesta, transparencia operacional (cliente ve estado de su servicio en tiempo real) y disciplina de auditoría a nivel enterprise.
+
+**Visión**: Operar 1,000+ clientes activos en CCTV monitoreado, redes administradas y soporte IT corporativo bajo SLAs medibles, con cero pérdida por fraude interno y márgenes que escalen vía suscripciones recurrentes (monitoreo, mantenimiento, soporte) — no solo por instalaciones puntuales.
+
+**Núcleo de negocio (lo que SÍ vendemos)**:
+1. **Instalación de CCTV** (4/8/16/32 cámaras, NVR/DVR, cableado, configuración)
+2. **Redes corporativas estructuradas** (cableado Cat6, racks, switches administrados, certificación)
+3. **Cerco eléctrico perimetral**
+4. **Soporte IT corporativo** (mantenimiento mensual recurrente, soporte remoto, consultoría)
+5. **Reparación de hardware en taller** (PC, laptop, NVR — flujo RMA con tracking PIN)
+6. **Venta de equipos** (cámaras, switches, baluns, discos duros, repuestos)
+7. **Monitoreo remoto 24/7** (suscripción recurrente sobre CCTV instalado)
+
+**Lo que NO vendemos (no comercializamos)**:
+- ❌ WISP / Internet residencial / Fibra óptica al hogar (el enum `TipoServicio.WISP` existe en BD por compatibilidad histórica, pero no se ofrece en frontend ni se siembra en seed)
+- ❌ Hosting / SaaS propio
+- ❌ Telefonía / VoIP residencial
+
+**Segmentos**:
+- **B2B**: PYMEs y empresas (clínicas, colmados, escuelas, restaurantes) con instalaciones recurrentes y contratos de mantenimiento. Mayoría del revenue.
+- **B2C técnico**: residentes que traen su PC/laptop a reparar al taller, o compran instalación CCTV residencial. Ticket promedio menor pero volumen estable.
+
+Este archivo es la **brújula permanente del sistema**: cuando una decisión arquitectónica o de UX se debata, revisa esta sección antes de ir al código.
+
+---
+
+## Sistema (técnico)
+
+Sistema de gestión interna que cubre clientes, suplidores, prospectos, usuarios web (portal B2C), servicios y planes, inventario (Kardex), órdenes de trabajo de campo, taller (RMA), bóveda de credenciales (PAM), CMDB de activos instalados, préstamos de equipo, facturación con NCF dominicano, reportes financieros y comisiones, e-commerce con webhook de pagos (Azul), y auditoría de seguridad.
 
 ## Language
 

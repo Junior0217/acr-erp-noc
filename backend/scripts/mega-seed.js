@@ -495,8 +495,204 @@ async function main() {
     console.log(`  ↷ Asistencia ya tiene ${asisCount} registros — saltando`)
   }
 
+  // ─── 14. UsuarioPortal (3 cuentas web vinculadas) ─────────────────────────
+  const usrCount = await prisma.usuarioPortal.count()
+  if (usrCount < 3) {
+    const bcrypt = require('bcryptjs')
+    const hash = await bcrypt.hash('Portal2026!', 10)
+    const usuarios = [
+      { noUsuario: 'USR-0001', nombre: 'Pedro García',  email: 'pedro.bvplaza@portal.test',  clienteId: c02.id },
+      { noUsuario: 'USR-0002', nombre: 'Lucía Hotel',   email: 'lucia.bayahibe@portal.test', clienteId: c07.id },
+      { noUsuario: 'USR-0003', nombre: 'Walk-in Demo',  email: 'walkin@portal.test',         clienteId: null },
+    ]
+    for (const u of usuarios) {
+      const exists = await prisma.usuarioPortal.findFirst({
+        where: { OR: [{ email: u.email }, { noUsuario: u.noUsuario }] },
+      })
+      if (exists) continue
+      await prisma.usuarioPortal.create({
+        data: { ...u, passwordHash: hash, telefono: '809-555-9000', activo: true },
+      })
+    }
+    console.log('  ✓ UsuarioPortal (3) — password: Portal2026!')
+  } else {
+    console.log(`  ↷ UsuarioPortal ya tiene ${usrCount} cuentas — saltando`)
+  }
+
+  // ─── 15. TicketTaller (5 tickets, varios estados) ──────────────────────────
+  const tickCount = await prisma.ticketTaller.count()
+  if (tickCount < 5) {
+    function pin6() {
+      const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''
+      for (let i = 0; i < 6; i++) s += A[Math.floor(Math.random() * A.length)]
+      return s
+    }
+    const tickets = [
+      { noTicket: 'TLR-00001', clienteId: c01.id, tecnicoId: empTec1.id, equipo: 'Laptop Dell Inspiron',  marca: 'Dell',    modelo: '15-3501',     numeroSerie: 'DL-2024-AB12', falla: 'No enciende. LED de batería parpadea naranja.',                  estado: 'Diagnostico',    costoEstimado: 2500, recibidoEn: dAgo(2) },
+      { noTicket: 'TLR-00002', clienteId: c04.id, tecnicoId: empTec2.id, equipo: 'PC Desktop',            marca: 'HP',      modelo: 'ProDesk 600', numeroSerie: 'HP-PD-9981',   falla: 'Pantalla azul al iniciar Windows.',                              estado: 'EsperandoPieza', diagnostico: 'Posible fallo en HDD. Solicitada unidad SSD 480GB.', costoEstimado: 5400, recibidoEn: dAgo(5) },
+      { noTicket: 'TLR-00003', clienteId: c05.id, tecnicoId: empTec1.id, equipo: 'NVR Hikvision',         marca: 'Hikvision', modelo: 'DS-7608NI', numeroSerie: 'HK-NV-7608-A', falla: 'Pérdida de canales 3 y 5.',                                     estado: 'Listo',           diagnostico: 'Puertos PoE quemados. Reemplazo de placa madre del NVR.',  costoEstimado: 12000, recibidoEn: dAgo(8), listoEn: dAgo(1) },
+      { noTicket: 'TLR-00004', clienteId: c02.id, tecnicoId: null,        equipo: 'Laptop HP Pavilion',   marca: 'HP',      modelo: '14-dv0500', numeroSerie: 'HP-PAV-3322',   falla: 'Recuperar archivos de disco dañado.',                            estado: 'Recibido',         costoEstimado: 4500, recibidoEn: dAgo(0) },
+      { noTicket: 'TLR-00005', clienteId: c08.id, tecnicoId: empTec2.id, equipo: 'PC Workstation',       marca: 'Lenovo',  modelo: 'ThinkStation', numeroSerie: 'LV-TS-AA01',  falla: 'Limpieza preventiva + cambio de pasta térmica.',                 estado: 'Entregado',        diagnostico: 'Mantenimiento completo + reemplazo de pasta térmica.',     costoEstimado: 1500, recibidoEn: dAgo(15), listoEn: dAgo(12), entregadoEn: dAgo(10) },
+    ]
+    for (const t of tickets) {
+      const exists = await prisma.ticketTaller.findFirst({ where: { noTicket: t.noTicket } })
+      if (!exists) await prisma.ticketTaller.create({ data: { ...t, codigoPin: pin6() } })
+    }
+    console.log('  ✓ TicketTaller (5) — estados variados')
+  } else {
+    console.log(`  ↷ TicketTaller ya tiene ${tickCount} tickets — saltando`)
+  }
+
+  // ─── 16. CredencialCliente (Bóveda PAM, AES-256-GCM) ──────────────────────
+  const credCount = await prisma.credencialCliente.count()
+  if (credCount < 8) {
+    const crypto = require('crypto')
+    const VAULT_KEY = process.env.VAULT_KEY ? Buffer.from(process.env.VAULT_KEY, 'base64') : null
+    function encryptVault(plain) {
+      const iv = crypto.randomBytes(12)
+      const cipher = crypto.createCipheriv('aes-256-gcm', VAULT_KEY, iv)
+      const enc = Buffer.concat([cipher.update(plain, 'utf8'), cipher.final()])
+      const tag = cipher.getAuthTag()
+      return { passwordEnc: Buffer.concat([enc, tag]).toString('base64'), passwordIv: iv.toString('base64') }
+    }
+    if (!VAULT_KEY) {
+      console.log('  ↷ VAULT_KEY no configurada — saltando bóveda')
+    } else {
+      const creds = [
+        { clienteId: c02.id, tipo: 'NVR',          nombre: 'NVR Recepción BVP',     ip: '192.168.10.50', usuario: 'admin',   password: 'Plaza2024!',   notas: 'Cambio mensual programado' },
+        { clienteId: c02.id, tipo: 'Router',       nombre: 'Router Oficina BVP',     ip: '192.168.10.1',  usuario: 'admin',   password: 'Router#7Z',    notas: 'TP-Link Archer AX73' },
+        { clienteId: c06.id, tipo: 'NVR',          nombre: 'NVR Hospital Naco',     ip: '10.0.5.100',    usuario: 'hospital',password: 'Hosp2024Secure', notas: '16 canales - Hikvision' },
+        { clienteId: c07.id, tipo: 'AccessPoint',  nombre: 'AP UniFi Lobby Hotel',  ip: '10.10.0.5',     usuario: 'ubnt',    password: 'UbntHotel99', notas: 'Floor 1 - Lobby' },
+        { clienteId: c07.id, tipo: 'Switch',       nombre: 'Switch Core 24p',       ip: '10.10.0.2',     usuario: 'admin',   password: 'Cisco@1234', notas: 'Cisco SG350' },
+        { clienteId: c10.id, tipo: 'Server',       nombre: 'Server Backup Office',  ip: '192.168.20.10', usuario: 'root',    password: 'BkpRoot!22', notas: 'Synology DS920+' },
+        { clienteId: c01.id, tipo: 'DVR',          nombre: 'DVR Antiguo Casa Naco', ip: '192.168.1.108', usuario: 'admin',   password: 'admin123',    notas: 'Cliente residencial' },
+        { clienteId: c03.id, tipo: 'Firewall',     nombre: 'Firewall pfSense',      ip: '192.168.30.1',  usuario: 'admin',   password: 'PfSense#22', notas: 'Acceso restringido a Owners' },
+      ]
+      for (const c of creds) {
+        const { passwordEnc, passwordIv } = encryptVault(c.password)
+        await prisma.credencialCliente.create({
+          data: { clienteId: c.clienteId, tipo: c.tipo, nombre: c.nombre, ip: c.ip, usuario: c.usuario, passwordEnc, passwordIv, notas: c.notas },
+        })
+      }
+      console.log('  ✓ CredencialCliente (8) cifrados AES-256-GCM')
+    }
+  } else {
+    console.log(`  ↷ CredencialCliente ya tiene ${credCount} entradas — saltando`)
+  }
+
+  // ─── 17. ActivoCliente (CMDB inicial) ─────────────────────────────────────
+  const actCount = await prisma.activoCliente.count()
+  if (actCount < 6) {
+    const prodSample = await prisma.producto.findMany({ take: 3, where: { stockActual: { gt: 0 } } })
+    if (prodSample.length > 0) {
+      const activos = [
+        { clienteId: c02.id, productoId: prodSample[0].id, cantidad: 8, fechaInstalacion: dAgo(120), finGarantia: new Date(Date.now() + 245 * 86_400_000), numeroSerie: 'CAM-A001', ubicacion: 'Plaza - Entrada principal' },
+        { clienteId: c02.id, productoId: prodSample[1]?.id ?? prodSample[0].id, cantidad: 1, fechaInstalacion: dAgo(120), finGarantia: new Date(Date.now() + 245 * 86_400_000), numeroSerie: 'NVR-002', ubicacion: 'Plaza - Recepción' },
+        { clienteId: c06.id, productoId: prodSample[2]?.id ?? prodSample[0].id, cantidad: 16, fechaInstalacion: dAgo(90), finGarantia: new Date(Date.now() + 275 * 86_400_000), ubicacion: 'Hospital Naco - todas las salas' },
+        { clienteId: c07.id, productoId: prodSample[0].id, cantidad: 12, fechaInstalacion: dAgo(180), finGarantia: dAgo(15), ubicacion: 'Hotel Bayahibe - exterior' },
+        { clienteId: c10.id, productoId: prodSample[1]?.id ?? prodSample[0].id, cantidad: 2, fechaInstalacion: dAgo(60), finGarantia: new Date(Date.now() + 305 * 86_400_000), ubicacion: 'Servidor central' },
+        { clienteId: c04.id, productoId: prodSample[0].id, cantidad: 4, fechaInstalacion: dAgo(45), finGarantia: new Date(Date.now() + 320 * 86_400_000), ubicacion: 'Residencia - perímetro' },
+      ]
+      for (const a of activos) {
+        await prisma.activoCliente.create({ data: a })
+      }
+      console.log('  ✓ ActivoCliente (6) — CMDB inicial')
+    } else {
+      console.log('  ↷ No hay productos con stock — saltando ActivoCliente')
+    }
+  } else {
+    console.log(`  ↷ ActivoCliente ya tiene ${actCount} entradas — saltando`)
+  }
+
+  // ─── 18. EquipoPrestamo (2 activos + 1 devuelto) ──────────────────────────
+  const presCount = await prisma.equipoPrestamo.count()
+  if (presCount < 3) {
+    const prodLoaner = await prisma.producto.findFirst({ where: { stockActual: { gt: 0 } } })
+    if (prodLoaner) {
+      const ahora = Date.now()
+      // Activo, dentro del plazo
+      await prisma.equipoPrestamo.create({
+        data: {
+          clienteId: c04.id, productoId: prodLoaner.id, cantidad: 1,
+          fechaPrestamo: new Date(ahora - 3 * 86_400_000),
+          fechaLimite:   new Date(ahora + 12 * 86_400_000),
+          notas: 'Mientras llega su equipo nuevo',
+        },
+      })
+      // Activo, vencido (>15d)
+      await prisma.equipoPrestamo.create({
+        data: {
+          clienteId: c05.id, productoId: prodLoaner.id, cantidad: 1,
+          fechaPrestamo: new Date(ahora - 20 * 86_400_000),
+          fechaLimite:   new Date(ahora - 5 * 86_400_000),
+          notas: 'VENCIDO - cliente no devuelve',
+        },
+      })
+      // Devuelto
+      await prisma.equipoPrestamo.create({
+        data: {
+          clienteId: c08.id, productoId: prodLoaner.id, cantidad: 1,
+          fechaPrestamo:   new Date(ahora - 25 * 86_400_000),
+          fechaLimite:     new Date(ahora - 10 * 86_400_000),
+          fechaDevolucion: new Date(ahora - 8  * 86_400_000),
+          notas: 'Devuelto en buen estado',
+        },
+      })
+      console.log('  ✓ EquipoPrestamo (3) — 1 activo, 1 vencido, 1 devuelto')
+    }
+  } else {
+    console.log(`  ↷ EquipoPrestamo ya tiene ${presCount} entradas — saltando`)
+  }
+
+  // ─── 19. OrdenFoto (evidencia de OTs cerradas) ────────────────────────────
+  const fotoCount = await prisma.ordenFoto.count()
+  if (fotoCount < 6) {
+    const otsRecientes = await prisma.ordenTrabajo.findMany({
+      where:   { deletedAt: null, tipoOT: { in: ['CCTV', 'Reparacion', 'General'] } },
+      take:    3,
+      orderBy: { createdAt: 'desc' },
+    })
+    for (const ot of otsRecientes) {
+      const baseLat = 18.4735 + (Math.random() - 0.5) * 0.05
+      const baseLng = -69.9313 + (Math.random() - 0.5) * 0.05
+      await prisma.ordenFoto.createMany({
+        data: [
+          { ordenId: ot.id, url: `https://placehold.co/600x400/0f172a/3b82f6?text=Antes+${ot.noOT}`,    latitud: String(baseLat),         longitud: String(baseLng),         subidoPor: empTec1.id, descripcion: 'Estado inicial' },
+          { ordenId: ot.id, url: `https://placehold.co/600x400/0f172a/10b981?text=Después+${ot.noOT}`, latitud: String(baseLat + 0.0001), longitud: String(baseLng + 0.0001), subidoPor: empTec1.id, descripcion: 'Trabajo completado' },
+        ],
+      })
+    }
+    console.log(`  ✓ OrdenFoto (${otsRecientes.length * 2}) - foto evidencia de OTs`)
+  } else {
+    console.log(`  ↷ OrdenFoto ya tiene ${fotoCount} entradas — saltando`)
+  }
+
+  // ─── 20. AuditLog (eventos de seguridad de ejemplo) ───────────────────────
+  const auditCount = await prisma.auditLog.count()
+  if (auditCount < 10) {
+    const eventos = [
+      { evento: 'login:success',       userName: 'Carmelo Adams', meta: { ip: '190.166.x.x' } },
+      { evento: 'login:success',       userName: 'Cristian Adams',meta: { ip: '190.166.x.x' } },
+      { evento: 'login:failed',        userName: 'unknown',       meta: { email: 'attacker@evil.com', ip: '45.x.x.x' } },
+      { evento: 'vault:reveal',        userName: 'Carmelo Adams', meta: { credencialId: 'demo', tipo: 'NVR', nombre: 'NVR Recepción BVP' } },
+      { evento: 'taller:crear',        userName: 'Pedro Técnico', meta: { ticketId: 'demo', clienteId: c02.id } },
+      { evento: 'taller:estado',       userName: 'Pedro Técnico', meta: { ticketId: 'demo', estado: 'Diagnostico' } },
+      { evento: 'ot:estado',           userName: 'Cristian Adams',meta: { otId: 'demo', estado: 'Cerrada' } },
+      { evento: 'security:ip_block',   userName: null,            meta: { ip: '45.x.x.x', motivo: 'Brute force tracking' } },
+      { evento: 'portal:sos_created',  userName: 'Pedro García',  meta: { otId: 'demo' } },
+      { evento: 'ecommerce:checkout',  userName: 'Lucía Hotel',   meta: { facturaId: 'demo', total: 67000 } },
+      { evento: 'rrhh:offboard',       userName: 'Carmelo Adams', meta: { empleadoBaja: 'Demo Técnico', sessionsRevocadas: 2, otsLiberadas: 3 } },
+    ]
+    for (const e of eventos) {
+      await prisma.auditLog.create({ data: { evento: e.evento, userName: e.userName, ip: '127.0.0.1', ua: 'seed', meta: e.meta } })
+    }
+    console.log(`  ✓ AuditLog (${eventos.length}) — eventos seguridad de muestra`)
+  } else {
+    console.log(`  ↷ AuditLog ya tiene ${auditCount} eventos — saltando`)
+  }
+
   // ─── Final summary ────────────────────────────────────────────────────────
-  const [fClientes, fProds, fItems, fFacts, fCots, fOTs, fSvcs, fMovs, fEmps, fSups, fPros, fAsis] = await Promise.all([
+  const [fClientes, fProds, fItems, fFacts, fCots, fOTs, fSvcs, fMovs, fEmps, fSups, fPros, fAsis, fUsr, fTick, fCred, fAct, fPres, fFoto, fAud] = await Promise.all([
     prisma.cliente.count(),
     prisma.producto.count(),
     prisma.itemCatalogo.count(),
@@ -509,6 +705,13 @@ async function main() {
     prisma.suplidor.count(),
     prisma.prospecto.count(),
     prisma.asistencia.count(),
+    prisma.usuarioPortal.count(),
+    prisma.ticketTaller.count(),
+    prisma.credencialCliente.count(),
+    prisma.activoCliente.count(),
+    prisma.equipoPrestamo.count(),
+    prisma.ordenFoto.count(),
+    prisma.auditLog.count(),
   ])
 
   console.log('\n══ RESUMEN FINAL ══════════════════════════════════════')
@@ -524,6 +727,13 @@ async function main() {
   console.log(`  Facturas     : ${fFacts}`)
   console.log(`  Cotizaciones : ${fCots}`)
   console.log(`  Kardex movs  : ${fMovs}`)
+  console.log(`  UsuariosPortal: ${fUsr}`)
+  console.log(`  TicketsTaller: ${fTick}`)
+  console.log(`  Bóveda PAM   : ${fCred} credenciales cifradas`)
+  console.log(`  ActivosCMDB  : ${fAct}`)
+  console.log(`  Préstamos    : ${fPres}`)
+  console.log(`  FotosOT      : ${fFoto}`)
+  console.log(`  AuditLog     : ${fAud} eventos`)
   console.log('═══════════════════════════════════════════════════════\n')
 }
 

@@ -1,4 +1,5 @@
 import { createContext, useContext, useState, useEffect } from 'react'
+import { toast } from 'sonner'
 import { setCsrfToken } from '../utils/api'
 
 const BASE = import.meta.env.VITE_API_URL || ''
@@ -28,7 +29,21 @@ export function AuthProvider({ children }) {
       })
       .catch(() => setUser(null))
 
-    const handler = () => { setUser(null); setCsrfToken(null) }
+    const handler = (e) => {
+      const wasLoggedIn = user !== null && user !== undefined
+      setUser(null)
+      setCsrfToken(null)
+      try { localStorage.removeItem('cart') } catch {}
+      if (wasLoggedIn) {
+        toast.error('Sesión cerrada por seguridad', {
+          description: 'Tu sesión expiró o fue cerrada por inicio en otro dispositivo.',
+          duration: 6000,
+        })
+        if (!window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/portal') && !window.location.pathname.startsWith('/track')) {
+          setTimeout(() => { window.location.href = '/login' }, 800)
+        }
+      }
+    }
     window.addEventListener('auth:logout', handler)
     return () => window.removeEventListener('auth:logout', handler)
   }, [])

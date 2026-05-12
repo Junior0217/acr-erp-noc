@@ -126,6 +126,7 @@ model Empleado {
   roles          Rol[]
   carritoTemp    CarritoTemp?
   ticketsTaller  TicketTaller[]
+  fotosOT        OrdenFoto[]
 
   @@index([nombre])
   @@index([deletedAt])
@@ -511,6 +512,7 @@ model OrdenTrabajo {
   lineas        LineaOrdenTrabajo[]
   facturas      Factura[]
   activos       ActivoCliente[]
+  fotos         OrdenFoto[]
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
@@ -636,6 +638,26 @@ model LineaCarrito {
 
   @@index([carritoId])
   @@index([productoId])
+}
+
+// ─── Anti-fraude: foto-evidencia geo-etiquetada de OT ─────────────────────────
+
+model OrdenFoto {
+  id        String       @id @default(uuid())
+  ordenId   String
+  url       String
+  latitud   String?
+  longitud  String?
+  takenAt   DateTime     @default(now())
+  subidoPor Int?
+  descripcion String?
+  orden     OrdenTrabajo @relation(fields: [ordenId], references: [id], onDelete: Cascade)
+  empleado  Empleado?    @relation(fields: [subidoPor], references: [id], onDelete: SetNull)
+  createdAt DateTime     @default(now())
+
+  @@index([ordenId])
+  @@index([subidoPor])
+  @@index([takenAt])
 }
 
 // ─── Seguridad: IP blocking (anti brute-force) ────────────────────────────────

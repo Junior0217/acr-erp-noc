@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import {
   Plus, Pencil, Trash2, X, Loader2, RefreshCw,
   Users, LogIn, LogOut, Clock, Calendar, Search, ShieldOff, Eye, EyeOff, Lock,
+  UserX, AlertTriangle,
 } from 'lucide-react'
 import { useDebounce } from '../hooks/useDebounce'
 import { useAuth } from '../contexts/AuthContext'
@@ -224,6 +225,7 @@ function TabEmpleados() {
   const [search, setSearch]          = useState('')
   const [modal, setModal]            = useState(null)
   const [deleteTarget, setDeleteTarget] = useState(null)
+  const [offboardTarget, setOffboardTarget] = useState(null)
   const debouncedSearch              = useDebounce(search, 400)
 
   const fetchEmpleados = useCallback(async (s) => {
@@ -316,6 +318,9 @@ function TabEmpleados() {
                         <button onClick={() => setModal(e)} className="p-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-blue-900/20 transition-colors" title="Editar">
                           <Pencil size={14} />
                         </button>
+                        <button onClick={() => setOffboardTarget(e)} className="p-1.5 rounded-lg text-slate-500 hover:text-orange-400 hover:bg-orange-900/20 transition-colors" title="Offboarding (revoca sesiones + libera OTs)">
+                          <UserX size={14} />
+                        </button>
                         <button onClick={() => setDeleteTarget(e)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-900/20 transition-colors" title="Eliminar">
                           <Trash2 size={14} />
                         </button>
@@ -343,6 +348,87 @@ function TabEmpleados() {
           onDeleted={() => { setDeleteTarget(null); fetchEmpleados(debouncedSearch) }}
         />
       )}
+      {offboardTarget && (
+        <ModalOffboard
+          empleado={offboardTarget}
+          onCancel={() => setOffboardTarget(null)}
+          onDone={() => { setOffboardTarget(null); fetchEmpleados(debouncedSearch) }}
+        />
+      )}
+    </div>
+  )
+}
+
+function ModalOffboard({ empleado, onCancel, onDone }) {
+  const [busy, setBusy] = useState(false)
+  const [confirmar, setConfirmar] = useState('')
+
+  async function ejecutar() {
+    if (confirmar !== empleado.nombre) {
+      toast.error('El nombre no coincide.')
+      return
+    }
+    setBusy(true)
+    try {
+      const r = await apiFetch(`/api/empleados/${empleado.id}/offboard`, { method: 'POST' })
+      if (r.ok) {
+        const j = await r.json()
+        toast.success(`Offboarding completo: ${j.empleado.nombre}`, {
+          description: `${j.sessionsRevocadas} sesion(es) revocada(s) · ${j.otsLiberadas} OT(s) liberada(s) · ${j.ticketsLiberados} ticket(s) de taller liberado(s)`,
+          duration: 8000,
+        })
+        if (j.otsHuerfanas?.length > 0) {
+          toast.warning(`OTs huérfanas: ${j.otsHuerfanas.join(', ')}`, { duration: 12000, description: 'Reasignar manualmente desde Servicios.' })
+        }
+        onDone()
+      } else {
+        const j = await r.json()
+        toast.error(j.error ?? 'Error en offboarding.')
+      }
+    } catch { toast.error('Error de conexión.') }
+    finally { setBusy(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-md bg-slate-900 border border-orange-600/40 rounded-xl shadow-2xl p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 rounded-full bg-orange-600/15 flex items-center justify-center flex-shrink-0">
+            <UserX size={18} className="text-orange-400" />
+          </div>
+          <div>
+            <h3 className="text-base font-semibold text-slate-100">Offboarding de empleado</h3>
+            <p className="text-xs text-slate-500 mt-0.5">"{empleado.nombre}"</p>
+          </div>
+        </div>
+        <div className="bg-orange-600/10 border border-orange-600/30 rounded-lg p-3 space-y-1.5 text-xs text-slate-300">
+          <div className="flex items-start gap-2"><AlertTriangle size={12} className="text-orange-400 flex-shrink-0 mt-0.5" /><span>Bloquea cuenta (no podrá hacer login)</span></div>
+          <div className="flex items-start gap-2"><AlertTriangle size={12} className="text-orange-400 flex-shrink-0 mt-0.5" /><span>Revoca TODAS sus sesiones activas inmediatamente</span></div>
+          <div className="flex items-start gap-2"><AlertTriangle size={12} className="text-orange-400 flex-shrink-0 mt-0.5" /><span>Libera todas sus OTs pendientes (quedan huérfanas para reasignar)</span></div>
+          <div className="flex items-start gap-2"><AlertTriangle size={12} className="text-orange-400 flex-shrink-0 mt-0.5" /><span>Libera sus tickets de taller activos</span></div>
+        </div>
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
+            Escribe "{empleado.nombre}" para confirmar
+          </label>
+          <input
+            type="text"
+            value={confirmar}
+            onChange={e => setConfirmar(e.target.value)}
+            placeholder={empleado.nombre}
+            className="w-full bg-slate-800 border border-slate-700 focus:border-orange-500 focus:outline-none rounded-lg px-3 py-2 text-sm text-slate-100"
+            autoFocus
+          />
+        </div>
+        <div className="flex gap-3 pt-1">
+          <button onClick={onCancel} disabled={busy} className="flex-1 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors border border-slate-700 disabled:opacity-50">Cancelar</button>
+          <button onClick={ejecutar} disabled={busy || confirmar !== empleado.nombre}
+            className="flex-1 py-2 rounded-lg text-sm font-semibold bg-orange-600 hover:bg-orange-500 text-white disabled:opacity-50 flex items-center justify-center gap-2">
+            {busy && <Loader2 size={14} className="animate-spin" />} Ejecutar Offboarding
+          </button>
+        </div>
+      </div>
     </div>
   )
 }
