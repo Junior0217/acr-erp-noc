@@ -8,6 +8,7 @@ import {
 import { exportCsv } from "../utils/exportCsv";
 import { apiFetch } from "../utils/api";
 import { useAuth } from "../contexts/AuthContext";
+import { EmptyState } from "./panels/_shared";
 import FormularioCliente from "../components/crm/FormularioCliente";
 import FormularioSuplidor from "../components/crm/FormularioSuplidor";
 import FormularioProspecto from "../components/crm/FormularioProspecto";
@@ -344,7 +345,7 @@ export default function CRM() {
                   {loadingClientes ? (
                     <tr><td colSpan={8} className="text-center py-10"><Loader2 size={20} className="animate-spin text-blue-500 mx-auto" /></td></tr>
                   ) : clientes.length === 0 ? (
-                    <tr><td colSpan={8} className="text-center py-10 text-slate-500">No se encontraron clientes.</td></tr>
+                    <tr><td colSpan={8}><EmptyState title="Sin clientes" description="Usa 'Nuevo Cliente' para agregar el primero." /></td></tr>
                   ) : clientes.map((c) => (
                     <tr key={c.id} className="hover:bg-slate-800/50 transition-colors">
                       <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">
@@ -434,7 +435,7 @@ export default function CRM() {
                   {loadingSuplidores ? (
                     <tr><td colSpan={8} className="text-center py-10"><Loader2 size={20} className="animate-spin text-blue-500 mx-auto" /></td></tr>
                   ) : suplidores.length === 0 ? (
-                    <tr><td colSpan={8} className="text-center py-10 text-slate-500">No se encontraron suplidores.</td></tr>
+                    <tr><td colSpan={8}><EmptyState title="Sin suplidores" description="Usa 'Nuevo Suplidor' para agregar el primero." /></td></tr>
                   ) : suplidores.map((s) => (
                     <tr key={s.id} className="hover:bg-slate-800/50 transition-colors">
                       <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{s.noSuplidor}</td>
@@ -494,6 +495,7 @@ export default function CRM() {
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b border-slate-700/70 bg-slate-800/60">
+                    <th className={TH}>ID</th>
                     <th className={TH}>Nombre</th>
                     <th className={TH}>Teléfono</th>
                     <th className={TH}>Servicio</th>
@@ -505,11 +507,14 @@ export default function CRM() {
                 </thead>
                 <tbody className="divide-y divide-slate-800/80">
                   {loadingProspectos ? (
-                    <tr><td colSpan={7} className="text-center py-10"><Loader2 size={20} className="animate-spin text-blue-500 mx-auto" /></td></tr>
+                    <tr><td colSpan={8} className="text-center py-10"><Loader2 size={20} className="animate-spin text-blue-500 mx-auto" /></td></tr>
                   ) : prospectos.length === 0 ? (
-                    <tr><td colSpan={7} className="text-center py-10 text-slate-500">No se encontraron prospectos.</td></tr>
-                  ) : prospectos.map((p) => (
+                    <tr><td colSpan={8}><EmptyState title="Sin prospectos" description="Usa 'Nuevo Prospecto' para registrar un lead." /></td></tr>
+                  ) : prospectos.map((p, idx) => (
                     <tr key={p.id} className="hover:bg-slate-800/50 transition-colors">
+                      <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">
+                        {`PRP-${String((pageProspectos - 1) * LIMIT + idx + 1).padStart(4, '0')}`}
+                      </td>
                       <td className="px-4 py-3 font-medium text-slate-100 whitespace-nowrap">{p.nombre}</td>
                       <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{p.telefono}</td>
                       <td className="px-4 py-3 text-slate-300 whitespace-nowrap">{p.servicioInteresado}</td>

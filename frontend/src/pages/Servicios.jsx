@@ -7,6 +7,7 @@ import FormularioOrden from '../components/servicios/FormularioOrden'
 import ConduceOrden from '../components/servicios/ConduceOrden'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
+import { EmptyState } from './panels/_shared'
 const fmt = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 
 const TIPO_COLOR = {
@@ -171,7 +172,7 @@ function TabPlanes() {
               {loading ? (
                 <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-600">Cargando...</td></tr>
               ) : planes.length === 0 ? (
-                <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-600">Sin planes registrados</td></tr>
+                <tr><td colSpan={7}><EmptyState title="Sin planes" description="Crea el primer plan de servicio." /></td></tr>
               ) : planes.map(p => (
                 <tr key={p.id} className="hover:bg-slate-800/50 transition-colors">
                   <td className={TD + ' font-medium text-slate-100'}>{p.nombre}</td>
@@ -263,7 +264,7 @@ function TabServicios() {
               {loading ? (
                 <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-600">Cargando...</td></tr>
               ) : servicios.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-600">Sin servicios registrados</td></tr>
+                <tr><td colSpan={8}><EmptyState title="Sin servicios activos" description="Activa el primer servicio para un cliente." /></td></tr>
               ) : servicios.map(s => (
                 <tr key={s.id} className="hover:bg-slate-800/50 transition-colors">
                   <td className={TD}>
@@ -375,7 +376,7 @@ function TabOrdenes() {
               {loading ? (
                 <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-600">Cargando...</td></tr>
               ) : ordenes.length === 0 ? (
-                <tr><td colSpan={8} className="px-4 py-8 text-center text-sm text-slate-600">Sin órdenes registradas</td></tr>
+                <tr><td colSpan={8}><EmptyState title="Sin órdenes de trabajo" description="Crea una nueva OT para comenzar." /></td></tr>
               ) : ordenes.map(o => (
                 <tr key={o.id} className="hover:bg-slate-800/50 transition-colors">
                   <td className={TD + ' font-mono text-xs text-slate-500'}>{o.id.slice(0,8).toUpperCase()}</td>

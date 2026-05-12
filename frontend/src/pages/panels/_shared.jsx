@@ -1,5 +1,5 @@
 import {
-  Package, Wrench, Wifi, Camera, Zap, ShoppingCart, AlertCircle,
+  Package, Wrench, Wifi, Camera, Zap, ShoppingCart, AlertCircle, Inbox,
 } from 'lucide-react'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -164,6 +164,20 @@ export function ComingSoon({ title, desc }) {
         <p className="text-base font-semibold text-slate-500">{title}</p>
         <p className="text-sm mt-1">{desc}</p>
         <p className="text-xs mt-3 font-mono text-slate-700">Próximamente</p>
+      </div>
+    </div>
+  )
+}
+
+export function EmptyState({ icon: Icon = Inbox, title = 'Sin registros', description }) {
+  return (
+    <div className="flex flex-col items-center justify-center py-16 gap-3 text-slate-600">
+      <div className="p-4 rounded-2xl bg-slate-800/60 border border-slate-700/50">
+        <Icon size={28} className="text-slate-600" />
+      </div>
+      <div className="text-center space-y-1">
+        <p className="text-sm font-semibold text-slate-500">{title}</p>
+        {description && <p className="text-xs text-slate-600">{description}</p>}
       </div>
     </div>
   )

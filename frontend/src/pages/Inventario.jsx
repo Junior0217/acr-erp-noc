@@ -12,7 +12,7 @@ import { exportCsv }       from '../utils/exportCsv'
 import { apiFetch }        from '../utils/api'
 import { useAuth }         from '../contexts/AuthContext'
 import { useCart }         from '../contexts/CartContext'
-import { InvCatBadge }     from './panels/_shared'
+import { InvCatBadge, EmptyState } from './panels/_shared'
 
 const LOW_STOCK = 5
 const fmt       = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
@@ -230,7 +230,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
               <tr><td colSpan={esServicio ? 6 : 7} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={esServicio ? 6 : 7} className="px-4 py-8 text-center text-sm text-slate-600">Sin {esServicio ? 'servicios' : 'artículos'}.</td></tr>
+              <tr><td colSpan={esServicio ? 6 : 7}><EmptyState title={`Sin ${esServicio ? 'servicios' : 'artículos'}`} description="Agrega el primero con el botón +" /></td></tr>
             )}
             {rows.map(p => (
               <tr key={p.id} onClick={() => setViewModal(p)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
@@ -336,7 +336,7 @@ function TabCategorias({ categorias, loading, onRefresh, canCreate }) {
               <tr><td colSpan={3} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && categorias.length === 0 && (
-              <tr><td colSpan={3} className="px-4 py-8 text-center text-sm text-slate-600">Sin categorías.</td></tr>
+              <tr><td colSpan={3}><EmptyState title="Sin categorías" description="Crea la primera categoría." /></td></tr>
             )}
             {categorias.map(c => (
               <tr key={c.id} className="hover:bg-slate-800/40 transition-colors">
@@ -456,7 +456,7 @@ function TabMovimientos({ canExport }) {
               <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-600">Sin movimientos registrados.</td></tr>
+              <tr><td colSpan={5}><EmptyState title="Sin movimientos" description="Los movimientos de entradas y salidas aparecerán aquí." /></td></tr>
             )}
             {rows.map(m => (
               <tr key={m.id} className="hover:bg-slate-800/40 transition-colors">

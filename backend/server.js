@@ -1428,6 +1428,16 @@ app.post('/api/asistencia', verificarJWT, async (req, res) => {
     if (!puedeGestionarAsistencia(req) && data.empleadoId !== req.user.sub) {
       return res.status(403).json({ error: 'Solo puedes registrar tu propia asistencia.' })
     }
+    // Prevent duplicate Entrada on the same calendar day
+    if (data.tipo === 'Entrada') {
+      const hoy = new Date();
+      const inicioDia = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
+      const finDia    = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate() + 1);
+      const yaEntrada = await prisma.asistencia.findFirst({
+        where: { empleadoId: data.empleadoId, tipo: 'Entrada', fechaHora: { gte: inicioDia, lt: finDia } },
+      });
+      if (yaEntrada) return res.status(409).json({ error: 'Ya existe una Entrada registrada hoy para este empleado.' });
+    }
     const registro = await prisma.asistencia.create({
       data,
       include: { empleado: { select: { id: true, nombre: true } } },
