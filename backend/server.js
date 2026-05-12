@@ -929,6 +929,7 @@ app.get('/api/portal/facturas/:id/pdf', verificarPortalJWT, async (req, res) => 
       where:   { id: req.params.id },
       include: {
         cliente: true,
+        lineas:  true,
         orden:   { include: { lineas: { include: { itemCatalogo: { select: { nombre: true } } } } } },
       },
     })
@@ -3478,18 +3479,24 @@ async function buildFacturaPDFBuffer(factura) {
         .text('P. Unit.',   368, tableTop + 5, { width: 80,  align: 'right' })
         .text('Total',      458, tableTop + 5, { width: 80,  align: 'right' })
 
-      const lineas = factura.orden?.lineas ?? []
+      // OT lineas (itemCatalogo-based) take precedence; fallback to direct LineaFactura (POS)
+      const otLineas  = factura.orden?.lineas ?? []
+      const posLineas = factura.lineas ?? []
+      const lineas = otLineas.length > 0 ? otLineas : posLineas
       let y = tableTop + 18
       lineas.forEach((l, i) => {
-        const desc  = l.itemCatalogo?.nombre ?? l.descripcion
-        const total = Number(l.precioUnitario) * l.cantidad
+        const desc  = l.itemCatalogo?.nombre ?? l.descripcion ?? '—'
+        const dscPct = Number(l.descuentoPorcentaje ?? 0)
+        const dscMon = Number(l.descuentoMonto ?? 0)
+        const efectivo = Math.max(0, Number(l.precioUnitario) * (1 - dscPct / 100) - dscMon)
+        const total = Math.round(efectivo * l.cantidad * 100) / 100
         if (i % 2 === 0) doc.rect(50, y, W, 16).fill('#f9fafc')
         doc.fontSize(8).font('Helvetica').fillColor('#222')
-          .text(String(i + 1),              55,  y + 4, { width: 18 })
-          .text(desc,                        78,  y + 4, { width: 230 })
-          .text(String(l.cantidad),          318, y + 4, { width: 40,  align: 'right' })
-          .text(fmtMoney(l.precioUnitario),  368, y + 4, { width: 80,  align: 'right' })
-          .text(fmtMoney(total),             458, y + 4, { width: 80,  align: 'right' })
+          .text(String(i + 1),   55,  y + 4, { width: 18 })
+          .text(desc,             78,  y + 4, { width: 230 })
+          .text(String(l.cantidad), 318, y + 4, { width: 40, align: 'right' })
+          .text(fmtMoney(efectivo), 368, y + 4, { width: 80, align: 'right' })
+          .text(fmtMoney(total),    458, y + 4, { width: 80, align: 'right' })
         y += 16
       })
       doc.moveTo(50, y).lineTo(545, y).strokeColor('#ccc').lineWidth(0.5).stroke()
@@ -3529,6 +3536,7 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
       where: { id: req.params.id },
       include: {
         cliente: true,
+        lineas:  true,
         orden: { include: { lineas: { include: { itemCatalogo: { select: { nombre: true } } } } } },
       },
     })
