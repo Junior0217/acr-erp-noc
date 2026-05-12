@@ -3,8 +3,9 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -208,6 +209,7 @@ model PlantillaEquipo {
 
   @@unique([planId, productoId])
   @@index([planId])
+  @@index([productoId])
 }
 
 // ─── Clientes ─────────────────────────────────────────────────────────────────
@@ -333,6 +335,7 @@ model DetalleOrden {
 
   @@unique([ordenId, productoId])
   @@index([ordenId])
+  @@index([productoId])
 }
 
 // ─── Suplidores ───────────────────────────────────────────────────────────────
@@ -471,6 +474,8 @@ model LineaOrdenTrabajo {
   producto       Producto?     @relation(fields: [productoId], references: [id], onDelete: Restrict)
 
   @@index([ordenId])
+  @@index([itemCatalogoId])
+  @@index([productoId])
 }
 
 model Factura {
@@ -497,6 +502,7 @@ model Factura {
   updatedAt    DateTime      @updatedAt
 
   @@index([clienteId])
+  @@index([ordenId])
   @@index([estado])
   @@index([fechaEmision])
   @@index([ncf])
@@ -521,6 +527,7 @@ model LineaFactura {
   producto            Producto? @relation(fields: [productoId], references: [id], onDelete: Restrict)
 
   @@index([facturaId])
+  @@index([productoId])
 }
 
 model ConfiguracionNCF {
@@ -566,4 +573,5 @@ model LineaCarrito {
   producto            Producto    @relation(fields: [productoId], references: [id], onDelete: Restrict)
 
   @@index([carritoId])
+  @@index([productoId])
 }

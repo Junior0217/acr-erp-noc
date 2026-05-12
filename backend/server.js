@@ -18,6 +18,20 @@ const PDFDocument  = require('pdfkit');
 const nodemailer   = require('nodemailer');
 const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
 const { syncMikrotik } = require('./services/mikrotik');
+const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
+const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
+
+let redisClient = null
+if (process.env.REDIS_URL && Redis) {
+  redisClient = new Redis(process.env.REDIS_URL, { lazyConnect: true, enableOfflineQueue: false })
+  redisClient.on('error', err => console.warn('[REDIS]', err.message))
+  console.log('[REDIS] Client configured')
+}
+
+function makeRateLimitStore() {
+  if (!redisClient || !RedisStore) return undefined
+  return new RedisStore({ sendCommand: (...args) => redisClient.call(...args) })
+}
 
 // ─── Sentry (descomenta en producción: npm install @sentry/node) ──────────────
 // const Sentry = require('@sentry/node')
@@ -111,7 +125,11 @@ setInterval(() => {
 
 // AuditLog is append-only. This extension blocks all mutations at the ORM layer.
 // The only permitted write path is prisma.auditLog.create (and $executeRaw for retention cleanup).
-const prisma = new PrismaClient().$extends({
+const prismaBase = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] })
+prismaBase.$on('query', e => {
+  if (e.duration > 500) console.warn(`[SLOW QUERY] ${e.duration}ms — ${e.query.slice(0, 200)}`)
+})
+const prisma = prismaBase.$extends({
   query: {
     auditLog: {
       update:     () => { throw new Error('AuditLog es inmutable: update no permitido.') },
@@ -181,6 +199,7 @@ const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
   keyGenerator: reqFingerprint,
+  store: makeRateLimitStore(),
   message: { error: 'Demasiadas peticiones, intente de nuevo más tarde.' }
 });
 app.use('/api/', limiter);
@@ -189,6 +208,7 @@ const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
   keyGenerator: reqFingerprint,
+  store: makeRateLimitStore(),
   message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
   skipSuccessfulRequests: true,
 });
@@ -197,6 +217,7 @@ const totpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 5,
   keyGenerator: reqFingerprint,
+  store: makeRateLimitStore(),
   message: { error: 'Demasiados intentos de PIN. Intente en 15 minutos.' },
   skipSuccessfulRequests: true,
 });
@@ -204,8 +225,8 @@ const totpLimiter = rateLimit({
 const billingLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
-  // Authenticated: key by user ID (immune to IP changes). Unauthenticated: fingerprint fallback.
   keyGenerator: (req) => req.user?.sub ? `billing:${req.user.sub}` : reqFingerprint(req),
+  store: makeRateLimitStore(),
   message: { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
 });
 
@@ -215,6 +236,7 @@ app.use(express.json({ limit: '50kb' }));
 const CSRF_SKIP = new Set([
   '/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout',
   '/api/portal/auth/register', '/api/portal/auth/login', '/api/portal/auth/logout',
+  '/api/portal/auth/forgot-password', '/api/portal/auth/reset-password',
   '/api/portal/settings',
 ])
 function csrfMiddleware(req, res, next) {
@@ -519,7 +541,14 @@ async function verificarPortalJWT(req, res, next) {
 const portalLoginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
-  keyGenerator: reqFingerprint,
+  keyGenerator: (req) => {
+    try {
+      const raw = req.cookies?.pct
+      if (raw) { const p = jwt.decode(raw); if (p?.sub) return `portal:${p.sub}` }
+    } catch {}
+    return reqFingerprint(req)
+  },
+  store: makeRateLimitStore(),
   message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
   skipSuccessfulRequests: true,
 })
@@ -675,11 +704,108 @@ app.get('/api/portal/auth/me', verificarPortalJWT, async (req, res) => {
   try {
     const cliente = await prisma.cliente.findUnique({
       where:  { id: req.portalUser.sub },
-      select: { id: true, razonSocial: true, email: true, noCliente: true, telefonoPrincipal: true, activo: true },
+      select: { id: true, razonSocial: true, email: true, noCliente: true, telefonoPrincipal: true, direccion: true, activo: true },
     })
     if (!cliente) { res.clearCookie('pct'); return res.status(401).json({ error: 'Cliente no encontrado.' }) }
     res.json(cliente)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// In-memory reset token store (Redis-backed when available, falls back to Map)
+const resetTokens = new Map()
+setInterval(() => { const n = Date.now(); for (const [k,v] of resetTokens) if (v.exp < n) resetTokens.delete(k) }, 5 * 60_000)
+
+async function storeResetToken(token, clienteId) {
+  const exp = Date.now() + 15 * 60_000
+  if (redisClient) {
+    await redisClient.set(`pwd_reset:${token}`, clienteId, 'EX', 900)
+  } else {
+    resetTokens.set(token, { clienteId, exp })
+  }
+}
+
+async function consumeResetToken(token) {
+  if (redisClient) {
+    const id = await redisClient.getdel(`pwd_reset:${token}`)
+    return id || null
+  }
+  const entry = resetTokens.get(token)
+  if (!entry || entry.exp < Date.now()) return null
+  resetTokens.delete(token)
+  return entry.clienteId
+}
+
+const forgotLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 3,
+  keyGenerator: reqFingerprint,
+  store: makeRateLimitStore(),
+  message: { error: 'Demasiadas solicitudes. Intente en 15 minutos.' },
+})
+
+app.post('/api/portal/auth/forgot-password', forgotLimiter, async (req, res) => {
+  try {
+    const { email } = z.object({ email: z.string().email().trim().toLowerCase() }).parse(req.body)
+    const cliente = await prisma.cliente.findFirst({ where: { email }, select: { id: true, razonSocial: true, passwordHash: true } })
+    // Always 200 — no user enumeration
+    res.json({ ok: true })
+    if (!cliente || !cliente.passwordHash) return
+    const token = crypto.randomBytes(32).toString('hex')
+    await storeResetToken(token, cliente.id)
+    const resetUrl = `${process.env.PORTAL_URL || process.env.CORS_ORIGIN || 'http://localhost:5173'}/portal?reset=${token}`
+    console.log(`[PORTAL RESET] ${email} → ${resetUrl}`)
+    if (process.env.SMTP_USER) {
+      emailTransporter.sendMail({
+        from:    `"ACR Networks" <${process.env.SMTP_USER}>`,
+        to:      email,
+        subject: 'Restablecer contraseña — ACR Networks',
+        html: `<p>Hola <strong>${cliente.razonSocial}</strong>,</p>
+               <p>Haz clic en el enlace para restablecer tu contraseña (válido 15 min):</p>
+               <p><a href="${resetUrl}">${resetUrl}</a></p>`,
+      }).catch(err => console.error('[PORTAL RESET EMAIL]', err.message))
+    }
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Email inválido.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.post('/api/portal/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = z.object({
+      token:    z.string().min(64).max(64),
+      password: z.string().min(6).max(100),
+    }).parse(req.body)
+    const clienteId = await consumeResetToken(token)
+    if (!clienteId) return res.status(400).json({ error: 'Token inválido o expirado.' })
+    const hash = await bcrypt.hash(password, 12)
+    await prisma.cliente.update({ where: { id: clienteId }, data: { passwordHash: hash } })
+    auditReq('portal:password_reset', req, { clienteId }, { userId: null, userName: null })
+    res.json({ ok: true })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.post('/api/portal/sos', verificarPortalJWT, async (req, res) => {
+  try {
+    const { descripcion } = z.object({ descripcion: z.string().max(500).optional() }).parse(req.body)
+    const ot = await prisma.ordenTrabajo.create({
+      data: {
+        clienteId:     req.portalUser.sub,
+        tipoOT:        'SoporteTecnico',
+        estado:        'Pendiente',
+        notasTecnicas: descripcion || 'Solicitud de soporte técnico vía Portal B2C',
+        metadatos:     { origen: 'portal_sos' },
+      },
+    })
+    auditReq('portal:sos_created', req, { otId: ot.id }, { userId: null, userName: req.portalUser.nombre })
+    res.status(201).json({ id: ot.id, estado: ot.estado })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
 })
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────

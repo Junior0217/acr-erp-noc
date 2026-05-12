@@ -8,10 +8,23 @@ import {
   Zap, Wifi, Shield, Wrench, Globe, Phone, Mail, MapPin,
   CheckCircle, ChevronRight, ShoppingCart, X, LogIn, LogOut,
   Activity, FileText, CreditCard, MessageCircle, Star, Building2,
-  Home, User, Lock, Eye, EyeOff, Loader2,
+  Home, User, Lock, Eye, EyeOff, Loader2, AlertTriangle, Siren,
 } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL ?? ''
+
+// ─── Dominican provinces ──────────────────────────────────────────────────────
+
+const RD_PROVINCIAS = [
+  'Azua', 'Baoruco', 'Barahona', 'Dajabón', 'Distrito Nacional',
+  'Duarte', 'El Seibo', 'Elías Piña', 'Espaillat', 'Hato Mayor',
+  'Hermanas Mirabal', 'Independencia', 'La Altagracia', 'La Romana',
+  'La Vega', 'María Trinidad Sánchez', 'Monseñor Nouel', 'Monte Cristi',
+  'Monte Plata', 'Pedernales', 'Peravia', 'Puerto Plata', 'Samaná',
+  'San Cristóbal', 'San José de Ocoa', 'San Juan', 'San Pedro de Macorís',
+  'Sánchez Ramírez', 'Santiago', 'Santiago Rodríguez', 'Santo Domingo',
+  'Valverde',
+]
 
 // ─── Coverage polygon: Cristo Rey, Santo Domingo ──────────────────────────────
 
@@ -101,7 +114,7 @@ function CoverageMap() {
 
 // ─── Service card ─────────────────────────────────────────────────────────────
 
-function ServiceCard({ service, onAdd }) {
+function ServiceCard({ service, onAdd, blockedByDebt }) {
   const colors = COLOR_MAP[service.color] ?? COLOR_MAP.blue
   const Icon   = service.icon
   return (
@@ -131,25 +144,35 @@ function ServiceCard({ service, onAdd }) {
             <div className="text-xl font-black text-slate-100">RD$ {fmt(service.precio)}</div>
             <div className="text-[10px] text-slate-600">/mes o instalación</div>
           </div>
-          <button onClick={() => onAdd(service)}
-            className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold ${colors.bg} border ${colors.border} ${colors.icon} hover:opacity-80 transition-all`}>
-            <ShoppingCart size={14} />Añadir
-          </button>
+          <div className="relative group/btn">
+            <button
+              onClick={() => { if (blockedByDebt) return; onAdd(service) }}
+              disabled={blockedByDebt}
+              className={`flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold ${colors.bg} border ${colors.border} ${colors.icon} transition-all ${blockedByDebt ? 'opacity-40 cursor-not-allowed' : 'hover:opacity-80'}`}>
+              <ShoppingCart size={14} />Añadir
+            </button>
+            {blockedByDebt && (
+              <div className="absolute bottom-full right-0 mb-2 w-52 px-3 py-2 rounded-lg bg-slate-800 border border-red-600/40 text-xs text-red-300 shadow-xl z-10 hidden group-hover/btn:block pointer-events-none">
+                Regulariza tu deuda para solicitar nuevos servicios.
+              </div>
+            )}
+          </div>
         </div>
       </div>
     </div>
   )
 }
 
-// ─── Auth Modal (Login / Register tabs) ──────────────────────────────────────
+// ─── Auth Modal (Login / Register / Forgot Password tabs) ─────────────────────
 
 function AuthModal({ onClose, onLogin }) {
-  const [tab,        setTab]      = useState('login')   // 'login' | 'register'
+  const [tab,        setTab]      = useState('login')   // 'login' | 'register' | 'forgot'
   const [nombre,     setNombre]   = useState('')
   const [email,      setEmail]    = useState('')
   const [password,   setPassword] = useState('')
   const [showPwd,    setShowPwd]  = useState(false)
   const [busy,       setBusy]     = useState(false)
+  const [forgotSent, setForgotSent] = useState(false)
 
   async function handleLogin(e) {
     e.preventDefault()
@@ -186,6 +209,26 @@ function AuthModal({ onClose, onLogin }) {
     }
   }
 
+  async function handleForgot(e) {
+    e.preventDefault()
+    setBusy(true)
+    try {
+      const r = await fetch(`${API}/api/portal/auth/forgot-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase() }),
+      })
+      if (!r.ok) {
+        const data = await r.json()
+        toast.error(data.error ?? 'Error al enviar el correo.')
+        return
+      }
+      setForgotSent(true)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
@@ -199,73 +242,124 @@ function AuthModal({ onClose, onLogin }) {
           <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={16} /></button>
         </div>
 
-        {/* Tabs */}
-        <div className="flex border-b border-slate-800">
-          {[['login', 'Iniciar Sesión'], ['register', 'Registrarse']].map(([id, label]) => (
-            <button key={id} onClick={() => setTab(id)}
-              className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab === id ? 'text-blue-400 border-b-2 border-blue-500 bg-blue-600/5' : 'text-slate-500 hover:text-slate-300'}`}>
-              {label}
-            </button>
-          ))}
-        </div>
+        {/* Tabs — only show login/register, not forgot */}
+        {tab !== 'forgot' && (
+          <div className="flex border-b border-slate-800">
+            {[['login', 'Iniciar Sesión'], ['register', 'Registrarse']].map(([id, label]) => (
+              <button key={id} onClick={() => setTab(id)}
+                className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab === id ? 'text-blue-400 border-b-2 border-blue-500 bg-blue-600/5' : 'text-slate-500 hover:text-slate-300'}`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
 
-        <form onSubmit={tab === 'login' ? handleLogin : handleRegister} className="p-6 space-y-4">
-          {tab === 'register' && (
+        {/* Forgot Password panel */}
+        {tab === 'forgot' && (
+          <div className="p-6">
+            <button onClick={() => { setTab('login'); setForgotSent(false) }}
+              className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors mb-5">
+              <ChevronRight size={12} className="rotate-180" />Volver al inicio de sesión
+            </button>
+            <h3 className="text-sm font-bold text-slate-100 mb-1">Recuperar contraseña</h3>
+            <p className="text-xs text-slate-500 mb-5">Te enviaremos un enlace para restablecer tu contraseña.</p>
+            {forgotSent ? (
+              <div className="flex items-center gap-3 p-4 rounded-xl bg-emerald-600/10 border border-emerald-600/30">
+                <CheckCircle size={18} className="text-emerald-400 flex-shrink-0" />
+                <p className="text-sm font-semibold text-emerald-300">Revisa tu correo</p>
+              </div>
+            ) : (
+              <form onSubmit={handleForgot} className="space-y-4">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Email</label>
+                  <div className="relative">
+                    <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                    <input
+                      type="email" value={email} onChange={e => setEmail(e.target.value)}
+                      placeholder="tu@email.com" required autoComplete="email"
+                      className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+                    />
+                  </div>
+                </div>
+                <button type="submit" disabled={busy}
+                  className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+                  {busy ? <Loader2 size={14} className="animate-spin" /> : <Mail size={14} />}
+                  Enviar enlace
+                </button>
+              </form>
+            )}
+          </div>
+        )}
+
+        {/* Login / Register form */}
+        {tab !== 'forgot' && (
+          <form onSubmit={tab === 'login' ? handleLogin : handleRegister} className="p-6 space-y-4">
+            {tab === 'register' && (
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Nombre completo</label>
+                <div className="relative">
+                  <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                  <input
+                    type="text" value={nombre} onChange={e => setNombre(e.target.value)}
+                    placeholder="Tu nombre" required minLength={2}
+                    className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+                  />
+                </div>
+              </div>
+            )}
+
             <div>
-              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Nombre completo</label>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Email</label>
               <div className="relative">
-                <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
                 <input
-                  type="text" value={nombre} onChange={e => setNombre(e.target.value)}
-                  placeholder="Tu nombre" required minLength={2}
+                  type="email" value={email} onChange={e => setEmail(e.target.value)}
+                  placeholder="tu@email.com" required autoComplete="email"
                   className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
                 />
               </div>
             </div>
-          )}
 
-          <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Email</label>
-            <div className="relative">
-              <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
-              <input
-                type="email" value={email} onChange={e => setEmail(e.target.value)}
-                placeholder="tu@email.com" required autoComplete="email"
-                className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-              />
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Contraseña</label>
+              <div className="relative">
+                <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                <input
+                  type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                  placeholder="••••••••" required minLength={6}
+                  className="w-full pl-9 pr-10 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+                <button type="button" onClick={() => setShowPwd(v => !v)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                  {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
+                </button>
+              </div>
             </div>
-          </div>
 
-          <div>
-            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Contraseña</label>
-            <div className="relative">
-              <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
-              <input
-                type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
-                placeholder="••••••••" required minLength={6}
-                className="w-full pl-9 pr-10 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
-              />
-              <button type="button" onClick={() => setShowPwd(v => !v)}
-                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
-                {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
-              </button>
-            </div>
-          </div>
-
-          <button type="submit" disabled={busy}
-            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
-            {busy ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />}
-            {tab === 'login' ? 'Entrar' : 'Crear cuenta'}
-          </button>
-
-          <p className="text-center text-xs text-slate-600">
-            {tab === 'login' ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}{' '}
-            <button type="button" onClick={() => setTab(tab === 'login' ? 'register' : 'login')}
-              className="text-blue-400 hover:text-blue-300 transition-colors font-medium">
-              {tab === 'login' ? 'Regístrate' : 'Inicia sesión'}
+            <button type="submit" disabled={busy}
+              className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+              {busy ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />}
+              {tab === 'login' ? 'Entrar' : 'Crear cuenta'}
             </button>
-          </p>
-        </form>
+
+            {tab === 'login' && (
+              <div className="text-center">
+                <button type="button" onClick={() => { setTab('forgot'); setForgotSent(false) }}
+                  className="text-xs text-slate-500 hover:text-blue-400 transition-colors">
+                  ¿Olvidaste tu contraseña?
+                </button>
+              </div>
+            )}
+
+            <p className="text-center text-xs text-slate-600">
+              {tab === 'login' ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}{' '}
+              <button type="button" onClick={() => setTab(tab === 'login' ? 'register' : 'login')}
+                className="text-blue-400 hover:text-blue-300 transition-colors font-medium">
+                {tab === 'login' ? 'Regístrate' : 'Inicia sesión'}
+              </button>
+            </p>
+          </form>
+        )}
       </div>
     </div>
   )
@@ -280,6 +374,32 @@ const MOCK_FACTURAS = [
 ]
 
 function Dashboard({ cliente, onLogout, navigate }) {
+  const [sosBusy, setSosBusy] = useState(false)
+
+  const deudaTotal    = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').reduce((s, f) => s + f.monto, 0)
+  const countVencidas = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').length
+  const blockedByDebt = countVencidas >= 3
+
+  async function handleSOS() {
+    setSosBusy(true)
+    try {
+      const r = await fetch(`${API}/api/portal/sos`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      if (!r.ok) {
+        const data = await r.json()
+        toast.error(data.error ?? 'Error al crear la orden de soporte.')
+        return
+      }
+      toast.success('Orden de soporte creada. Un técnico te contactará pronto.')
+    } catch {
+      toast.error('No se pudo conectar con el servidor.')
+    } finally {
+      setSosBusy(false)
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <header className="sticky top-0 z-40 bg-slate-950/95 backdrop-blur border-b border-slate-800">
@@ -298,12 +418,36 @@ function Dashboard({ cliente, onLogout, navigate }) {
       </header>
 
       <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-xl font-bold text-slate-100">Hola, {cliente.razonSocial ?? cliente.nombre} 👋</h1>
             <p className="text-sm text-slate-500 mt-0.5">Aquí tienes el resumen de tu cuenta.</p>
           </div>
+          <button
+            onClick={handleSOS}
+            disabled={sosBusy}
+            className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-sm font-bold transition-colors disabled:opacity-50 border border-red-500/50 shadow-lg shadow-red-900/30">
+            {sosBusy ? <Loader2 size={14} className="animate-spin" /> : <Siren size={14} />}
+            SOS / Soporte Directo
+          </button>
         </div>
+
+        {/* Smart Balance Banner */}
+        {deudaTotal > 0 && (
+          <div className="flex items-center justify-between gap-3 p-4 rounded-xl bg-red-600/10 border border-red-600/30">
+            <div className="flex items-center gap-3">
+              <AlertTriangle size={18} className="text-red-400 flex-shrink-0" />
+              <p className="text-sm font-semibold text-red-200">
+                Deuda pendiente: <span className="font-black">RD$ {fmt(deudaTotal)}</span>
+              </p>
+            </div>
+            <button
+              onClick={() => toast.info('Redirigiendo al portal de pagos...')}
+              className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors">
+              Pagar ahora →
+            </button>
+          </div>
+        )}
 
         {/* Service Status */}
         <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
@@ -399,92 +543,300 @@ function Dashboard({ cliente, onLogout, navigate }) {
   )
 }
 
+// ─── Onboarding Wizard ────────────────────────────────────────────────────────
+
+function OnboardingWizard({ onComplete, onCancel }) {
+  const [step,      setStep]      = useState(1)
+  const [telefono,  setTelefono]  = useState('')
+  const [direccion, setDireccion] = useState('')
+  const [sector,    setSector]    = useState('')
+  const [provincia, setProvincia] = useState('')
+
+  function handleNext(e) {
+    e.preventDefault()
+    if (step < 3) setStep(s => s + 1)
+  }
+
+  function handleSubmit(e) {
+    e.preventDefault()
+    toast.success('Documentos enviados. Procesando cotización.')
+    onComplete()
+  }
+
+  const stepLabels = ['Datos de Contacto', 'Ubicación', 'Verificación']
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-md bg-slate-950 border border-slate-700/60 rounded-xl shadow-2xl overflow-hidden">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-blue-600/5">
+          <div className="flex items-center gap-2">
+            <User size={15} className="text-blue-400" />
+            <span className="text-sm font-bold text-slate-100">Completa tu perfil</span>
+          </div>
+          <button onClick={onCancel} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={16} /></button>
+        </div>
+
+        {/* Step indicators */}
+        <div className="flex items-center gap-0 px-5 pt-5 pb-1">
+          {stepLabels.map((label, idx) => {
+            const n = idx + 1
+            const active   = step === n
+            const complete = step > n
+            return (
+              <div key={n} className="flex items-center flex-1 last:flex-none">
+                <div className="flex flex-col items-center gap-1">
+                  <div className={`w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold border transition-colors ${
+                    complete ? 'bg-blue-600 border-blue-500 text-white' :
+                    active   ? 'bg-blue-600/20 border-blue-500 text-blue-300' :
+                               'bg-slate-800 border-slate-700 text-slate-600'
+                  }`}>
+                    {complete ? <CheckCircle size={14} /> : n}
+                  </div>
+                  <span className={`text-[9px] font-semibold uppercase tracking-wide whitespace-nowrap ${active ? 'text-blue-400' : 'text-slate-600'}`}>{label}</span>
+                </div>
+                {idx < stepLabels.length - 1 && (
+                  <div className={`flex-1 h-px mx-2 mt-[-14px] transition-colors ${complete ? 'bg-blue-600' : 'bg-slate-800'}`} />
+                )}
+              </div>
+            )
+          })}
+        </div>
+
+        {/* Step 1: Datos de Contacto */}
+        {step === 1 && (
+          <form onSubmit={handleNext} className="p-6 space-y-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Teléfono principal</label>
+              <div className="relative">
+                <Phone size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                <input
+                  type="tel" value={telefono} onChange={e => setTelefono(e.target.value)}
+                  placeholder="809-000-0000" required
+                  className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Dirección</label>
+              <div className="relative">
+                <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                <input
+                  type="text" value={direccion} onChange={e => setDireccion(e.target.value)}
+                  placeholder="Calle, número, residencial..." required minLength={5}
+                  className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+            </div>
+            <div className="flex justify-end pt-1">
+              <button type="submit"
+                className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors">
+                Siguiente <ChevronRight size={14} />
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Step 2: Ubicación */}
+        {step === 2 && (
+          <form onSubmit={handleNext} className="p-6 space-y-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Sector</label>
+              <div className="relative">
+                <MapPin size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+                <input
+                  type="text" value={sector} onChange={e => setSector(e.target.value)}
+                  placeholder="Ej: Cristo Rey, Naco, Piantini..." required
+                  className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+                />
+              </div>
+            </div>
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Provincia</label>
+              <select
+                value={provincia} onChange={e => setProvincia(e.target.value)} required
+                className="w-full px-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 focus:outline-none focus:border-blue-500 transition-colors appearance-none">
+                <option value="">Selecciona provincia...</option>
+                {RD_PROVINCIAS.map(p => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
+            <div className="flex justify-between pt-1">
+              <button type="button" onClick={() => setStep(1)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-700 text-slate-400 hover:text-slate-200 text-sm font-medium transition-colors">
+                <ChevronRight size={14} className="rotate-180" />Anterior
+              </button>
+              <button type="submit"
+                className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors">
+                Siguiente <ChevronRight size={14} />
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Step 3: Verificación */}
+        {step === 3 && (
+          <form onSubmit={handleSubmit} className="p-6 space-y-4">
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Foto de cédula (frente)</label>
+              <div className="flex flex-col items-center justify-center gap-3 p-6 rounded-xl bg-slate-800/60 border-2 border-dashed border-slate-700 hover:border-blue-600/50 transition-colors cursor-pointer">
+                <div className="w-10 h-10 rounded-xl bg-blue-600/10 border border-blue-600/20 flex items-center justify-center">
+                  <User size={18} className="text-blue-400" />
+                </div>
+                <div className="text-center">
+                  <p className="text-xs font-semibold text-slate-300 mb-0.5">Sube tu cédula de identidad</p>
+                  <p className="text-[10px] text-slate-600">JPG, PNG — máx. 5MB</p>
+                </div>
+                <input
+                  type="file" accept="image/*"
+                  className="block w-full text-xs text-slate-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-600/20 file:text-blue-300 hover:file:bg-blue-600/30 transition-all cursor-pointer"
+                />
+              </div>
+            </div>
+            <div className="flex justify-between pt-1">
+              <button type="button" onClick={() => setStep(2)}
+                className="flex items-center gap-1.5 px-4 py-2 rounded-lg border border-slate-700 text-slate-400 hover:text-slate-200 text-sm font-medium transition-colors">
+                <ChevronRight size={14} className="rotate-180" />Anterior
+              </button>
+              <button type="submit"
+                className="flex items-center gap-1.5 px-5 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors">
+                <CheckCircle size={14} />Finalizar
+              </button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  )
+}
+
 // ─── Quoter ───────────────────────────────────────────────────────────────────
 
-function Quoter({ onSolicitar }) {
-  const [plan,    setPlan]    = useState(QUOTER_PLANS[1].id)
-  const [camaras, setCamaras] = useState(0)
-  const [puntos,  setPuntos]  = useState(0)
-  const [tipo,    setTipo]    = useState('hogar')
+function Quoter({ onSolicitar, cliente, blockedByDebt }) {
+  const [plan,           setPlan]           = useState(QUOTER_PLANS[1].id)
+  const [camaras,        setCamaras]        = useState(0)
+  const [puntos,         setPuntos]         = useState(0)
+  const [tipo,           setTipo]           = useState('hogar')
+  const [wizardOpen,     setWizardOpen]     = useState(false)
+  const [pendingDatos,   setPendingDatos]   = useState(null)
 
   const selectedPlan  = QUOTER_PLANS.find(p => p.id === plan)
   const precioCamaras = camaras * 3500
   const precioPuntos  = puntos  * 1200
   const total         = (selectedPlan?.base ?? 0) + precioCamaras + precioPuntos
 
+  function handleSolicitar() {
+    const datos = { plan: selectedPlan?.label, camaras, puntos, total }
+    const needsOnboarding = cliente && (
+      cliente.telefonoPrincipal === '000-000-0000' ||
+      cliente.direccion === 'Por completar'
+    )
+    if (needsOnboarding) {
+      setPendingDatos(datos)
+      setWizardOpen(true)
+    } else {
+      onSolicitar(datos)
+    }
+  }
+
+  function handleWizardComplete() {
+    setWizardOpen(false)
+    if (pendingDatos) {
+      onSolicitar(pendingDatos)
+      setPendingDatos(null)
+    }
+  }
+
   return (
-    <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6 space-y-5">
-      <div className="flex items-center gap-2 mb-1">
-        <Star size={16} className="text-amber-400" />
-        <h3 className="text-base font-bold text-slate-100">Arma tu Plan</h3>
-        <span className="text-[10px] font-semibold text-amber-400 bg-amber-600/15 border border-amber-600/30 px-2 py-0.5 rounded-full ml-1">Cotizador Inbound</span>
-      </div>
+    <>
+      {wizardOpen && (
+        <OnboardingWizard
+          onComplete={handleWizardComplete}
+          onCancel={() => { setWizardOpen(false); setPendingDatos(null) }}
+        />
+      )}
 
-      <div className="grid grid-cols-2 gap-2">
-        {[{ id: 'hogar', label: 'Hogar / Residencial', icon: Home }, { id: 'empresa', label: 'Empresa / Negocio', icon: Building2 }].map(t => (
-          <button key={t.id} onClick={() => setTipo(t.id)}
-            className={`flex items-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${tipo === t.id ? 'bg-blue-600/15 border-blue-600/40 text-blue-300' : 'bg-slate-800/40 border-slate-700/30 text-slate-400 hover:bg-slate-800/60'}`}>
-            <t.icon size={14} />{t.label}
-          </button>
-        ))}
-      </div>
+      <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6 space-y-5">
+        <div className="flex items-center gap-2 mb-1">
+          <Star size={16} className="text-amber-400" />
+          <h3 className="text-base font-bold text-slate-100">Arma tu Plan</h3>
+          <span className="text-[10px] font-semibold text-amber-400 bg-amber-600/15 border border-amber-600/30 px-2 py-0.5 rounded-full ml-1">Cotizador Inbound</span>
+        </div>
 
-      <div>
-        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Plan de Internet</label>
         <div className="grid grid-cols-2 gap-2">
-          {QUOTER_PLANS.map(p => (
-            <button key={p.id} onClick={() => setPlan(p.id)}
-              className={`relative flex flex-col items-start p-3 rounded-xl border text-left transition-all ${plan === p.id ? 'bg-blue-600/15 border-blue-600/40' : 'bg-slate-800/40 border-slate-700/30 hover:bg-slate-800/60'}`}>
-              {p.popular && <span className="absolute top-1.5 right-1.5 text-[8px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full">HOT</span>}
-              <span className="text-base mb-1">{p.icon}</span>
-              <span className={`text-xs font-semibold ${plan === p.id ? 'text-blue-300' : 'text-slate-300'}`}>{p.label}</span>
-              <span className="text-[10px] text-slate-500 mt-0.5">RD$ {fmt(p.base)}/mes</span>
+          {[{ id: 'hogar', label: 'Hogar / Residencial', icon: Home }, { id: 'empresa', label: 'Empresa / Negocio', icon: Building2 }].map(t => (
+            <button key={t.id} onClick={() => setTipo(t.id)}
+              className={`flex items-center gap-2 p-3 rounded-xl border text-sm font-medium transition-all ${tipo === t.id ? 'bg-blue-600/15 border-blue-600/40 text-blue-300' : 'bg-slate-800/40 border-slate-700/30 text-slate-400 hover:bg-slate-800/60'}`}>
+              <t.icon size={14} />{t.label}
             </button>
           ))}
         </div>
-      </div>
 
-      <div>
-        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
-          Cámaras CCTV: <span className="text-slate-300">{camaras === 0 ? 'Ninguna' : `${camaras} cámara${camaras !== 1 ? 's' : ''}`}</span>
-        </label>
-        <input type="range" min={0} max={16} step={1} value={camaras} onChange={e => setCamaras(+e.target.value)} className="w-full accent-emerald-500 h-1.5" />
-        <div className="flex justify-between text-[9px] text-slate-700 mt-1 font-mono"><span>0</span><span>4</span><span>8</span><span>12</span><span>16</span></div>
-      </div>
-
-      <div>
-        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
-          Puntos de Red LAN: <span className="text-slate-300">{puntos === 0 ? 'Ninguno' : `${puntos} punto${puntos !== 1 ? 's' : ''}`}</span>
-        </label>
-        <input type="range" min={0} max={24} step={1} value={puntos} onChange={e => setPuntos(+e.target.value)} className="w-full accent-amber-500 h-1.5" />
-      </div>
-
-      <div className="bg-slate-800/60 rounded-xl p-4 space-y-2 border border-slate-700/30">
-        <div className="flex justify-between text-xs text-slate-400">
-          <span>Internet {selectedPlan?.label}</span><span>RD$ {fmt(selectedPlan?.base)}/mes</span>
-        </div>
-        {camaras > 0 && (
-          <div className="flex justify-between text-xs text-slate-400">
-            <span>{camaras} cámara{camaras !== 1 ? 's' : ''} CCTV</span><span>RD$ {fmt(precioCamaras)}</span>
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Plan de Internet</label>
+          <div className="grid grid-cols-2 gap-2">
+            {QUOTER_PLANS.map(p => (
+              <button key={p.id} onClick={() => setPlan(p.id)}
+                className={`relative flex flex-col items-start p-3 rounded-xl border text-left transition-all ${plan === p.id ? 'bg-blue-600/15 border-blue-600/40' : 'bg-slate-800/40 border-slate-700/30 hover:bg-slate-800/60'}`}>
+                {p.popular && <span className="absolute top-1.5 right-1.5 text-[8px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full">HOT</span>}
+                <span className="text-base mb-1">{p.icon}</span>
+                <span className={`text-xs font-semibold ${plan === p.id ? 'text-blue-300' : 'text-slate-300'}`}>{p.label}</span>
+                <span className="text-[10px] text-slate-500 mt-0.5">RD$ {fmt(p.base)}/mes</span>
+              </button>
+            ))}
           </div>
-        )}
-        {puntos > 0 && (
+        </div>
+
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
+            Cámaras CCTV: <span className="text-slate-300">{camaras === 0 ? 'Ninguna' : `${camaras} cámara${camaras !== 1 ? 's' : ''}`}</span>
+          </label>
+          <input type="range" min={0} max={16} step={1} value={camaras} onChange={e => setCamaras(+e.target.value)} className="w-full accent-emerald-500 h-1.5" />
+          <div className="flex justify-between text-[9px] text-slate-700 mt-1 font-mono"><span>0</span><span>4</span><span>8</span><span>12</span><span>16</span></div>
+        </div>
+
+        <div>
+          <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
+            Puntos de Red LAN: <span className="text-slate-300">{puntos === 0 ? 'Ninguno' : `${puntos} punto${puntos !== 1 ? 's' : ''}`}</span>
+          </label>
+          <input type="range" min={0} max={24} step={1} value={puntos} onChange={e => setPuntos(+e.target.value)} className="w-full accent-amber-500 h-1.5" />
+        </div>
+
+        <div className="bg-slate-800/60 rounded-xl p-4 space-y-2 border border-slate-700/30">
           <div className="flex justify-between text-xs text-slate-400">
-            <span>{puntos} punto{puntos !== 1 ? 's' : ''} de red</span><span>RD$ {fmt(precioPuntos)}</span>
+            <span>Internet {selectedPlan?.label}</span><span>RD$ {fmt(selectedPlan?.base)}/mes</span>
           </div>
-        )}
-        <div className="border-t border-slate-700 pt-2 flex justify-between items-center">
-          <span className="text-xs font-bold text-slate-300">Estimado mensual/instalación</span>
-          <span className="text-xl font-black text-slate-100">RD$ {fmt(total)}</span>
+          {camaras > 0 && (
+            <div className="flex justify-between text-xs text-slate-400">
+              <span>{camaras} cámara{camaras !== 1 ? 's' : ''} CCTV</span><span>RD$ {fmt(precioCamaras)}</span>
+            </div>
+          )}
+          {puntos > 0 && (
+            <div className="flex justify-between text-xs text-slate-400">
+              <span>{puntos} punto{puntos !== 1 ? 's' : ''} de red</span><span>RD$ {fmt(precioPuntos)}</span>
+            </div>
+          )}
+          <div className="border-t border-slate-700 pt-2 flex justify-between items-center">
+            <span className="text-xs font-bold text-slate-300">Estimado mensual/instalación</span>
+            <span className="text-xl font-black text-slate-100">RD$ {fmt(total)}</span>
+          </div>
+        </div>
+
+        <div className="relative group/submit">
+          <button
+            onClick={handleSolicitar}
+            disabled={blockedByDebt}
+            className={`w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600 text-white font-bold text-sm transition-colors ${blockedByDebt ? 'opacity-40 cursor-not-allowed' : 'hover:bg-blue-500'}`}>
+            <ChevronRight size={16} />Solicitar Cotización Formal
+          </button>
+          {blockedByDebt && (
+            <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 w-64 px-3 py-2 rounded-lg bg-slate-800 border border-red-600/40 text-xs text-red-300 text-center shadow-xl z-10 hidden group-hover/submit:block pointer-events-none">
+              Regulariza tu deuda para solicitar nuevos servicios.
+            </div>
+          )}
         </div>
       </div>
-
-      <button
-        onClick={() => onSolicitar({ plan: selectedPlan?.label, camaras, puntos, total })}
-        className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition-colors">
-        <ChevronRight size={16} />Solicitar Cotización Formal
-      </button>
-    </div>
+    </>
   )
 }
 
@@ -500,6 +852,11 @@ export default function CustomerPortal() {
   const [cliente,         setCliente]         = useState(null)
   const [settings,        setSettings]        = useState(DEFAULT_SETTINGS)
   const [sessionLoading,  setSessionLoading]  = useState(true)
+
+  // Derive public-portal blockedByDebt from mock data (mirrors Dashboard logic)
+  const deudaTotal    = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').reduce((s, f) => s + f.monto, 0)
+  const countVencidas = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').length
+  const blockedByDebt = countVencidas >= 3
 
   // Restore session + fetch settings on mount
   useEffect(() => {
@@ -654,7 +1011,7 @@ export default function CustomerPortal() {
       {settings.mostrarCotizador && (
         <section id="cotizador" className="max-w-6xl mx-auto px-4 pb-16">
           <div className="max-w-2xl mx-auto">
-            <Quoter onSolicitar={handleSolicitar} />
+            <Quoter onSolicitar={handleSolicitar} cliente={cliente} blockedByDebt={blockedByDebt} />
           </div>
         </section>
       )}
@@ -674,7 +1031,7 @@ export default function CustomerPortal() {
             ))}
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {serviciosFiltrados.map(s => <ServiceCard key={s.id} service={s} onAdd={handleAddService} />)}
+            {serviciosFiltrados.map(s => <ServiceCard key={s.id} service={s} onAdd={handleAddService} blockedByDebt={blockedByDebt} />)}
           </div>
         </section>
       )}
