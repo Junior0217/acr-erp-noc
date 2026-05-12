@@ -759,6 +759,22 @@ async function main() {
     console.log(`  ✓ ${ots.length} OT(s) cerradas para reportes`)
   } else { console.log(`  ↷ OTs cerradas ya hay ${otsCerradas} — saltando`) }
 
+  // ─── 23.4 Seed ActivoTimeline (historial de cada activo) ──────────────────
+  const timelineCount = await prisma.activoTimeline.count()
+  if (timelineCount < 6) {
+    const activos = await prisma.activoCliente.findMany({ take: 4 })
+    const eventos = ['instalado','mantenimiento','inspeccion','reparado']
+    for (const a of activos) {
+      // 3 eventos espaciados en el tiempo por cada activo
+      await prisma.activoTimeline.create({ data: { activoId: a.id, evento: 'instalado',     tecnicoId: empTec1.id, fecha: a.fechaInstalacion, notas: 'Equipo desempacado, instalado y configurado.' } })
+      await prisma.activoTimeline.create({ data: { activoId: a.id, evento: 'inspeccion',    tecnicoId: empTec2.id, fecha: new Date(a.fechaInstalacion.getTime() + 30 * 86_400_000), notas: 'Revisión preventiva 30 días — OK.' } })
+      await prisma.activoTimeline.create({ data: { activoId: a.id, evento: 'mantenimiento', tecnicoId: empTec1.id, fecha: new Date(a.fechaInstalacion.getTime() + 90 * 86_400_000), notas: 'Limpieza de polvo y revisión de cables.' } })
+    }
+    console.log(`  ✓ ActivoTimeline (${activos.length * 3}) — 3 eventos por cada uno de ${activos.length} activos`)
+  } else {
+    console.log(`  ↷ ActivoTimeline ya tiene ${timelineCount} eventos — saltando`)
+  }
+
   // ─── 23.5 OTs y Facturas frescas (semana actual, para reportes vivos) ─────
   const otsHoy = await prisma.ordenTrabajo.count({ where: { createdAt: { gte: dAgo(7) } } })
   if (otsHoy < 3) {

@@ -293,7 +293,7 @@ function NuevaOTModal({ onClose, onSaved, clienteIdInit, clienteNombreInit }) {
           precioUnitario: Number(l.precioUnitario) || 0,
         })),
       }
-      const r = await apiFetch('/api/ordenes', { method: 'POST', body: JSON.stringify(body) })
+      const r = await apiFetch('/api/ventas/ordenes', { method: 'POST', body: JSON.stringify(body) })
       if (!r.ok) { const j = await r.json(); setErr(j.error ?? 'Error al crear la orden.'); return }
       toast.success('Orden de trabajo creada.')
       onSaved()
@@ -437,7 +437,7 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
       if (filtroTipo)   p.set('tipoOT',  filtroTipo)
       p.set('limit',  String(PAGE_SIZE))
       p.set('offset', String(page * PAGE_SIZE))
-      const r = await apiFetch(`/api/ordenes?${p}`)
+      const r = await apiFetch(`/api/ventas/ordenes?${p}`)
       if (r.ok) { const j = await r.json(); setOrdenes(j.data ?? []); setTotal(j.total ?? 0) }
     } catch {}
     finally { setLoading(false) }
@@ -450,7 +450,7 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
     if (!window.confirm(`¿Facturar la OT de "${ot.cliente?.razonSocial}"?\nEsto generará el NCF y marcará la OT como Completada.`)) return
     setBilling(ot.id)
     try {
-      const r = await apiFetch('/api/facturas', { method: 'POST', body: JSON.stringify({ ordenId: ot.id }) })
+      const r = await apiFetch('/api/ventas/facturas', { method: 'POST', body: JSON.stringify({ ordenId: ot.id }) })
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error al facturar.'); return }
       toast.success(`Factura emitida · NCF ${j.ncf}`)
@@ -462,7 +462,7 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
   async function eliminarOT(ot) {
     if (!window.confirm(`¿Eliminar la OT ${ot.noOT ?? ot.id}?\nEsta acción es reversible solo por un administrador.`)) return
     try {
-      const r = await apiFetch(`/api/ordenes/${ot.id}`, { method: 'DELETE' })
+      const r = await apiFetch(`/api/ventas/ordenes/${ot.id}`, { method: 'DELETE' })
       if (!r.ok) { const j = await r.json(); toast.error(j.error ?? 'Error al eliminar.'); return }
       toast.success(`OT ${ot.noOT ?? ''} eliminada.`)
       fetchOrdenes()

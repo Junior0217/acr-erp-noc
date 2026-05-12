@@ -25,7 +25,7 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
   const handlePrint = useReactToPrint({ contentRef: printRef })
 
   useEffect(() => {
-    apiFetch(`/api/cotizaciones/${cot.id}/revivir`, {
+    apiFetch(`/api/ventas/cotizaciones/${cot.id}/revivir`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ emitir: false }),
@@ -63,7 +63,7 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
   async function convertirAFactura() {
     setEmitting(true)
     try {
-      const r = await apiFetch(`/api/cotizaciones/${cot.id}/revivir`, {
+      const r = await apiFetch(`/api/ventas/cotizaciones/${cot.id}/revivir`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emitir: true }),
@@ -236,7 +236,7 @@ export default function PanelCotizaciones() {
     setLoading(true)
     try {
       const params = new URLSearchParams({ limit: LIMIT, offset: off })
-      const r = await apiFetch(`/api/cotizaciones?${params}`)
+      const r = await apiFetch(`/api/ventas/cotizaciones?${params}`)
       if (!r.ok) throw new Error()
       const j = await r.json()
       setRows(j.data ?? [])

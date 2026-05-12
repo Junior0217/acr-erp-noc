@@ -210,7 +210,7 @@ function ModalFacturaManual({ onClose, onSuccess }) {
           ...(l.precioOverride !== '' ? { precioUnitario: parseFloat(l.precioOverride) } : {}),
         })),
       }
-      const r = await apiFetch('/api/facturas/manual', { method: 'POST', body: JSON.stringify(body) })
+      const r = await apiFetch('/api/ventas/facturas/manual', { method: 'POST', body: JSON.stringify(body) })
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error.'); return }
       toast.success(esCotizacion ? `Cotización guardada · ${j.noFactura}` : `Factura emitida · NCF ${j.ncf}`)
@@ -561,7 +561,7 @@ export default function PanelFacturas({ highlightId = null }) {
       if (filtroEstado) p.set('estado', filtroEstado)
       p.set('limit',  String(PAGE_SIZE))
       p.set('offset', String(page * PAGE_SIZE))
-      const r = await apiFetch(`/api/facturas?${p}`)
+      const r = await apiFetch(`/api/ventas/facturas?${p}`)
       if (r.ok) { const j = await r.json(); setFacturas(j.data ?? []); setTotal(j.total ?? 0) }
     } catch {} finally { setLoading(false) }
   }, [filtroEstado, page])
@@ -575,7 +575,7 @@ export default function PanelFacturas({ highlightId = null }) {
     }
     setUpdating(f.id)
     try {
-      const r = await apiFetch(`/api/facturas/${f.id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: nuevoEstado }) })
+      const r = await apiFetch(`/api/ventas/facturas/${f.id}/estado`, { method: 'PATCH', body: JSON.stringify({ estado: nuevoEstado }) })
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error al actualizar.'); return }
       toast.success(`Factura ${nuevoEstado === 'Pagada' ? 'marcada como Pagada' : 'anulada'}.`)
@@ -587,7 +587,7 @@ export default function PanelFacturas({ highlightId = null }) {
   async function abrirPreview(f) {
     setLoadingPreview(f.id)
     try {
-      const r = await apiFetch(`/api/facturas/${f.id}`)
+      const r = await apiFetch(`/api/ventas/facturas/${f.id}`)
       if (!r.ok) { toast.error('No se pudo cargar la factura.'); return }
       const j = await r.json()
       setFacturaPreview(j)

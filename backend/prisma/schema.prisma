@@ -128,6 +128,7 @@ model Empleado {
   ticketsTaller  TicketTaller[]
   fotosOT        OrdenFoto[]
   incidencias    IncidenciaReconciliacion[]
+  timelineEvents ActivoTimeline[]
 
   @@index([nombre])
   @@index([deletedAt])
@@ -173,6 +174,7 @@ model Producto {
   nombre           String
   precio           Decimal                @db.Decimal(12, 2)
   stockActual      Int                    @default(0)
+  stockMinimo      Int                    @default(5)
   categoriaId      Int
   tipoItem         TipoItem               @default(ARTICULO)
   esCanibalizado   Boolean                @default(false)
@@ -514,6 +516,7 @@ model OrdenTrabajo {
   facturas      Factura[]
   activos       ActivoCliente[]
   fotos         OrdenFoto[]
+  timeline      ActivoTimeline[]
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
@@ -763,6 +766,7 @@ model ActivoCliente {
   cliente          Cliente          @relation(fields: [clienteId], references: [id], onDelete: Cascade)
   producto         Producto         @relation(fields: [productoId], references: [id], onDelete: Restrict)
   orden            OrdenTrabajo?    @relation(fields: [ordenTrabajoId], references: [id], onDelete: SetNull)
+  timeline         ActivoTimeline[]
   createdAt        DateTime         @default(now())
   updatedAt        DateTime         @updatedAt
 
@@ -770,6 +774,24 @@ model ActivoCliente {
   @@index([productoId])
   @@index([ordenTrabajoId])
   @@index([finGarantia])
+}
+
+model ActivoTimeline {
+  id              Int            @id @default(autoincrement())
+  activoId        String
+  evento          String
+  tecnicoId       Int?
+  ordenTrabajoId  String?
+  fecha           DateTime       @default(now())
+  notas           String?
+  activo          ActivoCliente  @relation(fields: [activoId], references: [id], onDelete: Cascade)
+  tecnico         Empleado?      @relation(fields: [tecnicoId], references: [id], onDelete: SetNull)
+  orden           OrdenTrabajo?  @relation(fields: [ordenTrabajoId], references: [id], onDelete: SetNull)
+  createdAt       DateTime       @default(now())
+
+  @@index([activoId])
+  @@index([tecnicoId])
+  @@index([fecha])
 }
 
 // ─── Préstamos de equipo ──────────────────────────────────────────────────────

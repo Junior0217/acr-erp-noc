@@ -39,6 +39,7 @@ module.exports = [
   { key: 'venta:ver_cotizaciones',     module: 'Ventas',        label: 'Ver Cotizaciones',      desc: 'Consultar listado de cotizaciones',              color: 'amber'   },
   { key: 'venta:crear_cotizaciones',   module: 'Ventas',        label: 'Crear Cotizaciones',    desc: 'Guardar y editar cotizaciones',                  color: 'amber'   },
   { key: 'venta:editar_cotizaciones',  module: 'Ventas',        label: 'Editar Cotizaciones',   desc: 'Actualizar precios en cotización pendiente',     color: 'amber'   },
+  { key: 'ventas:forzar_credito',      module: 'Ventas',        label: 'Forzar Crédito',        desc: 'Bypass límite de crédito al facturar (Owner only)', color: 'red'   },
 
   // ── Órdenes de Trabajo ────────────────────────────────────────────────────────
   { key: 'ot:ver',                     module: 'Órd. Trabajo',  label: 'Ver',                   desc: 'Ver OTs asignadas o todas según rol',            color: 'violet'  },
@@ -66,8 +67,9 @@ module.exports = [
   { key: 'contabilidad:reportes',      module: 'Contabilidad',  label: 'Reportes Financieros',  desc: 'P&L, Balance, Flujo de caja',                   color: 'rose'    },
 
   // ── CRM ───────────────────────────────────────────────────────────────────────
-  { key: 'crm:ver',                    module: 'CRM',           label: 'Ver',                   desc: 'Clientes, suplidores, prospectos',                color: 'emerald' },
-  { key: 'crm:crear',                  module: 'CRM',           label: 'Crear/Editar',          desc: 'Alta y modificación de clientes',                color: 'emerald' },
+  { key: 'crm:ver',                    module: 'CRM',           label: 'Ver',                   desc: 'Solo lectura: clientes, suplidores, prospectos',  color: 'emerald' },
+  { key: 'crm:crear',                  module: 'CRM',           label: 'Crear',                 desc: 'Alta de nuevos registros (alias legacy de crm:editar)', color: 'emerald' },
+  { key: 'crm:editar',                 module: 'CRM',           label: 'Editar',                desc: 'Modificar registros existentes (escritura completa)', color: 'emerald' },
   { key: 'crm:borrar',                 module: 'CRM',           label: 'Borrar',                desc: 'Eliminar clientes (irreversible)',                color: 'emerald' },
   { key: 'crm:exportar',               module: 'CRM',           label: 'Exportar CSV',          desc: 'Descarga de datos CRM',                          color: 'emerald' },
   { key: 'crm:editar_email',           module: 'CRM',           label: 'Editar Email',          desc: 'Modificar emails de contacto',                   color: 'emerald' },

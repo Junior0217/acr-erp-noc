@@ -285,9 +285,106 @@ function AssetsTab({ clienteId }) {
                   )}
                 </div>
                 {a.numeroSerie && <p className="text-xs text-slate-500 mt-1 font-mono">S/N: {a.numeroSerie}</p>}
+                <AssetTimeline activoId={a.id} />
               </div>
             );
           })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetTimeline({ activoId }) {
+  const [open, setOpen]     = useState(false);
+  const [eventos, setEventos] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [showAdd, setShowAdd] = useState(false);
+  const [evento, setEvento] = useState("mantenimiento");
+  const [notas, setNotas]   = useState("");
+
+  async function cargar() {
+    setLoading(true);
+    try {
+      const r = await apiFetch(`/api/activos-cliente/${activoId}/timeline`);
+      const j = await r.json();
+      setEventos(Array.isArray(j.data) ? j.data : []);
+    } catch { setEventos([]); }
+    finally { setLoading(false); }
+  }
+
+  function toggle() {
+    if (!open && eventos === null) cargar();
+    setOpen(o => !o);
+  }
+
+  async function agregar(e) {
+    e.preventDefault();
+    if (notas.length < 2) { toast.error("Describe el evento."); return; }
+    try {
+      const r = await apiFetch(`/api/activos-cliente/${activoId}/timeline`, {
+        method: "POST",
+        body: JSON.stringify({ evento, notas }),
+      });
+      if (r.ok) {
+        toast.success("Evento registrado");
+        setNotas(""); setShowAdd(false);
+        cargar();
+      } else {
+        toast.error("Error al registrar evento.");
+      }
+    } catch { toast.error("Error de red."); }
+  }
+
+  const EVENTO_COLOR = {
+    instalado:           "bg-emerald-500/15 text-emerald-400 border-emerald-500/30",
+    reparado:            "bg-blue-500/15 text-blue-400 border-blue-500/30",
+    trasladado:          "bg-yellow-500/15 text-yellow-400 border-yellow-500/30",
+    retirado:            "bg-orange-500/15 text-orange-400 border-orange-500/30",
+    garantia_reclamada:  "bg-red-500/15 text-red-400 border-red-500/30",
+    mantenimiento:       "bg-purple-500/15 text-purple-400 border-purple-500/30",
+    inspeccion:          "bg-slate-500/15 text-slate-400 border-slate-500/30",
+  };
+
+  return (
+    <div className="mt-2 pt-2 border-t border-slate-800">
+      <button type="button" onClick={toggle} className="text-[10px] text-slate-500 hover:text-blue-400 flex items-center gap-1">
+        {open ? "▼" : "▶"} Historial {eventos != null && `(${eventos.length})`}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {loading ? (
+            <div className="flex justify-center py-2"><Loader2 size={14} className="animate-spin text-blue-500" /></div>
+          ) : eventos?.length === 0 ? (
+            <p className="text-[10px] text-slate-600 italic">Sin eventos registrados.</p>
+          ) : (
+            eventos?.map(e => (
+              <div key={e.id} className="flex items-start gap-2 text-[10.5px]">
+                <span className={`px-1.5 py-0.5 rounded-full border whitespace-nowrap ${EVENTO_COLOR[e.evento] ?? EVENTO_COLOR.inspeccion}`}>
+                  {e.evento}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-slate-400">
+                    {new Date(e.fecha).toLocaleDateString("es-DO")} · <span className="text-slate-500">{e.tecnico?.nombre ?? "—"}</span>
+                    {e.orden?.noOT && <span className="ml-2 text-blue-400 font-mono">{e.orden.noOT}</span>}
+                  </div>
+                  {e.notas && <p className="text-slate-500 leading-snug">{e.notas}</p>}
+                </div>
+              </div>
+            ))
+          )}
+          {showAdd ? (
+            <form onSubmit={agregar} className="flex gap-1.5 mt-2">
+              <select value={evento} onChange={ev => setEvento(ev.target.value)} className="bg-slate-900 border border-slate-700 rounded text-[10px] px-1.5 py-1 text-slate-200">
+                {Object.keys(EVENTO_COLOR).map(k => <option key={k} value={k}>{k}</option>)}
+              </select>
+              <input value={notas} onChange={ev => setNotas(ev.target.value)} placeholder="Nota..." className="flex-1 bg-slate-900 border border-slate-700 rounded text-[10px] px-1.5 py-1 text-slate-200" />
+              <button type="submit" className="text-[10px] px-2 py-1 bg-blue-600 hover:bg-blue-500 text-white rounded">Agregar</button>
+              <button type="button" onClick={() => setShowAdd(false)} className="text-[10px] px-2 py-1 text-slate-400 hover:text-slate-200">×</button>
+            </form>
+          ) : (
+            <button type="button" onClick={() => setShowAdd(true)} className="text-[10px] text-blue-400 hover:text-blue-300">+ Agregar evento</button>
+          )}
         </div>
       )}
     </div>

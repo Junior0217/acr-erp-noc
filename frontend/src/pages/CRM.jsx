@@ -151,7 +151,7 @@ export default function CRM() {
     try {
       const params = new URLSearchParams({ page, limit: LIMIT });
       if (search) params.set("search", search);
-      const res  = await apiFetch(`/api/clientes?${params}`);
+      const res  = await apiFetch(`/api/crm/clientes?${params}`);
       const json = await res.json();
       setClientes(Array.isArray(json.data) ? json.data : []);
       setMetaClientes(json.meta || EMPTY_META);
@@ -164,7 +164,7 @@ export default function CRM() {
     try {
       const params = new URLSearchParams({ page, limit: LIMIT });
       if (search) params.set("search", search);
-      const res  = await apiFetch(`/api/suplidores?${params}`);
+      const res  = await apiFetch(`/api/crm/suplidores?${params}`);
       const json = await res.json();
       setSuplidores(Array.isArray(json.data) ? json.data : []);
       setMetaSuplidores(json.meta || EMPTY_META);
@@ -177,7 +177,7 @@ export default function CRM() {
     try {
       const params = new URLSearchParams({ page, limit: LIMIT });
       if (search) params.set("search", search);
-      const res  = await apiFetch(`/api/prospectos?${params}`);
+      const res  = await apiFetch(`/api/crm/prospectos?${params}`);
       const json = await res.json();
       setProspectos(Array.isArray(json.data) ? json.data : []);
       setMetaProspectos(json.meta || EMPTY_META);
@@ -190,7 +190,7 @@ export default function CRM() {
     try {
       const params = new URLSearchParams({ page, limit: LIMIT });
       if (search) params.set("search", search);
-      const res  = await apiFetch(`/api/usuarios-portal?${params}`);
+      const res  = await apiFetch(`/api/crm/usuarios-portal?${params}`);
       const json = await res.json();
       setUsuarios(Array.isArray(json.data) ? json.data : []);
       setMetaUsuarios(json.meta || EMPTY_META);
@@ -269,13 +269,13 @@ export default function CRM() {
 
   const handleToggleCliente = async () => {
     if (!registroEnEdicion?.id) return;
-    try { await apiFetch(`/api/clientes/${registroEnEdicion.id}/toggle`, { method: "PATCH" }); } catch {}
+    try { await apiFetch(`/api/crm/clientes/${registroEnEdicion.id}/toggle`, { method: "PATCH" }); } catch {}
     closeModal(); fetchClientes(searchClientes, pageClientes);
   };
 
   const handleToggleSuplidor = async () => {
     if (!registroEnEdicion?.id) return;
-    try { await apiFetch(`/api/suplidores/${registroEnEdicion.id}/toggle`, { method: "PATCH" }); } catch {}
+    try { await apiFetch(`/api/crm/suplidores/${registroEnEdicion.id}/toggle`, { method: "PATCH" }); } catch {}
     closeModal(); fetchSuplidores(searchSuplidores, pageSuplidores);
   };
 
@@ -283,7 +283,7 @@ export default function CRM() {
     if (!vincularTarget) return;
     setVincularLoading(true);
     try {
-      const r = await apiFetch(`/api/usuarios-portal/${vincularTarget.id}/vincular`, {
+      const r = await apiFetch(`/api/crm/usuarios-portal/${vincularTarget.id}/vincular`, {
         method: "POST", body: JSON.stringify({ clienteId }),
       });
       if (r.ok) {
@@ -299,7 +299,7 @@ export default function CRM() {
     const t = setTimeout(async () => {
       const params = new URLSearchParams({ limit: 20 });
       if (vincularSearch) params.set("search", vincularSearch);
-      const r = await apiFetch(`/api/clientes?${params}`);
+      const r = await apiFetch(`/api/crm/clientes?${params}`);
       const j = await r.json();
       setVincularClientes(Array.isArray(j.data) ? j.data : []);
     }, vincularSearch ? 300 : 0);

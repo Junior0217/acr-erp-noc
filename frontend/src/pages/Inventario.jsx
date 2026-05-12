@@ -140,7 +140,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
       if (s)     params.set('search', s)
       if (c)     params.set('categoriaId', c)
       if (canib) params.set('canibalizados', canib)
-      const r = await apiFetch(`/api/productos?${params}`)
+      const r = await apiFetch(`/api/inventario/productos?${params}`)
       if (!r.ok) throw new Error()
       const j = await r.json()
       setRows(j.data ?? [])
@@ -154,7 +154,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
 
   async function eliminar(p) {
     if (!window.confirm(`¿Eliminar "${p.nombre}"?`)) return
-    const r = await apiFetch(`/api/productos/${p.id}`, { method: 'DELETE' })
+    const r = await apiFetch(`/api/inventario/productos/${p.id}`, { method: 'DELETE' })
     if (r.status === 204) { toast.success('Eliminado.'); fetch_(page, debouncedSearch, catFiltro); return }
     const j = await r.json()
     toast.error(j.error ?? 'Error al eliminar.')
@@ -313,7 +313,7 @@ function TabCategorias({ categorias, loading, onRefresh, canCreate }) {
 
   async function eliminar(c) {
     if (!window.confirm(`¿Eliminar categoría "${c.nombre}"?`)) return
-    const r = await apiFetch(`/api/categorias/${c.id}`, { method: 'DELETE' })
+    const r = await apiFetch(`/api/inventario/categorias/${c.id}`, { method: 'DELETE' })
     if (r.status === 204) { toast.success('Categoría eliminada.'); onRefresh(); return }
     const j = await r.json()
     toast.error(j.error ?? 'Error al eliminar.')
@@ -397,7 +397,7 @@ function TabMovimientos({ canExport }) {
       const params = new URLSearchParams({ page: p, limit: 50 })
       if (s) params.set('search', s)
       if (t) params.set('tipo', t)
-      const r = await apiFetch(`/api/movimientos?${params}`)
+      const r = await apiFetch(`/api/inventario/movimientos?${params}`)
       if (!r.ok) throw new Error()
       const j = await r.json()
       setRows(j.data ?? [])
@@ -748,7 +748,7 @@ export default function Inventario() {
   const fetchCategorias = useCallback(async () => {
     setCatLoading(true)
     try {
-      const r = await apiFetch('/api/categorias')
+      const r = await apiFetch('/api/inventario/categorias')
       const j = await r.json()
       setCategorias(j.data ?? [])
     } catch { toast.error('Error al cargar categorías.') }

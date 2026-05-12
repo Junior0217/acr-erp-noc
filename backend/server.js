@@ -194,6 +194,46 @@ app.use(helmet({
 }));
 app.use(cookieParser(process.env.COOKIE_SECRET));
 
+// ─── NAMESPACE ALIASES (REGLA: zero break — handlers existentes via rewrite) ──
+// /api/ventas/*, /api/crm/*, /api/servicios/*, /api/inventario/*, /api/taller/*
+// se mapean al handler legacy correspondiente. Frontend puede migrar gradual;
+// el viejo path sigue funcionando para no romper integraciones.
+const NAMESPACE_REWRITES = {
+  // CRM
+  '/api/crm/clientes':         '/api/clientes',
+  '/api/crm/suplidores':       '/api/suplidores',
+  '/api/crm/prospectos':       '/api/prospectos',
+  '/api/crm/usuarios-portal':  '/api/usuarios-portal',
+  '/api/crm/credenciales':     '/api/credenciales',
+  '/api/crm/activos-cliente':  '/api/activos-cliente',
+  // Ventas
+  '/api/ventas/ordenes':       '/api/ordenes',
+  '/api/ventas/facturas':      '/api/facturas',
+  '/api/ventas/cotizaciones':  '/api/cotizaciones',
+  '/api/ventas/items-catalogo':'/api/items-catalogo',
+  // Servicios
+  '/api/servicios/planes':     '/api/planes',
+  '/api/servicios/ordenes':    '/api/orden-instalacion',
+  // Inventario
+  '/api/inventario/productos':   '/api/productos',
+  '/api/inventario/categorias':  '/api/categorias',
+  '/api/inventario/kardex':      '/api/kardex',
+  '/api/inventario/movimientos': '/api/kardex',
+  '/api/inventario/prestamos':   '/api/prestamos',
+  // Taller
+  '/api/taller/tickets':       '/api/taller',
+}
+
+app.use((req, res, next) => {
+  for (const [alias, real] of Object.entries(NAMESPACE_REWRITES)) {
+    if (req.url === alias || req.url.startsWith(alias + '/') || req.url.startsWith(alias + '?')) {
+      req.url = real + req.url.slice(alias.length)
+      break
+    }
+  }
+  next()
+})
+
 const DEV_ORIGINS     = ['http://localhost:5173', 'http://127.0.0.1:5173']
 const PROD_ORIGINS    = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
 const CORS_WILDCARD   = process.env.NODE_ENV !== 'production' && (PROD_ORIGINS.includes('*') || PROD_ORIGINS.length === 0)
@@ -558,6 +598,33 @@ function requerirPermiso(permiso) {
     if (!permisos.includes(permiso)) return res.status(403).json({ error: 'Sin permiso para esta acción.' });
     next();
   };
+}
+
+/**
+ * REGLA DE ORO: NO hardcodear 'sistema:owner'. Para acciones críticas
+ * que exigen "Propietario Absoluto", validar nivel del rol del DB.
+ * Default umbral = 100 (Propietario Absoluto). Subible a 110/120 sin tocar código.
+ */
+const NIVEL_PROPIETARIO_ABSOLUTO = 100
+
+async function esPropietarioAbsoluto(userId) {
+  if (!userId) return false
+  try {
+    const roles = await prisma.rol.findMany({
+      where:  { activo: true, empleados: { some: { id: userId } } },
+      select: { nivel: true },
+    })
+    const max = roles.reduce((m, r) => Math.max(m, r.nivel ?? 0), 0)
+    return max >= NIVEL_PROPIETARIO_ABSOLUTO
+  } catch { return false }
+}
+
+function requerirNivel(min = NIVEL_PROPIETARIO_ABSOLUTO) {
+  return async (req, res, next) => {
+    const ok = await esPropietarioAbsoluto(req.user?.sub)
+    if (!ok) return res.status(403).json({ error: `Acción reservada a rol nivel ${min}+ (Propietario Absoluto).` })
+    next()
+  }
 }
 
 async function protegerPropietario(req, res, next) {
@@ -2303,6 +2370,87 @@ app.get('/api/_meta/endpoints', verificarJWT, requerirPermiso('sistema:owner'), 
   } catch (e) {
     console.error('[META ENDPOINTS]', e.message, e.stack)
     res.json({ total: 0, endpoints: [], grouped: {}, modulos: [], _error: 'Error escaneando rutas: ' + e.message })
+  }
+})
+
+// ─── ActivoTimeline (historial vida de cada equipo) ──────────────────────────
+
+app.get('/api/activos-cliente/:id/timeline', verificarJWT, requerirPermiso('crm:ver'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const eventos = await prisma.activoTimeline.findMany({
+      where:   { activoId: req.params.id },
+      include: { tecnico: { select: { id: true, nombre: true } }, orden: { select: { id: true, noOT: true } } },
+      orderBy: { fecha: 'desc' },
+      take:    100,
+    })
+    res.json({ data: eventos })
+  } catch { res.json({ data: [], _error: 'Error obteniendo historial.' }) }
+})
+
+const timelineEventoSchema = z.object({
+  evento:         z.enum(['instalado','reparado','trasladado','retirado','garantia_reclamada','mantenimiento','inspeccion']),
+  ordenTrabajoId: z.string().uuid().optional().nullable(),
+  notas:          z.string().max(500).optional().nullable(),
+})
+
+app.post('/api/activos-cliente/:id/timeline', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const data = timelineEventoSchema.parse(req.body)
+    const ev = await prisma.activoTimeline.create({
+      data: {
+        activoId:       req.params.id,
+        evento:         data.evento,
+        tecnicoId:      req.user.sub,
+        ordenTrabajoId: data.ordenTrabajoId ?? null,
+        notas:          data.notas ?? null,
+      },
+      include: { tecnico: { select: { id: true, nombre: true } } },
+    })
+    auditReq('cmdb:timeline', req, { activoId: req.params.id, evento: data.evento })
+    res.status(201).json(ev)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── UsuarioPortal: Owner reset password (no revelar — bcrypt one-way) ───────
+
+app.post('/api/usuarios-portal/:id/reset-password', verificarJWT, requerirNivel(NIVEL_PROPIETARIO_ABSOLUTO), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const nuevoPassword = crypto.randomBytes(8).toString('base64').replace(/[+/=]/g, '').slice(0, 10) + 'A1!'
+    const hash = await bcrypt.hash(nuevoPassword, 12)
+    const u = await prisma.usuarioPortal.update({
+      where:  { id: req.params.id },
+      data:   { passwordHash: hash },
+      select: { id: true, noUsuario: true, nombre: true, email: true },
+    })
+    auditReq('portal:password_reset_owner', req, { usuarioId: u.id, email: u.email })
+    // Response devuelve el password temporal UNA VEZ (no se persiste en claro)
+    res.json({ usuario: u, passwordTemporal: nuevoPassword, mensaje: 'Comparte este password con el cliente por canal seguro. Se mostrará una sola vez.' })
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Usuario portal no encontrado.' })
+    console.error('[PORTAL RESET OWNER]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.post('/api/usuarios-portal/:id/bloquear', verificarJWT, requerirNivel(NIVEL_PROPIETARIO_ABSOLUTO), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const u = await prisma.usuarioPortal.update({
+      where:  { id: req.params.id },
+      data:   { activo: false },
+      select: { id: true, activo: true },
+    })
+    auditReq('portal:bloquear_owner', req, { usuarioId: u.id })
+    res.json(u)
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Usuario portal no encontrado.' })
+    res.status(500).json({ error: 'Error interno.' })
   }
 })
 
@@ -4169,9 +4317,44 @@ app.delete('/api/ordenes/:id', verificarJWT, requerirPermiso('ot:editar'), async
 // ─── Facturas ────────────────────────────────────────────────────────────────
 
 app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
-  const { ordenId } = req.body
+  const { ordenId, forzarCredito } = req.body
   if (!ordenId) return res.status(400).json({ error: 'ordenId requerido.' })
   try {
+    // ── CONTROL DE CREDITO (pre-transacción para fail rápido) ────────────────
+    const otPre = await prisma.ordenTrabajo.findUnique({
+      where:   { id: ordenId },
+      include: { lineas: true, cliente: { select: { id: true, razonSocial: true, limiteCredito: true } } },
+    })
+    if (otPre && otPre.cliente && Number(otPre.cliente.limiteCredito) > 0) {
+      const totalNueva = otPre.lineas.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0) * 1.18
+      const deudaActual = await prisma.factura.aggregate({
+        _sum:  { total: true },
+        where: {
+          clienteId:    otPre.cliente.id,
+          deletedAt:    null,
+          esCotizacion: false,
+          estado:       { in: ['Emitida', 'Vencida'] },
+        },
+      })
+      const deuda  = Number(deudaActual._sum.total ?? 0)
+      const limite = Number(otPre.cliente.limiteCredito)
+      if (deuda + totalNueva > limite) {
+        const perms = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+        const puedeForzar = perms.includes('ventas:forzar_credito') || perms.includes('sistema:owner')
+        if (!puedeForzar || !forzarCredito) {
+          auditReq('factura:credito_bloqueado', req, { clienteId: otPre.cliente.id, deuda, limite, intento: totalNueva })
+          return res.status(422).json({
+            error: `Crédito excedido: ${otPre.cliente.razonSocial} debe RD$${deuda.toFixed(0)} de RD$${limite.toFixed(0)} permitidos. Esta factura suma RD$${totalNueva.toFixed(0)}.`,
+            code:  'CREDIT_LIMIT_EXCEEDED',
+            puedeForzar,
+            detalle: { deudaActual: deuda, limiteCredito: limite, montoIntentado: totalNueva },
+          })
+        }
+        // Owner forzó: auditar el bypass
+        auditReq('factura:credito_forzado', req, { clienteId: otPre.cliente.id, deuda, limite, monto: totalNueva })
+      }
+    }
+
     const factura = await prisma.$transaction(async (tx) => {
       // 1. OT + líneas + cliente
       const ot = await tx.ordenTrabajo.findUnique({
