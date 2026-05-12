@@ -23,6 +23,7 @@ import PortalTracking from './pages/PortalTracking'
 import Taller from './pages/Taller'
 import TrackTicket from './pages/TrackTicket'
 import Tienda from './pages/Tienda'
+import CotizacionDGII from './pages/CotizacionDGII'
 
 function AppRoutes() {
   const { user } = useAuth()
@@ -44,6 +45,7 @@ function AppRoutes() {
         <Route path="/track" element={<TrackTicket />} />
         <Route path="/track/:pin" element={<TrackTicket />} />
         <Route path="/tienda" element={<Tienda />} />
+        <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     )
@@ -56,6 +58,7 @@ function AppRoutes() {
       <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
       <Route path="/track" element={<TrackTicket />} />
       <Route path="/track/:pin" element={<TrackTicket />} />
+      <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
       <Route path="/" element={<AdminLayout />}>
         <Route index element={<Dashboard />} />
         <Route path="ventas" element={<Ventas />} />

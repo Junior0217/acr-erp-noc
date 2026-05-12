@@ -6,6 +6,7 @@ import {
   X, Plus, Minus, Lock, LogIn, ArrowRight, Loader2, Trash2,
 } from "lucide-react";
 import ACRLogo from "../components/ACRLogo";
+import { portalFetch } from "../utils/portalApi";
 
 const API = import.meta.env.VITE_API_URL || "";
 const CART_KEY = "acr_cart_v1";
@@ -60,11 +61,7 @@ function CartDrawer({ open, onClose, items, onChange, isLoggedIn, navigate }) {
     setBusy(true);
     try {
       const body = { items: items.map(i => ({ itemCatalogoId: i.id, cantidad: i.cantidad })), metodoPago: "Tarjeta" };
-      const r = await fetch(`${API}/api/portal/checkout`, {
-        method: "POST", credentials: "include",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const r = await portalFetch("/api/portal/checkout", { method: "POST", body: JSON.stringify(body) });
       const j = await r.json();
       if (!r.ok) { toast.error(j.error ?? "Error en checkout."); return; }
       toast.success(`Pago generado: ${formatCurrency(j.total)}`, { description: `Referencia: ${j.paymentRef.slice(0, 8)}…` });

@@ -4,6 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { MapContainer, TileLayer, Polygon, Tooltip } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { toast } from 'sonner'
+import { portalFetch } from '../utils/portalApi'
 import {
   Zap, Wifi, Shield, Wrench, Globe, Phone, Mail, MapPin,
   CheckCircle, ChevronRight, ShoppingCart, X, LogIn, LogOut,
@@ -454,7 +455,7 @@ function Dashboard({ cliente, onLogout, navigate }) {
   async function handleSOS() {
     setSosBusy(true)
     try {
-      const r = await fetch(`${API}/api/portal/sos`, { method: 'POST', credentials: 'include' })
+      const r = await portalFetch('/api/portal/sos', { method: 'POST' })
       if (!r.ok) { const d = await r.json(); toast.error(d.error ?? 'Error al crear la orden de soporte.'); return }
       toast.success('Orden de soporte creada. Un técnico te contactará pronto.')
     } catch { toast.error('No se pudo conectar con el servidor.') }
@@ -671,10 +672,8 @@ function CartDrawer({ items, onRemove, onQtyChange, onClose, onCheckout }) {
         lineas: items.map(i => ({ nombre: i.nombre, precio: i.precio, cantidad: i.qty, categoria: i.category })),
         descuentoPct,
       }
-      const r = await fetch(`${API}/api/portal/cotizacion`, {
+      const r = await portalFetch('/api/portal/cotizacion', {
         method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
       })
       if (r.ok) {

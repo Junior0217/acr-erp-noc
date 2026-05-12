@@ -164,25 +164,33 @@ setInterval(async () => {
 
 const app = express();
 
+// CSP baseline: API responds JSON pero también sirve imágenes/PDFs de OrdenFoto,
+// y los headers viajan al frontend. Política permisiva para activos legítimos.
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
-      defaultSrc:      ["'none'"],
-      scriptSrc:       ["'none'"],
-      styleSrc:        ["'none'"],
-      imgSrc:          ["'none'"],
+      defaultSrc:      ["'self'"],
+      scriptSrc:       ["'self'"],
+      styleSrc:        ["'self'", "'unsafe-inline'"], // Tailwind inline + React style
+      imgSrc:          ["'self'", "data:", "blob:", "https://*.supabase.co", "https://placehold.co"],
       connectSrc:      ["'self'"],
-      fontSrc:         ["'none'"],
+      fontSrc:         ["'self'", "data:"],
       objectSrc:       ["'none'"],
-      mediaSrc:        ["'none'"],
+      mediaSrc:        ["'self'"],
       frameSrc:        ["'none'"],
       formAction:      ["'self'"],
-      frameAncestors:  ["'none'"],
+      frameAncestors:  ["'none'"],     // anti-clickjacking
+      baseUri:         ["'self'"],
+      upgradeInsecureRequests: [],
     },
   },
+  hsts: process.env.NODE_ENV === 'production'
+    ? { maxAge: 15552000, includeSubDomains: true, preload: false }
+    : false,
   crossOriginOpenerPolicy:    { policy: 'same-origin' },
   crossOriginResourcePolicy:  { policy: 'cross-origin' },
   crossOriginEmbedderPolicy:  false,
+  referrerPolicy:             { policy: 'strict-origin-when-cross-origin' },
 }));
 app.use(cookieParser(process.env.COOKIE_SECRET));
 
@@ -258,13 +266,26 @@ const CSRF_SKIP = new Set([
   '/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout',
   '/api/portal/auth/register', '/api/portal/auth/login', '/api/portal/auth/logout',
   '/api/portal/auth/forgot-password', '/api/portal/auth/reset-password',
-  '/api/portal/settings', '/api/portal/catalog', '/api/portal/cotizacion', '/api/portal/sos',
+  '/api/portal/settings',
+  '/api/webhooks/azul',  // webhook firmado HMAC, no necesita CSRF
 ])
 function csrfMiddleware(req, res, next) {
   const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
   if (!mutating) return next()
   const p = req.path
   if ([...CSRF_SKIP].some(s => p === s || p.startsWith(s + '/'))) return next()
+
+  // Rutas portal autenticadas → validan contra cookie pct-csrf
+  if (p.startsWith('/api/portal/') || p.startsWith('/api/track/')) {
+    const header = req.headers['x-portal-csrf']
+    const cookie = req.cookies?.['pct-csrf']
+    if (!header || !cookie || header !== cookie) {
+      return res.status(403).json({ error: 'CSRF token de portal inválido.', code: 'PORTAL_CSRF_INVALID' })
+    }
+    return next()
+  }
+
+  // Rutas admin → cookie csrf
   const header = req.headers['x-csrf-token']
   const cookie = req.cookies?.csrf
   if (!header || !cookie || header !== cookie) {
@@ -279,6 +300,46 @@ app.use(csrfMiddleware);
 const emptyStr  = z.literal('');
 const nullStr   = (max = 20) => z.string().max(max).or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v);
 const optIdent  = (max = 20) => z.string().min(1).max(max).or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v);
+
+/**
+ * Validador de Cédula Dominicana (Mod-10 / Luhn variant DGII).
+ * Cédula: 11 dígitos. Los primeros 10 generan el dígito verificador
+ * con pesos alternados [1,2] y reducción a un solo dígito (mod 10 +1 si >9).
+ *
+ * Devuelve true si la cédula es estructuralmente válida.
+ * NO verifica que exista en DGII (eso requiere su API).
+ */
+function validarCedulaRD(cedulaRaw) {
+  if (typeof cedulaRaw !== 'string') return false
+  const d = cedulaRaw.replace(/\D/g, '')
+  if (d.length !== 11) return false
+  if (/^(\d)\1{10}$/.test(d)) return false  // todos iguales (00000000000) = inválida
+  const weights = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2]
+  let sum = 0
+  for (let i = 0; i < 10; i++) {
+    let p = parseInt(d[i], 10) * weights[i]
+    if (p > 9) p = (p % 10) + Math.floor(p / 10)
+    sum += p
+  }
+  const check = (10 - (sum % 10)) % 10
+  return check === parseInt(d[10], 10)
+}
+
+/** Zod refinement reusable: cédula RD válida o null/empty (opcional). */
+const optCedulaRD = z.string().max(20).optional().nullable().transform(v => {
+  if (v === '' || v == null) return null
+  return v
+}).superRefine((v, ctx) => {
+  if (v == null) return
+  const digits = v.replace(/\D/g, '')
+  if (digits.length !== 11) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cédula debe tener 11 dígitos.' })
+    return
+  }
+  if (!validarCedulaRD(v)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cédula RD inválida (dígito verificador no coincide).' })
+  }
+})
 
 // ─── Zod Schemas ─────────────────────────────────────────────────────────────
 
@@ -320,7 +381,7 @@ const clienteBaseShape = z.object({
   fechaInicio:         z.coerce.date().optional(),
   nombreContacto:      z.string().min(2).max(100),
   apellidoContacto:    nullStr(100),
-  cedula:              optIdent(20),
+  cedula:              optCedulaRD,
   cargo:               nullStr(80),
   direccion:           z.string().min(2).max(300),
   sector:              z.string().min(1).max(100),
@@ -360,7 +421,7 @@ const suplidorBaseShape = z.object({
   latitud:           nullStr(20),
   longitud:          nullStr(20),
   nombreContacto:    z.string().min(2).max(100),
-  cedula:            optIdent(20),
+  cedula:            optCedulaRD,
   cargo:             nullStr(80),
   telefonoPrincipal: z.string().min(7).max(20),
   telefonoAlt:       nullStr(20),
@@ -636,14 +697,42 @@ const portalLoginSchema = z.object({
 
 function setPortalCookie(res, token) {
   const isProd = process.env.NODE_ENV === 'production'
+  const maxAge = 30 * 24 * 60 * 60 * 1000
   res.cookie('pct', token, {
     httpOnly: true,
     secure:   isProd,
     sameSite: isProd ? 'none' : 'lax',
-    maxAge:   30 * 24 * 60 * 60 * 1000,
+    maxAge,
     ...(isProd ? { partitioned: true } : {}),
   })
+  // CSRF companion: NOT httpOnly (frontend portal lo lee y manda como header)
+  const csrfPortal = crypto.randomBytes(32).toString('hex')
+  res.cookie('pct-csrf', csrfPortal, {
+    httpOnly: false,
+    secure:   isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    maxAge,
+    ...(isProd ? { partitioned: true } : {}),
+  })
+  res.setHeader('X-Portal-CSRF', csrfPortal)
+  return csrfPortal
 }
+
+// Endpoint para que el frontend portal recupere el token CSRF tras hard reload
+app.get('/api/portal/auth/csrf', verificarPortalJWT, (req, res) => {
+  const existing = req.cookies?.['pct-csrf']
+  if (existing) return res.json({ csrfToken: existing })
+  // Si por algún motivo se perdió, regenera
+  const isProd = process.env.NODE_ENV === 'production'
+  const fresh  = crypto.randomBytes(32).toString('hex')
+  res.cookie('pct-csrf', fresh, {
+    httpOnly: false, secure: isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    maxAge:  30 * 24 * 60 * 60 * 1000,
+    ...(isProd ? { partitioned: true } : {}),
+  })
+  res.json({ csrfToken: fresh })
+})
 
 async function getOrCreatePortalSettings() {
   return prisma.portalSettings.upsert({
@@ -759,6 +848,7 @@ app.post('/api/portal/auth/login', portalLoginLimiter, async (req, res) => {
 
 app.post('/api/portal/auth/logout', (req, res) => {
   res.clearCookie('pct')
+  res.clearCookie('pct-csrf')
   res.status(204).end()
 })
 
@@ -1587,7 +1677,7 @@ const credencialSchema = z.object({
   notas:     z.string().max(500).optional().nullable(),
 })
 
-app.get('/api/credenciales', verificarJWT, requerirPermiso('crm:ver'), async (req, res) => {
+app.get('/api/credenciales', verificarJWT, requerirPermiso('vault:ver'), async (req, res) => {
   try {
     const { clienteId } = req.query
     const where = clienteId ? { clienteId } : {}
@@ -1600,7 +1690,74 @@ app.get('/api/credenciales', verificarJWT, requerirPermiso('crm:ver'), async (re
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-app.post('/api/credenciales', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+// Vault hardening: TOTP estricto (no opcional) + cooldown global por usuario + bulk alert.
+const VAULT_COOLDOWN_MS    = 30_000
+const VAULT_BULK_THRESHOLD = 5            // > 5 reveals/hora del mismo user = alerta
+const VAULT_BULK_WINDOW_MS = 60 * 60_000
+const _vaultLastReveal     = new Map()    // userId -> timestamp ms
+const _vaultBulkTally      = new Map()    // userId -> [timestamps ms]
+
+async function requerirTOTPEstricto(req, res, next) {
+  try {
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorEnabled: true, twoFactorSecret: true } })
+    if (!emp?.twoFactorEnabled || !emp?.twoFactorSecret) {
+      return res.status(422).json({ error: 'Activa 2FA primero. La bóveda PAM exige TOTP en cada revelación.', code: 'TOTP_NOT_CONFIGURED' })
+    }
+    const code = req.headers['x-totp'] || req.body?.totp
+    if (!code) return res.status(403).json({ error: 'Código TOTP requerido en header X-TOTP.', code: 'TOTP_REQUIRED' })
+    const secret = decryptTOTP(emp.twoFactorSecret)
+    if (!authenticator.verify({ token: String(code), secret })) {
+      auditReq('vault:totp_invalid', req, { credencialId: req.params.id }, { userId: req.user.sub })
+      return res.status(401).json({ error: 'Código TOTP inválido o expirado.', code: 'TOTP_INVALID' })
+    }
+    next()
+  } catch (e) {
+    console.error('[TOTP ESTRICTO]', e.message)
+    res.status(500).json({ error: 'Error verificando 2FA.' })
+  }
+}
+
+function vaultCooldownGuard(req, res, next) {
+  const uid  = req.user.sub
+  const now  = Date.now()
+  const last = _vaultLastReveal.get(uid) ?? 0
+  const wait = VAULT_COOLDOWN_MS - (now - last)
+  if (wait > 0) {
+    return res.status(429).json({
+      error:        `Cool-down activo. Espera ${Math.ceil(wait / 1000)}s antes de otra revelación.`,
+      code:         'VAULT_COOLDOWN',
+      retryAfterMs: wait,
+    })
+  }
+  next()
+}
+
+async function detectarBulkReveal(req) {
+  const uid = req.user.sub
+  const now = Date.now()
+  const arr = (_vaultBulkTally.get(uid) ?? []).filter(t => now - t < VAULT_BULK_WINDOW_MS)
+  arr.push(now)
+  _vaultBulkTally.set(uid, arr)
+  if (arr.length > VAULT_BULK_THRESHOLD) {
+    // Solo alerta una vez por ventana (cuando cruzamos el umbral)
+    if (arr.length === VAULT_BULK_THRESHOLD + 1) {
+      auditReq('vault:bulk_reveal_alert', req, { count: arr.length, ventanaMin: 60 }, { userId: uid })
+      try {
+        await prisma.incidenciaReconciliacion.create({
+          data: {
+            tipo:        'BULK_VAULT_REVEAL',
+            severidad:   'CRITICA',
+            descripcion: `Usuario ${req.user.nombre} reveló > ${VAULT_BULK_THRESHOLD} credenciales en 60 min (${arr.length} totales). Posible exfiltración masiva.`,
+            datos:       { userId: uid, nombre: req.user.nombre, count: arr.length, ip: req.headers['x-forwarded-for'] ?? req.socket?.remoteAddress },
+            asignadoA:   uid,
+          },
+        })
+      } catch (e) { console.error('[BULK ALERT INSERT]', e.message) }
+    }
+  }
+}
+
+app.post('/api/credenciales', verificarJWT, requerirPermiso('vault:editar'), async (req, res) => {
   try {
     const data = credencialSchema.parse(req.body)
     if (!VAULT_KEY) return res.status(503).json({ error: 'Vault deshabilitado (VAULT_KEY no configurada).' })
@@ -1622,21 +1779,31 @@ app.post('/api/credenciales', verificarJWT, requerirPermiso('crm:editar'), async
   }
 })
 
-app.get('/api/credenciales/:id/reveal', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
-  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
-  try {
-    const c = await prisma.credencialCliente.findUnique({ where: { id: req.params.id } })
-    if (!c) return res.status(404).json({ error: 'Credencial no encontrada.' })
-    const password = vaultDecrypt(c.passwordEnc, c.passwordIv)
-    auditReq('vault:reveal', req, { credencialId: c.id, clienteId: c.clienteId, tipo: c.tipo, nombre: c.nombre })
-    res.json({ password })
-  } catch (e) {
-    console.error('[VAULT REVEAL]', e.message)
-    res.status(500).json({ error: 'Error al descifrar.' })
+app.get(
+  '/api/credenciales/:id/reveal',
+  verificarJWT,
+  requerirPermiso('vault:reveal'),
+  vaultCooldownGuard,
+  requerirTOTPEstricto,
+  async (req, res) => {
+    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+    try {
+      const c = await prisma.credencialCliente.findUnique({ where: { id: req.params.id } })
+      if (!c) return res.status(404).json({ error: 'Credencial no encontrada.' })
+      const password = vaultDecrypt(c.passwordEnc, c.passwordIv)
+      _vaultLastReveal.set(req.user.sub, Date.now())
+      auditReq('vault:reveal', req, { credencialId: c.id, clienteId: c.clienteId, tipo: c.tipo, nombre: c.nombre })
+      // Async fire-and-forget: detect bulk exfil, no await
+      detectarBulkReveal(req).catch(e => console.error('[BULK DETECT]', e.message))
+      res.json({ password })
+    } catch (e) {
+      console.error('[VAULT REVEAL]', e.message)
+      res.status(500).json({ error: 'Error al descifrar.' })
+    }
   }
-})
+)
 
-app.delete('/api/credenciales/:id', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+app.delete('/api/credenciales/:id', verificarJWT, requerirPermiso('vault:editar'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
   try {
     await prisma.credencialCliente.delete({ where: { id: req.params.id } })

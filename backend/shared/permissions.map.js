@@ -86,4 +86,9 @@ module.exports = [
 
   // ── Mapa NOC ──────────────────────────────────────────────────────────────────
   { key: 'mapa:ver',                   module: 'Mapa NOC',      label: 'Ver Mapa',              desc: 'Mapa de infraestructura',                        color: 'teal'    },
+
+  // ── Bóveda PAM (alta sensibilidad — requiere 2FA + cooldown) ──────────────────
+  { key: 'vault:ver',                  module: 'Bóveda PAM',    label: 'Ver Bóveda',            desc: 'Listar credenciales sin descifrar',              color: 'red'     },
+  { key: 'vault:editar',               module: 'Bóveda PAM',    label: 'Crear/Eliminar',        desc: 'Crear y eliminar credenciales cifradas',         color: 'red'     },
+  { key: 'vault:reveal',               module: 'Bóveda PAM',    label: 'Revelar Password',      desc: 'Descifrar password (2FA + cooldown 30s + audit)',color: 'red'     },
 ]
