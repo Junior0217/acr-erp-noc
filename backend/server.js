@@ -19,6 +19,7 @@ const cron         = require('node-cron');
 const PDFDocument  = require('pdfkit');
 const nodemailer   = require('nodemailer');
 const multer       = require('multer');
+const sharp        = require('sharp');
 const { createClient: createSupabaseClient } = require('@supabase/supabase-js');
 const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
 const { syncMikrotik } = require('./services/mikrotik');
@@ -2508,6 +2509,36 @@ function svgSeguro(buf) {
 const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/svg+xml': 'svg', 'image/gif': 'gif', 'image/webp': 'webp' }
 const KINDS_VALIDOS = ['logoClaro', 'logoOscuro', 'selloFisico', 'firmaGerente']
 
+// Extrae la ruta de Supabase Storage desde una URL pública.
+// Ej: https://xxx.supabase.co/storage/v1/object/public/empresa-assets/acr/logo-123.webp → 'acr/logo-123.webp'
+function pathFromSupabaseUrl(url) {
+  if (!url || typeof url !== 'string') return null
+  const marker = `/object/public/${SUPABASE_BUCKET}/`
+  const idx = url.indexOf(marker)
+  if (idx === -1) {
+    // También aceptar formato firmado /object/sign/<bucket>/...
+    const signMarker = `/object/sign/${SUPABASE_BUCKET}/`
+    const signIdx = url.indexOf(signMarker)
+    if (signIdx === -1) return null
+    return url.slice(signIdx + signMarker.length).split('?')[0]
+  }
+  return url.slice(idx + marker.length).split('?')[0]
+}
+
+// Comprime con sharp: resize a max 800x800 fit:inside (preserva aspect ratio), convierte a WebP.
+// SVG pasa intacto (vector, no necesita compresión raster).
+async function comprimirImagen(buf, mime) {
+  if (mime === 'image/svg+xml') {
+    return { buffer: buf, mime: 'image/svg+xml', ext: 'svg' }
+  }
+  const out = await sharp(buf, { failOn: 'error' })
+    .rotate()                                // respeta EXIF orientation (no-op si no hay)
+    .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+    .webp({ quality: 85, effort: 4 })
+    .toBuffer()
+  return { buffer: out, mime: 'image/webp', ext: 'webp' }
+}
+
 const uploadMulter = multer({
   storage: multer.memoryStorage(),
   limits:  { fileSize: 2 * 1024 * 1024 },     // 2MB
@@ -2529,22 +2560,40 @@ app.post(
       if (!KINDS_VALIDOS.includes(kind)) {
         return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_VALIDOS.join(', ')}.` })
       }
-      // Validación mime REAL desde el header del archivo (no el del cliente)
-      const detected = detectMimeFromBuffer(req.file.buffer)
-      if (!detected) return res.status(415).json({ error: 'Tipo de archivo no reconocido o corrupto.', code: 'INVALID_MIME' })
-      if (!MIME_EXT[detected]) return res.status(415).json({ error: `Mime ${detected} no permitido.` })
-      // SVG: sanitizar contra XSS
-      if (detected === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
+      // 1. Validación MIME real (header del archivo, no del cliente)
+      const inputMime = detectMimeFromBuffer(req.file.buffer)
+      if (!inputMime) return res.status(415).json({ error: 'Tipo de archivo no reconocido o corrupto.', code: 'INVALID_MIME' })
+      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
+
+      // 2. SVG: sanitizar contra XSS
+      if (inputMime === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
         auditReq('empresa:upload_svg_malicioso', req, { kind, size: req.file.size })
         return res.status(422).json({ error: 'SVG contiene contenido peligroso (script, eventos, foreignObject).', code: 'SVG_UNSAFE' })
       }
 
-      const ext      = MIME_EXT[detected]
+      // 3. Comprimir con sharp (resize 800x800 + WebP). SVG pasa intacto.
+      let buffer, finalMime, ext
+      try {
+        const compressed = await comprimirImagen(req.file.buffer, inputMime)
+        buffer    = compressed.buffer
+        finalMime = compressed.mime
+        ext       = compressed.ext
+      } catch (e) {
+        console.error('[SHARP COMPRESS]', e.message)
+        return res.status(422).json({ error: 'Imagen corrupta o formato no procesable.', code: 'COMPRESS_FAIL' })
+      }
+
       const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
       const path     = `acr/${filename}`
 
-      const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, req.file.buffer, {
-        contentType: detected,
+      // 4. Snapshot del asset viejo ANTES del upload nuevo (para cleanup)
+      const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } })
+      const urlVieja = current?.assets?.[kind] ?? null
+      const pathViejo = pathFromSupabaseUrl(urlVieja)
+
+      // 5. Upload nuevo
+      const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, buffer, {
+        contentType: finalMime,
         cacheControl: '3600',
         upsert: false,
       })
@@ -2559,13 +2608,39 @@ app.post(
         return res.status(500).json({ error: 'URL pública generada inválida.', code: 'URL_INVALID' })
       }
 
-      // Update singleton: merge en assets sin tocar otras keys
-      const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } })
+      // 6. Update singleton ANTES de borrar archivo viejo (consistencia)
       const nextAssets = { ...(current?.assets ?? {}), [kind]: publicUrl }
       await prisma.empresaPerfil.update({ where: { id: 1 }, data: { assets: nextAssets } })
 
-      auditReq('empresa:upload', req, { kind, mime: detected, size: req.file.size, url: publicUrl })
-      res.status(201).json({ kind, url: publicUrl, mime: detected, size: req.file.size })
+      // 7. Cleanup fire-and-forget — NO bloquea respuesta si falla
+      const ahorroPct = ((req.file.size - buffer.length) / req.file.size * 100)
+      auditReq('empresa:upload', req, {
+        kind, inputMime, finalMime,
+        sizeOriginal: req.file.size, sizeComprimido: buffer.length,
+        ahorroPct: Number(ahorroPct.toFixed(1)),
+        url: publicUrl,
+        pathViejoBorrado: pathViejo ?? null,
+      })
+      if (pathViejo) {
+        supabase.storage.from(SUPABASE_BUCKET).remove([pathViejo])
+          .then(({ error }) => {
+            if (error) {
+              console.error('[CLEANUP FAIL]', pathViejo, error.message)
+              auditReq('empresa:upload_cleanup_fail', { ...req, user: req.user }, { pathViejo, error: error.message })
+            } else {
+              console.log('[CLEANUP OK]', pathViejo)
+            }
+          })
+          .catch(e => console.error('[CLEANUP EXCEPTION]', e.message))
+      }
+
+      res.status(201).json({
+        kind, url: publicUrl, mime: finalMime,
+        size: buffer.length,
+        sizeOriginal: req.file.size,
+        ahorroPct: Number(ahorroPct.toFixed(1)),
+        oldRemoved: !!pathViejo,
+      })
     } catch (e) {
       if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
       console.error('[EMPRESA UPLOAD]', e.message)

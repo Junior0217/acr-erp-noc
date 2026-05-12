@@ -4,7 +4,6 @@ const API = import.meta.env.VITE_API_URL || ''
 const EmpresaContext = createContext(null)
 
 // Defaults usados antes de que /api/configuracion/empresa/publico responda.
-// Garantizan que la app nunca renderiza "undefined" si el endpoint cae.
 const DEFAULT_EMPRESA = {
   rnc:             '133692678',
   razonSocial:     'ACR NETWORKS & SOLUTIONS, S.R.L.',
@@ -29,43 +28,108 @@ const DEFAULT_EMPRESA = {
   representanteCargo:    null,
 }
 
+const CACHE_KEY = 'acr.empresa.publico.v1'
+const CACHE_TTL_MS = 5 * 60 * 1000
+
+// Sólo campos seguros para localStorage (CISO: nada de PII representante).
+const PUBLIC_FIELDS = [
+  'rnc','razonSocial','nombreComercial','registroMercantil',
+  'direccion','sector','provincia','pais',
+  'telefono','email','website','eslogan',
+]
+
+function pickPublic(obj) {
+  const out = {}
+  for (const k of PUBLIC_FIELDS) if (obj[k] !== undefined) out[k] = obj[k]
+  // assets: sólo logos (sello y firma NO se cachean — son confidenciales)
+  if (obj.assets) {
+    out.assets = {
+      logoClaro:  obj.assets.logoClaro  ?? null,
+      logoOscuro: obj.assets.logoOscuro ?? null,
+    }
+  }
+  return out
+}
+
+function readCache() {
+  try {
+    const raw = localStorage.getItem(CACHE_KEY)
+    if (!raw) return null
+    const parsed = JSON.parse(raw)
+    if (!parsed?.data || !parsed?.expiresAt) return null
+    if (parsed.expiresAt < Date.now()) {
+      localStorage.removeItem(CACHE_KEY)
+      return null
+    }
+    return parsed.data
+  } catch { return null }
+}
+
+function writeCache(data) {
+  try {
+    const safe = pickPublic(data)
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ data: safe, expiresAt: Date.now() + CACHE_TTL_MS }))
+  } catch { /* quota o privacy mode — ignorar */ }
+}
+
+function mergeAssets(...sources) {
+  return sources.reduce((acc, s) => ({ ...acc, ...(s?.assets ?? {}) }), {})
+}
+
 export function EmpresaProvider({ children }) {
-  const [empresa, setEmpresa] = useState(DEFAULT_EMPRESA)
-  const [loading, setLoading] = useState(true)
+  // Inicialización síncrona desde cache: first paint instantáneo (sin spinner)
+  const cached = readCache()
+  const initial = cached
+    ? { ...DEFAULT_EMPRESA, ...cached, assets: mergeAssets(DEFAULT_EMPRESA, cached) }
+    : DEFAULT_EMPRESA
+
+  const [empresa, setEmpresa] = useState(initial)
+  const [loading, setLoading] = useState(!cached)   // si hay cache, no mostrar loading
   const [hasFull, setHasFull] = useState(false)
+  const [stale, setStale]     = useState(!!cached)  // si renderizamos desde cache, marcar stale hasta refresh
 
   const refresh = useCallback(async (preferFull = false) => {
-    setLoading(true)
-    // Si el user está logueado y queremos PII (representante), usa el endpoint full.
-    // Si no, el público es suficiente para membretes/PDFs.
-    const tryFull = preferFull
     try {
-      let r = tryFull
-        ? await fetch(`${API}/api/configuracion/empresa`, { credentials: 'include' })
-        : null
-      if (r?.ok) {
-        const j = await r.json()
-        setEmpresa({ ...DEFAULT_EMPRESA, ...j, assets: { ...DEFAULT_EMPRESA.assets, ...(j.assets ?? {}) } })
-        setHasFull(true)
-        return
+      // Si preferFull (post-login), intenta el endpoint full primero
+      if (preferFull) {
+        const r = await fetch(`${API}/api/configuracion/empresa`, { credentials: 'include' })
+        if (r.ok) {
+          const j = await r.json()
+          setEmpresa({ ...DEFAULT_EMPRESA, ...j, assets: mergeAssets(DEFAULT_EMPRESA, j) })
+          setHasFull(true)
+          setStale(false)
+          // Cachea SOLO campos públicos (sin PII representante)
+          writeCache(j)
+          return
+        }
       }
-      r = await fetch(`${API}/api/configuracion/empresa/publico`)
+      const r = await fetch(`${API}/api/configuracion/empresa/publico`)
       if (r.ok) {
         const j = await r.json()
-        setEmpresa({ ...DEFAULT_EMPRESA, ...j, assets: { ...DEFAULT_EMPRESA.assets, ...(j.assets ?? {}) } })
+        setEmpresa({ ...DEFAULT_EMPRESA, ...j, assets: mergeAssets(DEFAULT_EMPRESA, j) })
         setHasFull(false)
+        setStale(false)
+        writeCache(j)
       }
     } catch {
-      // Mantiene defaults
+      // Mantiene defaults o cache. NO marca como definitivo error.
     } finally {
       setLoading(false)
     }
   }, [])
 
-  useEffect(() => { refresh(true) }, [refresh])
+  useEffect(() => {
+    // Si tenemos cache fresca, fetch en BACKGROUND silencioso (no flicker).
+    // Si no, fetch normal con loading=true.
+    refresh(true)
+  }, [refresh])
+
+  function invalidarCache() {
+    try { localStorage.removeItem(CACHE_KEY) } catch {}
+  }
 
   return (
-    <EmpresaContext.Provider value={{ empresa, loading, hasFull, refresh }}>
+    <EmpresaContext.Provider value={{ empresa, loading, hasFull, stale, refresh, invalidarCache }}>
       {children}
     </EmpresaContext.Provider>
   )
@@ -74,8 +138,7 @@ export function EmpresaProvider({ children }) {
 export function useEmpresa() {
   const ctx = useContext(EmpresaContext)
   if (!ctx) {
-    // Fallback seguro: si se usa fuera del provider, devuelve defaults
-    return { empresa: DEFAULT_EMPRESA, loading: false, hasFull: false, refresh: () => Promise.resolve() }
+    return { empresa: DEFAULT_EMPRESA, loading: false, hasFull: false, stale: false, refresh: () => Promise.resolve(), invalidarCache: () => {} }
   }
   return ctx
 }
