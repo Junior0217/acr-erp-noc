@@ -153,13 +153,77 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
 
 // ─── Tab: Empleados ───────────────────────────────────────────────────────────
 
+function ModalConfirmarEliminar({ empleado, onCancel, onDeleted }) {
+  const { user } = useAuth()
+  const [totp, setTotp] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  async function confirmar() {
+    setBusy(true)
+    try {
+      const headers = {}
+      if (totp.length === 6) headers['x-totp'] = totp
+      const r = await apiFetch(`/api/empleados/${empleado.id}`, { method: 'DELETE', headers })
+      if (r.status === 204) { toast.success('Técnico eliminado.'); onDeleted(); return }
+      const j = await r.json()
+      toast.error(j.error ?? 'Error al eliminar.')
+    } catch { toast.error('Error de conexión') }
+    finally { setBusy(false) }
+  }
+
+  const needs2FA = user?.twoFactorEnabled === true
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
+      <div className="relative z-10 w-full max-w-sm bg-slate-900 border border-red-600/30 rounded-xl shadow-2xl p-6 space-y-4">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-full bg-red-600/15 flex items-center justify-center flex-shrink-0">
+            <Trash2 size={16} className="text-red-400" />
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-slate-100">Eliminar técnico</h3>
+            <p className="text-xs text-slate-500 mt-0.5">"{empleado.nombre}" será marcado como eliminado.</p>
+          </div>
+        </div>
+        {needs2FA && (
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
+              Código TOTP (2FA requerido)
+            </label>
+            <input
+              type="text" inputMode="numeric" maxLength={6}
+              value={totp} onChange={e => setTotp(e.target.value.replace(/\D/g, ''))}
+              placeholder="000000"
+              className="w-full text-center text-xl font-mono tracking-[0.4em] bg-slate-800 border border-slate-700 focus:border-red-500 focus:outline-none rounded-lg px-4 py-2.5 text-slate-100 placeholder-slate-600 transition-colors"
+              autoFocus
+            />
+          </div>
+        )}
+        <div className="flex gap-3 pt-1">
+          <button onClick={onCancel} className="flex-1 py-2 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors border border-slate-700">Cancelar</button>
+          <button
+            onClick={confirmar}
+            disabled={busy || (needs2FA && totp.length !== 6)}
+            className="flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-semibold bg-red-600/80 hover:bg-red-600 text-white transition-colors disabled:opacity-50"
+          >
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <Trash2 size={14} />}
+            Eliminar
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function TabEmpleados() {
-  const { tienePermiso }          = useAuth()
-  const [rows, setRows]           = useState([])
-  const [loading, setLoading]     = useState(false)
-  const [search, setSearch]       = useState('')
-  const [modal, setModal]         = useState(null)
-  const debouncedSearch           = useDebounce(search, 400)
+  const { tienePermiso }             = useAuth()
+  const [rows, setRows]              = useState([])
+  const [loading, setLoading]        = useState(false)
+  const [search, setSearch]          = useState('')
+  const [modal, setModal]            = useState(null)
+  const [deleteTarget, setDeleteTarget] = useState(null)
+  const debouncedSearch              = useDebounce(search, 400)
 
   const fetchEmpleados = useCallback(async (s) => {
     setLoading(true)
@@ -174,14 +238,6 @@ function TabEmpleados() {
   }, [])
 
   useEffect(() => { fetchEmpleados(debouncedSearch) }, [debouncedSearch, fetchEmpleados])
-
-  async function eliminar(e) {
-    if (!window.confirm(`¿Eliminar a "${e.nombre}"?`)) return
-    const r = await apiFetch(`/api/empleados/${e.id}`, { method: 'DELETE' })
-    if (r.status === 204) { toast.success('Técnico eliminado.'); fetchEmpleados(debouncedSearch); return }
-    const j = await r.json()
-    toast.error(j.error ?? 'Error al eliminar.')
-  }
 
   const canEdit = tienePermiso('rrhh:editar')
 
@@ -253,7 +309,7 @@ function TabEmpleados() {
                         <button onClick={() => setModal(e)} className="p-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-blue-900/20 transition-colors" title="Editar">
                           <Pencil size={14} />
                         </button>
-                        <button onClick={() => eliminar(e)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-900/20 transition-colors" title="Eliminar">
+                        <button onClick={() => setDeleteTarget(e)} className="p-1.5 rounded-lg text-slate-500 hover:text-red-400 hover:bg-red-900/20 transition-colors" title="Eliminar">
                           <Trash2 size={14} />
                         </button>
                       </div>
@@ -271,6 +327,13 @@ function TabEmpleados() {
           empleado={modal === 'nuevo' ? null : modal}
           onClose={() => setModal(null)}
           onSaved={() => { setModal(null); fetchEmpleados(debouncedSearch) }}
+        />
+      )}
+      {deleteTarget && (
+        <ModalConfirmarEliminar
+          empleado={deleteTarget}
+          onCancel={() => setDeleteTarget(null)}
+          onDeleted={() => { setDeleteTarget(null); fetchEmpleados(debouncedSearch) }}
         />
       )}
     </div>

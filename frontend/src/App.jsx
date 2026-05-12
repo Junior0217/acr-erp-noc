@@ -19,6 +19,7 @@ import Configuracion from './pages/Configuracion'
 import Servicios from './pages/Servicios'
 import Login from './pages/Login'
 import CustomerPortal from './pages/CustomerPortal'
+import PortalTracking from './pages/PortalTracking'
 
 function AppRoutes() {
   const { user } = useAuth()
@@ -36,6 +37,7 @@ function AppRoutes() {
       <Routes>
         <Route path="/login" element={<Login />} />
         <Route path="/portal" element={<CustomerPortal />} />
+        <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     )
@@ -45,6 +47,7 @@ function AppRoutes() {
     <Routes>
       <Route path="/login" element={<Navigate to="/" replace />} />
       <Route path="/portal" element={<CustomerPortal />} />
+      <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
       <Route path="/" element={<AdminLayout />}>
         <Route index element={<Dashboard />} />
         <Route path="ventas" element={<Ventas />} />

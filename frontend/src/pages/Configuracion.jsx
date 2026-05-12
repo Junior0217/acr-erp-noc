@@ -154,6 +154,7 @@ function PanelRol({ rol, permGroups, onUpdated }) {
   const [permisos,    setPermisos]    = useState(Array.isArray(rol?.permisos) ? rol.permisos : [])
   const [activo,      setActivo]      = useState(rol?.activo ?? true)
   const [nivel,       setNivel]       = useState(rol?.nivel ?? 0)
+  const [require2FA,  setRequire2FA]  = useState(rol?.require2FA ?? false)
   const [saving,      setSaving]      = useState(false)
   const [deleting,    setDeleting]    = useState(false)
 
@@ -163,6 +164,7 @@ function PanelRol({ rol, permGroups, onUpdated }) {
     setPermisos(Array.isArray(rol?.permisos) ? rol.permisos : [])
     setActivo(rol?.activo ?? true)
     setNivel(rol?.nivel ?? 0)
+    setRequire2FA(rol?.require2FA ?? false)
   }, [rol])
 
   const isOwner    = me?.permisos?.includes('sistema:owner')
@@ -179,7 +181,7 @@ function PanelRol({ rol, permGroups, onUpdated }) {
     try {
       const method = isNew ? 'POST' : 'PUT'
       const url    = isNew ? '/api/roles' : `/api/roles/${rol.id}`
-      const r = await apiFetch(url, { method, body: JSON.stringify({ nombre: nombre.trim(), descripcion: descripcion.trim() || null, permisos, activo, nivel: nivelVal }) })
+      const r = await apiFetch(url, { method, body: JSON.stringify({ nombre: nombre.trim(), descripcion: descripcion.trim() || null, permisos, activo, nivel: nivelVal, require2FA }) })
       if (r.ok) { toast.success(isNew ? 'Rol creado.' : 'Rol actualizado.'); onUpdated() }
       else toast.error((await r.json()).error)
     } catch { toast.error('Error de conexión') }
@@ -236,12 +238,26 @@ function PanelRol({ rol, permGroups, onUpdated }) {
         </p>
       </div>
 
-      {!isNew && (
+      <div className="flex flex-wrap gap-4">
+        {!isNew && (
+          <label className="flex items-center gap-2 cursor-pointer w-fit">
+            <Toggle on={activo} onChange={setActivo} />
+            <span className="text-xs text-slate-400">Rol activo</span>
+          </label>
+        )}
         <label className="flex items-center gap-2 cursor-pointer w-fit">
-          <Toggle on={activo} onChange={setActivo} />
-          <span className="text-xs text-slate-400">Rol activo</span>
+          <input
+            type="checkbox"
+            checked={require2FA}
+            onChange={e => setRequire2FA(e.target.checked)}
+            className="w-4 h-4 accent-amber-500 rounded"
+          />
+          <span className="text-xs text-slate-400">
+            Exigir 2FA obligatorio
+            {require2FA && <span className="ml-1.5 text-[9px] font-bold text-amber-400 bg-amber-600/15 border border-amber-600/30 px-1.5 py-0.5 rounded-full">ACTIVO</span>}
+          </span>
         </label>
-      )}
+      </div>
 
       <div>
         <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">

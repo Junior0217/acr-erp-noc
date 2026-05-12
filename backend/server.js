@@ -867,7 +867,7 @@ app.put('/api/empleados/:id', verificarJWT, requerirPermiso('rrhh:editar'), prot
   }
 });
 
-app.delete('/api/empleados/:id', verificarJWT, protegerPropietario, async (req, res) => {
+app.delete('/api/empleados/:id', verificarJWT, protegerPropietario, requerirTOTP, async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
@@ -1922,6 +1922,7 @@ const rolSchema = z.object({
   permisos:    z.array(z.string()).default([]),
   activo:      z.boolean().default(true),
   nivel:       z.number().int().min(0).max(100).optional().default(0),
+  require2FA:  z.boolean().optional().default(false),
 });
 const rolUpdateSchema = rolSchema.partial();
 
@@ -1934,6 +1935,18 @@ app.get('/api/roles', verificarJWT, async (req, res) => {
     res.json({ data: roles });
   } catch { res.status(500).json({ error: 'Error al obtener roles.' }); }
 });
+
+async function requerirTOTP(req, res, next) {
+  try {
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorEnabled: true, twoFactorSecret: true } })
+    if (!emp?.twoFactorEnabled) return next()
+    const code = req.headers['x-totp'] || req.body?.totp
+    if (!code) return res.status(403).json({ error: 'Esta acción destructiva requiere tu código TOTP de 2FA.' })
+    const secret = decryptTOTP(emp.twoFactorSecret)
+    if (!authenticator.verify({ token: String(code), secret })) return res.status(401).json({ error: 'Código TOTP inválido o expirado.' })
+    next()
+  } catch { next() }
+}
 
 async function callerNivelMax(userId) {
   const roles = await prisma.rol.findMany({ where: { empleados: { some: { id: userId } }, activo: true }, select: { nivel: true } });
@@ -2631,6 +2644,13 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
     })
     await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
     auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
+    if (descuentoGlobalPct > 0 || descuentoGlobalMonto > 0) {
+      auditReq('pos:descuento_global', req, {
+        facturaId: factura.id, noFactura: factura.noFactura,
+        descuentoGlobalPct, descuentoGlobalMonto,
+        totalFinal: Number(factura.total),
+      })
+    }
     res.status(201).json(factura)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })

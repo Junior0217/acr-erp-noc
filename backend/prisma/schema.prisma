@@ -488,6 +488,7 @@ model Factura {
   @@index([esCotizacion])
   @@index([noFactura])
   @@index([deletedAt])
+  @@index([clienteId, estado])
   @@index([clienteId, fechaEmision])
   @@index([estado, fechaEmision])
 }
