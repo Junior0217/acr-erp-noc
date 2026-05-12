@@ -1,8 +1,218 @@
-import { useState, useEffect } from "react";
-import { X, Save, User, MapPin, Briefcase, Phone, Loader2, PowerOff, Power, AlertTriangle, Map, CreditCard, Crosshair } from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { toast } from "sonner";
+import { X, Save, User, MapPin, Briefcase, Phone, Loader2, PowerOff, Power, AlertTriangle, Map, CreditCard, Crosshair, KeyRound, Server, Eye, EyeOff, Plus, Trash2, Package, ShieldCheck, FileText } from "lucide-react";
 import MapPicker from "./MapPicker";
+import { apiFetch } from "../../utils/api";
 
 const API = import.meta.env.VITE_API_URL || '';
+
+const TIPOS_CREDENCIAL = ["Router","Switch","AccessPoint","NVR","DVR","Camara","Server","Firewall","ControlAcceso","Otro"];
+
+function VaultTab({ clienteId }) {
+  const [creds, setCreds] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [revealed, setRevealed] = useState({});
+  const [form, setForm] = useState({ tipo: "Router", nombre: "", ip: "", usuario: "", password: "", notas: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const r = await apiFetch(`/api/credenciales?clienteId=${clienteId}`);
+      const j = await r.json();
+      setCreds(Array.isArray(j.data) ? j.data : []);
+    } catch { setCreds([]); }
+    finally { setLoading(false); }
+  }, [clienteId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function crear(e) {
+    e.preventDefault();
+    if (!form.nombre || !form.usuario || !form.password) return toast.error("Nombre, usuario y password son obligatorios.");
+    try {
+      const r = await apiFetch("/api/credenciales", { method: "POST", body: JSON.stringify({ clienteId, ...form }) });
+      if (r.ok) {
+        toast.success("Credencial guardada (cifrada).");
+        setShowNew(false);
+        setForm({ tipo: "Router", nombre: "", ip: "", usuario: "", password: "", notas: "" });
+        load();
+      } else {
+        const j = await r.json();
+        toast.error(j.error ?? "Error.");
+      }
+    } catch { toast.error("Error de red."); }
+  }
+
+  async function reveal(id) {
+    if (revealed[id]) { setRevealed(r => { const n = { ...r }; delete n[id]; return n; }); return; }
+    try {
+      const r = await apiFetch(`/api/credenciales/${id}/reveal`);
+      if (r.ok) {
+        const j = await r.json();
+        setRevealed(r => ({ ...r, [id]: j.password }));
+        toast.warning("Password revelado. Evento auditado.");
+      } else { toast.error("Error al descifrar."); }
+    } catch { toast.error("Error de red."); }
+  }
+
+  async function eliminar(id) {
+    if (!confirm("¿Eliminar credencial?")) return;
+    const r = await apiFetch(`/api/credenciales/${id}`, { method: "DELETE" });
+    if (r.ok) { toast.success("Eliminada."); load(); }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-blue-400">
+          <ShieldCheck size={16} />
+          <span className="text-xs font-bold uppercase tracking-wider">Bóveda PAM (AES-256-GCM cifrado)</span>
+        </div>
+        <button type="button" onClick={() => setShowNew(v => !v)} className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold flex items-center gap-1.5">
+          <Plus size={13} />Nueva
+        </button>
+      </div>
+
+      {showNew && (
+        <form onSubmit={crear} className="bg-slate-800/60 border border-blue-600/30 rounded-lg p-4 space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[10px] text-slate-500 uppercase mb-1">Tipo</label>
+              <select className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200" value={form.tipo} onChange={e => setForm({ ...form, tipo: e.target.value })}>
+                {TIPOS_CREDENCIAL.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 uppercase mb-1">Nombre amigable *</label>
+              <input className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200" placeholder="NVR Recepción" value={form.nombre} onChange={e => setForm({ ...form, nombre: e.target.value })} required />
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 uppercase mb-1">IP</label>
+              <input className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200" placeholder="192.168.1.10" value={form.ip} onChange={e => setForm({ ...form, ip: e.target.value })} />
+            </div>
+            <div>
+              <label className="block text-[10px] text-slate-500 uppercase mb-1">Usuario *</label>
+              <input className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200" value={form.usuario} onChange={e => setForm({ ...form, usuario: e.target.value })} required />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[10px] text-slate-500 uppercase mb-1">Password *</label>
+              <input type="password" className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-mono text-slate-200" value={form.password} onChange={e => setForm({ ...form, password: e.target.value })} required />
+            </div>
+            <div className="col-span-2">
+              <label className="block text-[10px] text-slate-500 uppercase mb-1">Notas</label>
+              <input className="w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs text-slate-200" value={form.notas} onChange={e => setForm({ ...form, notas: e.target.value })} />
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setShowNew(false)} className="px-3 py-1.5 rounded text-xs text-slate-400 hover:text-slate-200">Cancelar</button>
+            <button type="submit" className="px-3 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold">Guardar (cifrado)</button>
+          </div>
+        </form>
+      )}
+
+      {loading ? (
+        <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-500" /></div>
+      ) : creds.length === 0 ? (
+        <p className="text-center text-xs text-slate-600 py-8">Sin credenciales registradas.</p>
+      ) : (
+        <div className="space-y-2">
+          {creds.map(c => (
+            <div key={c.id} className="bg-slate-800/40 border border-slate-700/50 rounded-lg p-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 min-w-0 flex-1">
+                  <Server size={14} className="text-blue-400 flex-shrink-0" />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-100">{c.nombre}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 bg-blue-600/15 text-blue-400 border border-blue-600/30 rounded">{c.tipo}</span>
+                    </div>
+                    <div className="text-xs text-slate-400 mt-0.5 font-mono">
+                      {c.ip && <span className="mr-3">{c.ip}</span>}
+                      <span>usr: {c.usuario}</span>
+                      <span className="mx-2">·</span>
+                      {revealed[c.id]
+                        ? <span className="text-emerald-400">pwd: {revealed[c.id]}</span>
+                        : <span className="text-slate-600">pwd: ••••••••</span>}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex gap-1">
+                  <button type="button" onClick={() => reveal(c.id)} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-blue-400" title={revealed[c.id] ? "Ocultar" : "Revelar (auditado)"}>
+                    {revealed[c.id] ? <EyeOff size={13} /> : <Eye size={13} />}
+                  </button>
+                  <button type="button" onClick={() => eliminar(c.id)} className="p-1.5 rounded hover:bg-red-600/20 text-slate-500 hover:text-red-400">
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+              {c.notas && <p className="text-xs text-slate-500 mt-2 pl-6">{c.notas}</p>}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AssetsTab({ clienteId }) {
+  const [activos, setActivos] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const ahora = Date.now();
+
+  useEffect(() => {
+    setLoading(true);
+    apiFetch(`/api/activos-cliente?clienteId=${clienteId}`)
+      .then(r => r.json())
+      .then(j => setActivos(Array.isArray(j.data) ? j.data : []))
+      .catch(() => setActivos([]))
+      .finally(() => setLoading(false));
+  }, [clienteId]);
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2 text-blue-400">
+        <Package size={16} />
+        <span className="text-xs font-bold uppercase tracking-wider">CMDB · Equipos instalados ({activos.length})</span>
+      </div>
+      {loading ? (
+        <div className="flex justify-center py-8"><Loader2 size={20} className="animate-spin text-blue-500" /></div>
+      ) : activos.length === 0 ? (
+        <p className="text-center text-xs text-slate-600 py-8">Sin equipos instalados registrados.<br/>Se cargan automáticamente al cerrar Órdenes de Trabajo.</p>
+      ) : (
+        <div className="space-y-2">
+          {activos.map(a => {
+            const vencido = a.finGarantia && new Date(a.finGarantia).getTime() < ahora;
+            return (
+              <div key={a.id} className="bg-slate-800/40 border border-slate-700/50 rounded-lg p-3">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-100">{a.producto?.nombre ?? "—"}</span>
+                      <span className="text-[10px] font-mono text-slate-500">{a.producto?.sku}</span>
+                      {a.cantidad > 1 && <span className="text-[10px] px-1.5 py-0.5 bg-blue-600/15 text-blue-400 border border-blue-600/30 rounded">×{a.cantidad}</span>}
+                    </div>
+                    <div className="text-xs text-slate-400 mt-1">
+                      Instalado: {new Date(a.fechaInstalacion).toLocaleDateString("es-DO")}
+                      {a.orden?.noOT && <span className="ml-2 font-mono text-blue-400">{a.orden.noOT}</span>}
+                      {a.ubicacion && <span className="ml-2">· {a.ubicacion}</span>}
+                    </div>
+                  </div>
+                  {a.finGarantia && (
+                    <span className={`text-[10px] px-2 py-1 rounded-full border whitespace-nowrap ${vencido ? "bg-red-500/15 text-red-400 border-red-500/30" : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"}`}>
+                      Garantía: {new Date(a.finGarantia).toLocaleDateString("es-DO")}
+                    </span>
+                  )}
+                </div>
+                {a.numeroSerie && <p className="text-xs text-slate-500 mt-1 font-mono">S/N: {a.numeroSerie}</p>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
 
 const INPUT =
   "w-full bg-slate-800 border border-blue-600/30 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition";
@@ -214,6 +424,8 @@ export default function FormularioCliente({ onClose, onSave, onToggleStatus, nex
     setForm((prev) => ({ ...prev, latitud: String(la.toFixed(6)), longitud: String(lo.toFixed(6)) }));
   };
 
+  const [activeTab, setActiveTab] = useState("datos");
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
       <div className="bg-slate-900 border border-blue-600/30 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] overflow-y-auto">
@@ -230,7 +442,31 @@ export default function FormularioCliente({ onClose, onSave, onToggleStatus, nex
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-6 space-y-6">
+        {isEdit && (
+          <div className="sticky top-[68px] z-10 flex gap-1 px-6 py-2 bg-slate-900 border-b border-slate-800">
+            {[
+              { id: "datos",   label: "Datos",     Icon: User },
+              { id: "vault",   label: "Bóveda",    Icon: KeyRound },
+              { id: "activos", label: "Activos",   Icon: Package },
+            ].map(({ id, label, Icon }) => (
+              <button key={id} type="button" onClick={() => setActiveTab(id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+                  activeTab === id ? "bg-blue-600 text-white" : "text-slate-400 hover:text-slate-200 hover:bg-slate-800"
+                }`}>
+                <Icon size={13} />{label}
+              </button>
+            ))}
+          </div>
+        )}
+
+        {isEdit && activeTab === "vault" && (
+          <div className="p-6"><VaultTab clienteId={initialData.id} /></div>
+        )}
+        {isEdit && activeTab === "activos" && (
+          <div className="p-6"><AssetsTab clienteId={initialData.id} /></div>
+        )}
+
+        <form onSubmit={handleSubmit} className={`p-6 space-y-6 ${isEdit && activeTab !== "datos" ? "hidden" : ""}`}>
 
           {/* ── Datos Generales ─────────────────────────────────── */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">

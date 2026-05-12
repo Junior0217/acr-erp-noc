@@ -124,6 +124,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
   const [meta, setMeta]       = useState({ total: 0, page: 1, totalPages: 1 })
   const [search, setSearch]   = useState('')
   const [catFiltro, setCatFiltro] = useState('')
+  const [canibFiltro, setCanibFiltro] = useState('')
   const [page, setPage]       = useState(1)
   const [loading, setLoading] = useState(false)
   const [modal, setModal]     = useState(null)
@@ -132,12 +133,13 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
 
   const esServicio = tipoItem === 'SERVICIO'
 
-  const fetch_ = useCallback(async (p, s, c) => {
+  const fetch_ = useCallback(async (p, s, c, canib) => {
     setLoading(true)
     try {
       const params = new URLSearchParams({ page: p, limit: 50, tipoItem })
-      if (s) params.set('search', s)
-      if (c) params.set('categoriaId', c)
+      if (s)     params.set('search', s)
+      if (c)     params.set('categoriaId', c)
+      if (canib) params.set('canibalizados', canib)
       const r = await apiFetch(`/api/productos?${params}`)
       if (!r.ok) throw new Error()
       const j = await r.json()
@@ -147,8 +149,8 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
     finally { setLoading(false) }
   }, [tipoItem])
 
-  useEffect(() => { setPage(1); fetch_(1, debouncedSearch, catFiltro) }, [debouncedSearch, catFiltro, fetch_])
-  useEffect(() => { fetch_(page, debouncedSearch, catFiltro) }, [page])
+  useEffect(() => { setPage(1); fetch_(1, debouncedSearch, catFiltro, canibFiltro) }, [debouncedSearch, catFiltro, canibFiltro, fetch_])
+  useEffect(() => { fetch_(page, debouncedSearch, catFiltro, canibFiltro) }, [page])
 
   async function eliminar(p) {
     if (!window.confirm(`¿Eliminar "${p.nombre}"?`)) return
@@ -197,6 +199,17 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
           <option value="">Todas las categorías</option>
           {catsFiltradas.map(c => <option key={c.id} value={c.id}>{c.nombre}</option>)}
         </select>
+        {!esServicio && (
+          <select
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 min-w-[150px]"
+            value={canibFiltro}
+            onChange={e => setCanibFiltro(e.target.value)}
+          >
+            <option value="">Todos los artículos</option>
+            <option value="false">Solo nuevos</option>
+            <option value="true">Solo canibalizados</option>
+          </select>
+        )}
         {canExport && (
           <button onClick={exportar} className="flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-sm text-slate-400 hover:text-emerald-400 border border-slate-700 hover:border-emerald-600/40 transition-colors" title="Exportar CSV">
             <Download size={14} /> <span className="hidden sm:inline">CSV</span>

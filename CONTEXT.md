@@ -1,6 +1,6 @@
 # ACR Networks & Solutions — ERP NOC
 
-Sistema de gestión interna para un proveedor WISP, instalador de CCTV, redes y seguridad electrónica. Cubre clientes, servicios contratados, inventario (Kardex) y órdenes de trabajo técnico.
+Sistema de gestión interna para ACR Networks (dueños Carmelo y Cristian Adams): instalación de CCTV, redes estructuradas, reparación de equipos en taller y soporte técnico. Cubre clientes, servicios, inventario (Kardex), órdenes de trabajo de campo, taller (RMA), bóveda de credenciales (PAM), CMDB de activos instalados y préstamos de equipo.
 
 ## Language
 
@@ -50,6 +50,33 @@ _Avoid_: ticket, visita, trabajo
 Lista de productos con cantidades reales asignados a una OrdenInstalacion. Pre-poblada desde PlantillaEquipo del Plan; el operador NOC puede ajustar antes de confirmar.
 _Avoid_: materiales, lista de equipos
 
+### Taller (RMA)
+
+**TicketTaller**:
+Registro de equipo de cliente recibido en oficina para reparación o diagnóstico. Standalone: NO genera OrdenTrabajo ni Servicio. Estados: `Recibido → Diagnostico → EsperandoPieza → Listo → Entregado` (o `Cancelado`).
+_Avoid_: orden de taller, ticket de soporte (confunde con OT)
+
+**codigoPin**:
+String alfanumérico único de 6 chars (alphabet sin 0/O/1/I para evitar ambigüedad). Funciona como credencial de tracking público en `/track/:pin` (rate-limited a 10 req/min/IP). Se entrega al cliente impreso/SMS al recibir su equipo.
+
+### Bóveda PAM (CredencialCliente)
+
+**CredencialCliente**:
+Password de equipo en cliente (NVR, router, switch, NVR, cámara, server). Cifrado AES-256-GCM reversible con `VAULT_KEY` de `.env`. Campo `passwordEnc` (ciphertext base64) + `passwordIv` (IV único). Revelación bajo demanda en `/api/credenciales/:id/reveal`, auditada en `auditLog`.
+_Avoid_: vault, contraseña hash (no es hash, es cifrado simétrico)
+
+### CMDB (ActivoCliente)
+
+**ActivoCliente**:
+Equipo físico instalado en cliente. FK a `Producto` (catálogo de Kardex) y `Cliente`. Se crea automáticamente al cerrar `OrdenTrabajo` tipo `Instalacion`/`CCTV`/`Reparacion` por cada línea con `productoId`. Permite edición manual desde la pestaña "Activos" del cliente. Lleva `finGarantia` derivada de `OT.garantiaDias`.
+_Avoid_: activo, asset, inventario del cliente
+
+### Préstamos (EquipoPrestamo)
+
+**EquipoPrestamo**:
+Equipo de ACR cedido temporalmente a cliente. Por defecto 15 días. Al crear: descuenta del Kardex (`MovimientoInventario` tipo Salida). Al devolver: incrementa Kardex (`Entrada`). Si pasa `fechaLimite` sin devolución → flag visual `vencido` (sin acción automática). No factura solo: la decisión de cobrar pérdida queda en Carmelo.
+_Avoid_: loan, comodato (sí jurídicamente, pero el sistema usa Préstamo)
+
 ### Inventario (Kardex)
 
 **Kardex**:
@@ -57,7 +84,11 @@ Registro histórico de todos los movimientos de inventario (entradas y salidas) 
 _Avoid_: inventario (término ambiguo — usar Kardex para el historial, stock para la cantidad actual)
 
 **MovimientoInventario**:
-Registro atómico de una entrada o salida de un Producto del Kardex. Referencia opcional a la OrdenInstalacion que lo originó para trazabilidad y auditoría.
+Registro atómico de una entrada o salida de un Producto del Kardex. Referencia opcional a la OrdenInstalacion que lo originó para trazabilidad y auditoría. También usado por `EquipoPrestamo` (Salida al prestar, Entrada al devolver).
+
+**Canibalización (`Producto.esCanibalizado`)**:
+Flag booleano en `Producto`. Cuando `true`: la pieza es de deshuese (RAM usada, fuente vieja, etc.), no se muestra en POS/Catálogo público, pero sí en Inventario con filtro "Canibalizados" y es usable en líneas de OT sin afectar el COGS oficial. Costo y precio se manejan a $0.
+_Avoid_: parte recuperada, refurbished (estos podrían venderse; canibalizado es solo para uso interno)
 
 ## Relationships
 

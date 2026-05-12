@@ -66,6 +66,28 @@ enum TipoItem {
   SERVICIO
 }
 
+enum EstadoTicketTaller {
+  Recibido
+  Diagnostico
+  EsperandoPieza
+  Listo
+  Entregado
+  Cancelado
+}
+
+enum TipoCredencial {
+  Router
+  Switch
+  AccessPoint
+  NVR
+  DVR
+  Camara
+  Server
+  Firewall
+  ControlAcceso
+  Otro
+}
+
 // ─── RRHH ─────────────────────────────────────────────────────────────────────
 
 model Rol {
@@ -103,6 +125,7 @@ model Empleado {
   sessions       SessionToken[]
   roles          Rol[]
   carritoTemp    CarritoTemp?
+  ticketsTaller  TicketTaller[]
 
   @@index([nombre])
   @@index([deletedAt])
@@ -150,6 +173,7 @@ model Producto {
   stockActual      Int                    @default(0)
   categoriaId      Int
   tipoItem         TipoItem               @default(ARTICULO)
+  esCanibalizado   Boolean                @default(false)
   categoria        Categoria              @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
   movimientos      MovimientoInventario[]
   plantillaEquipos PlantillaEquipo[]
@@ -157,12 +181,15 @@ model Producto {
   lineasOrden      LineaOrdenTrabajo[]
   lineasFactura    LineaFactura[]
   lineasCarrito    LineaCarrito[]
+  activosCliente   ActivoCliente[]
+  prestamos        EquipoPrestamo[]
 
   @@index([sku])
   @@index([categoriaId])
   @@index([nombre])
   @@index([stockActual])
   @@index([tipoItem])
+  @@index([esCanibalizado])
 }
 
 model MovimientoInventario {
@@ -174,6 +201,8 @@ model MovimientoInventario {
   ordenInstalacionId String?
   producto           Producto          @relation(fields: [productoId], references: [id], onDelete: Cascade)
   orden              OrdenInstalacion? @relation(fields: [ordenInstalacionId], references: [id], onDelete: SetNull)
+  prestamoSalida     EquipoPrestamo?   @relation("PrestamoSalida")
+  prestamoEntrada    EquipoPrestamo?   @relation("PrestamoEntrada")
 
   @@index([productoId])
   @@index([ordenInstalacionId])
@@ -247,11 +276,15 @@ model Cliente {
   limiteCredito       Decimal    @default(0.00) @db.Decimal(12, 2)
   diasCredito         Int        @default(0)
   tipoNcf             String     @default("Consumidor Final")
-  servicios      Servicio[]
-  ordenesTrabajo OrdenTrabajo[]
-  facturas       Factura[]
-  carritosTemp   CarritoTemp[]
-  usuariosPortal UsuarioPortal[]
+  servicios       Servicio[]
+  ordenesTrabajo  OrdenTrabajo[]
+  facturas        Factura[]
+  carritosTemp    CarritoTemp[]
+  usuariosPortal  UsuarioPortal[]
+  ticketsTaller   TicketTaller[]
+  credenciales    CredencialCliente[]
+  activosCliente  ActivoCliente[]
+  prestamos       EquipoPrestamo[]
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -469,11 +502,15 @@ model OrdenTrabajo {
   garantiaDias    Int?
   completadaEn    DateTime?
   estaFacturada   Boolean  @default(false)
+  fotosRequeridas       Int       @default(0)
+  limpiezaRealizada     Boolean   @default(false)
+  fechaVencimientoSLA   DateTime?
   deletedAt       DateTime?
   cliente       Cliente             @relation(fields: [clienteId], references: [id], onDelete: Restrict)
   tecnico       Empleado?           @relation(fields: [tecnicoId], references: [id], onDelete: SetNull)
   lineas        LineaOrdenTrabajo[]
   facturas      Factura[]
+  activos       ActivoCliente[]
   createdAt     DateTime            @default(now())
   updatedAt     DateTime            @updatedAt
 
@@ -483,6 +520,7 @@ model OrdenTrabajo {
   @@index([estado])
   @@index([createdAt])
   @@index([deletedAt])
+  @@index([fechaVencimientoSLA])
 }
 
 model LineaOrdenTrabajo {
@@ -598,4 +636,107 @@ model LineaCarrito {
 
   @@index([carritoId])
   @@index([productoId])
+}
+
+// ─── Taller (RMA) ─────────────────────────────────────────────────────────────
+
+model TicketTaller {
+  id              String              @id @default(uuid())
+  noTicket        String              @unique
+  codigoPin       String              @unique
+  clienteId       String
+  tecnicoId       Int?
+  equipo          String
+  marca           String?
+  modelo          String?
+  numeroSerie     String?
+  falla           String
+  estado          EstadoTicketTaller  @default(Recibido)
+  notas           String?
+  diagnostico     String?
+  costoEstimado   Decimal?            @db.Decimal(12, 2)
+  recibidoEn      DateTime            @default(now())
+  diagnosticadoEn DateTime?
+  listoEn         DateTime?
+  entregadoEn     DateTime?
+  cliente         Cliente             @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  tecnico         Empleado?           @relation(fields: [tecnicoId], references: [id], onDelete: SetNull)
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+
+  @@index([clienteId])
+  @@index([tecnicoId])
+  @@index([estado])
+  @@index([codigoPin])
+}
+
+// ─── CRM Avanzado: Bóveda PAM ─────────────────────────────────────────────────
+
+model CredencialCliente {
+  id           String          @id @default(uuid())
+  clienteId    String
+  tipo         TipoCredencial
+  nombre       String
+  ip           String?
+  usuario      String
+  passwordEnc  String
+  passwordIv   String
+  notas        String?
+  cliente      Cliente         @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+
+  @@index([clienteId])
+  @@index([tipo])
+}
+
+// ─── CRM Avanzado: CMDB (Activos Instalados) ──────────────────────────────────
+
+model ActivoCliente {
+  id               String           @id @default(uuid())
+  clienteId        String
+  productoId       Int
+  ordenTrabajoId   String?
+  cantidad         Int              @default(1)
+  fechaInstalacion DateTime         @default(now())
+  finGarantia      DateTime?
+  numeroSerie      String?
+  ubicacion        String?
+  notas            String?
+  cliente          Cliente          @relation(fields: [clienteId], references: [id], onDelete: Cascade)
+  producto         Producto         @relation(fields: [productoId], references: [id], onDelete: Restrict)
+  orden            OrdenTrabajo?    @relation(fields: [ordenTrabajoId], references: [id], onDelete: SetNull)
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([clienteId])
+  @@index([productoId])
+  @@index([ordenTrabajoId])
+  @@index([finGarantia])
+}
+
+// ─── Préstamos de equipo ──────────────────────────────────────────────────────
+
+model EquipoPrestamo {
+  id                  String                @id @default(uuid())
+  clienteId           String
+  productoId          Int
+  cantidad            Int                   @default(1)
+  fechaPrestamo       DateTime              @default(now())
+  fechaLimite         DateTime
+  fechaDevolucion     DateTime?
+  movimientoSalidaId  Int?                  @unique
+  movimientoEntradaId Int?                  @unique
+  notas               String?
+  cliente             Cliente               @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  producto            Producto              @relation(fields: [productoId], references: [id], onDelete: Restrict)
+  movimientoSalida    MovimientoInventario? @relation("PrestamoSalida",  fields: [movimientoSalidaId],  references: [id], onDelete: SetNull)
+  movimientoEntrada   MovimientoInventario? @relation("PrestamoEntrada", fields: [movimientoEntradaId], references: [id], onDelete: SetNull)
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  @@index([clienteId])
+  @@index([productoId])
+  @@index([fechaLimite])
+  @@index([fechaDevolucion])
 }

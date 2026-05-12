@@ -1126,6 +1126,433 @@ app.get('/api/reportes/comisiones', verificarJWT, requerirPermiso('sistema:owner
   }
 });
 
+// ─── MSP: Vault PAM (AES-256-GCM) ─────────────────────────────────────────────
+
+const VAULT_KEY_B64 = process.env.VAULT_KEY || ''
+if (!VAULT_KEY_B64) console.warn('[VAULT] WARNING: VAULT_KEY not set — credential vault disabled.')
+const VAULT_KEY = VAULT_KEY_B64 ? Buffer.from(VAULT_KEY_B64, 'base64') : null
+
+function vaultEncrypt(plaintext) {
+  if (!VAULT_KEY) throw new Error('VAULT_KEY missing.')
+  const iv     = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', VAULT_KEY, iv)
+  const enc    = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
+  const tag    = cipher.getAuthTag()
+  return { passwordEnc: Buffer.concat([enc, tag]).toString('base64'), passwordIv: iv.toString('base64') }
+}
+
+function vaultDecrypt(passwordEnc, passwordIv) {
+  if (!VAULT_KEY) throw new Error('VAULT_KEY missing.')
+  const data = Buffer.from(passwordEnc, 'base64')
+  const tag  = data.subarray(data.length - 16)
+  const enc  = data.subarray(0, data.length - 16)
+  const iv   = Buffer.from(passwordIv, 'base64')
+  const dec  = crypto.createDecipheriv('aes-256-gcm', VAULT_KEY, iv)
+  dec.setAuthTag(tag)
+  return Buffer.concat([dec.update(enc), dec.final()]).toString('utf8')
+}
+
+// ─── MSP: Taller (TicketTaller / RMA) ─────────────────────────────────────────
+
+const PIN_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+function generarPin() {
+  let pin = ''
+  for (let i = 0; i < 6; i++) pin += PIN_ALPHABET[crypto.randomInt(PIN_ALPHABET.length)]
+  return pin
+}
+
+const ticketTallerSchema = z.object({
+  clienteId:     z.string().uuid(),
+  tecnicoId:     z.number().int().optional().nullable(),
+  equipo:        z.string().min(1).max(150),
+  marca:         z.string().max(80).optional().nullable(),
+  modelo:        z.string().max(80).optional().nullable(),
+  numeroSerie:   z.string().max(80).optional().nullable(),
+  falla:         z.string().min(1).max(1000),
+  notas:         z.string().max(1000).optional().nullable(),
+  costoEstimado: z.coerce.number().nonnegative().optional().nullable(),
+})
+
+const ticketEstadoSchema = z.object({
+  estado:       z.enum(['Recibido','Diagnostico','EsperandoPieza','Listo','Entregado','Cancelado']),
+  diagnostico:  z.string().max(2000).optional().nullable(),
+  costoEstimado: z.coerce.number().nonnegative().optional().nullable(),
+  notas:        z.string().max(1000).optional().nullable(),
+})
+
+app.get('/api/taller', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
+  try {
+    const { estado, search } = req.query
+    const where = {}
+    if (estado) where.estado = estado
+    if (search) where.OR = [
+      { noTicket:    { contains: search, mode: 'insensitive' } },
+      { codigoPin:   { contains: search, mode: 'insensitive' } },
+      { equipo:      { contains: search, mode: 'insensitive' } },
+      { numeroSerie: { contains: search, mode: 'insensitive' } },
+    ]
+    const tickets = await prisma.ticketTaller.findMany({
+      where,
+      include: {
+        cliente: { select: { id: true, noCliente: true, razonSocial: true, telefonoPrincipal: true } },
+        tecnico: { select: { id: true, nombre: true } },
+      },
+      orderBy: { recibidoEn: 'desc' },
+      take: 200,
+    })
+    res.json({ data: tickets })
+  } catch (e) {
+    console.error('[TALLER LIST]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.post('/api/taller', verificarJWT, requerirPermiso('ot:crear'), async (req, res) => {
+  try {
+    const data = ticketTallerSchema.parse(req.body)
+    let pin, noTicket, intento = 0
+    while (intento < 5) {
+      pin = generarPin()
+      const colide = await prisma.ticketTaller.findUnique({ where: { codigoPin: pin } })
+      if (!colide) break
+      intento++
+    }
+    if (intento >= 5) return res.status(503).json({ error: 'No se pudo generar PIN único. Reintenta.' })
+    const count = await prisma.ticketTaller.count()
+    noTicket = `TLR-${String(count + 1).padStart(5, '0')}`
+    const ticket = await prisma.ticketTaller.create({
+      data: { ...data, noTicket, codigoPin: pin },
+      include: { cliente: { select: { razonSocial: true } } },
+    })
+    auditReq('taller:crear', req, { ticketId: ticket.id, clienteId: data.clienteId })
+    res.status(201).json(ticket)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2003')     return res.status(400).json({ error: 'Cliente no encontrado.' })
+    console.error('[TALLER CREATE]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.patch('/api/taller/:id/estado', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const data = ticketEstadoSchema.parse(req.body)
+    const update = { estado: data.estado }
+    if (data.diagnostico  != null) update.diagnostico  = data.diagnostico
+    if (data.costoEstimado != null) update.costoEstimado = data.costoEstimado
+    if (data.notas        != null) update.notas        = data.notas
+    const now = new Date()
+    if (data.estado === 'Diagnostico' && !update.diagnosticadoEn) update.diagnosticadoEn = now
+    if (data.estado === 'Listo')       update.listoEn      = now
+    if (data.estado === 'Entregado')   update.entregadoEn  = now
+    const ticket = await prisma.ticketTaller.update({ where: { id: req.params.id }, data: update })
+    auditReq('taller:estado', req, { ticketId: ticket.id, estado: ticket.estado })
+    res.json(ticket)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2025')      return res.status(404).json({ error: 'Ticket no encontrado.' })
+    console.error('[TALLER ESTADO]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.patch('/api/taller/:id', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const data = ticketTallerSchema.partial().parse(req.body)
+    const ticket = await prisma.ticketTaller.update({ where: { id: req.params.id }, data })
+    res.json(ticket)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2025')      return res.status(404).json({ error: 'Ticket no encontrado.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// Public tracking by PIN (no auth, no leaks of clienteId)
+const trackingLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false })
+app.get('/api/track/:pin', trackingLimiter, async (req, res) => {
+  const pin = (req.params.pin || '').toUpperCase()
+  if (!/^[A-Z2-9]{6}$/.test(pin)) return res.status(400).json({ error: 'PIN inválido.' })
+  try {
+    const t = await prisma.ticketTaller.findUnique({
+      where:  { codigoPin: pin },
+      select: {
+        noTicket: true, equipo: true, marca: true, modelo: true, estado: true,
+        recibidoEn: true, diagnosticadoEn: true, listoEn: true, entregadoEn: true,
+        diagnostico: true, costoEstimado: true,
+        cliente: { select: { razonSocial: true } },
+      },
+    })
+    if (!t) return res.status(404).json({ error: 'Ticket no encontrado.' })
+    res.json(t)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── MSP: Bóveda de Credenciales (PAM) ────────────────────────────────────────
+
+const credencialSchema = z.object({
+  clienteId: z.string().uuid(),
+  tipo:      z.enum(['Router','Switch','AccessPoint','NVR','DVR','Camara','Server','Firewall','ControlAcceso','Otro']),
+  nombre:    z.string().min(1).max(100),
+  ip:        z.string().max(60).optional().nullable(),
+  usuario:   z.string().min(1).max(80),
+  password:  z.string().min(1).max(500),
+  notas:     z.string().max(500).optional().nullable(),
+})
+
+app.get('/api/credenciales', verificarJWT, requerirPermiso('crm:ver'), async (req, res) => {
+  try {
+    const { clienteId } = req.query
+    const where = clienteId ? { clienteId } : {}
+    const data = await prisma.credencialCliente.findMany({
+      where,
+      select: { id: true, clienteId: true, tipo: true, nombre: true, ip: true, usuario: true, notas: true, createdAt: true, updatedAt: true },
+      orderBy: { createdAt: 'desc' },
+    })
+    res.json({ data })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/credenciales', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  try {
+    const data = credencialSchema.parse(req.body)
+    if (!VAULT_KEY) return res.status(503).json({ error: 'Vault deshabilitado (VAULT_KEY no configurada).' })
+    const { passwordEnc, passwordIv } = vaultEncrypt(data.password)
+    const credencial = await prisma.credencialCliente.create({
+      data: {
+        clienteId: data.clienteId, tipo: data.tipo, nombre: data.nombre,
+        ip: data.ip ?? null, usuario: data.usuario, passwordEnc, passwordIv, notas: data.notas ?? null,
+      },
+      select: { id: true, clienteId: true, tipo: true, nombre: true, ip: true, usuario: true, notas: true, createdAt: true },
+    })
+    auditReq('vault:crear', req, { credencialId: credencial.id, clienteId: data.clienteId, tipo: data.tipo })
+    res.status(201).json(credencial)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2003')      return res.status(400).json({ error: 'Cliente no encontrado.' })
+    console.error('[VAULT CREATE]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.get('/api/credenciales/:id/reveal', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const c = await prisma.credencialCliente.findUnique({ where: { id: req.params.id } })
+    if (!c) return res.status(404).json({ error: 'Credencial no encontrada.' })
+    const password = vaultDecrypt(c.passwordEnc, c.passwordIv)
+    auditReq('vault:reveal', req, { credencialId: c.id, clienteId: c.clienteId, tipo: c.tipo, nombre: c.nombre })
+    res.json({ password })
+  } catch (e) {
+    console.error('[VAULT REVEAL]', e.message)
+    res.status(500).json({ error: 'Error al descifrar.' })
+  }
+})
+
+app.delete('/api/credenciales/:id', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    await prisma.credencialCliente.delete({ where: { id: req.params.id } })
+    auditReq('vault:eliminar', req, { credencialId: req.params.id })
+    res.status(204).end()
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Credencial no encontrada.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── MSP: CMDB (ActivoCliente) ────────────────────────────────────────────────
+
+const activoSchema = z.object({
+  clienteId:        z.string().uuid(),
+  productoId:       z.number().int().positive(),
+  cantidad:         z.number().int().min(1).default(1),
+  fechaInstalacion: z.coerce.date().optional(),
+  finGarantia:      z.coerce.date().optional().nullable(),
+  numeroSerie:      z.string().max(80).optional().nullable(),
+  ubicacion:        z.string().max(150).optional().nullable(),
+  notas:            z.string().max(500).optional().nullable(),
+})
+
+app.get('/api/activos-cliente', verificarJWT, requerirPermiso('crm:ver'), async (req, res) => {
+  try {
+    const { clienteId } = req.query
+    const where = clienteId ? { clienteId } : {}
+    const data = await prisma.activoCliente.findMany({
+      where,
+      include: {
+        producto: { select: { id: true, sku: true, nombre: true } },
+        orden:    { select: { id: true, noOT: true } },
+      },
+      orderBy: { fechaInstalacion: 'desc' },
+    })
+    res.json({ data })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/activos-cliente', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  try {
+    const data = activoSchema.parse(req.body)
+    const activo = await prisma.activoCliente.create({ data })
+    auditReq('cmdb:crear', req, { activoId: activo.id, clienteId: data.clienteId, productoId: data.productoId })
+    res.status(201).json(activo)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2003')      return res.status(400).json({ error: 'Cliente o producto inválido.' })
+    console.error('[CMDB CREATE]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.delete('/api/activos-cliente/:id', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    await prisma.activoCliente.delete({ where: { id: req.params.id } })
+    res.status(204).end()
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Activo no encontrado.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── MSP: Préstamos de Equipos ────────────────────────────────────────────────
+
+const prestamoSchema = z.object({
+  clienteId:  z.string().uuid(),
+  productoId: z.number().int().positive(),
+  cantidad:   z.number().int().min(1).default(1),
+  diasLimite: z.number().int().min(1).max(180).default(15),
+  notas:      z.string().max(500).optional().nullable(),
+})
+
+app.get('/api/prestamos', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
+  try {
+    const { activos } = req.query
+    const where = {}
+    if (activos === 'true') where.fechaDevolucion = null
+    const data = await prisma.equipoPrestamo.findMany({
+      where,
+      include: {
+        cliente:  { select: { id: true, noCliente: true, razonSocial: true } },
+        producto: { select: { id: true, sku: true, nombre: true } },
+      },
+      orderBy: { fechaPrestamo: 'desc' },
+    })
+    const ahora = Date.now()
+    const enriched = data.map(p => ({ ...p, vencido: !p.fechaDevolucion && new Date(p.fechaLimite).getTime() < ahora }))
+    res.json({ data: enriched })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.post('/api/prestamos', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  try {
+    const data = prestamoSchema.parse(req.body)
+    const fechaLimite = new Date(Date.now() + data.diasLimite * 86_400_000)
+    const prestamo = await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoInventario.create({
+        data: { productoId: data.productoId, tipo: 'Salida', cantidad: data.cantidad },
+      })
+      await tx.producto.update({ where: { id: data.productoId }, data: { stockActual: { decrement: data.cantidad } } })
+      return tx.equipoPrestamo.create({
+        data: {
+          clienteId: data.clienteId, productoId: data.productoId, cantidad: data.cantidad,
+          fechaLimite, notas: data.notas ?? null, movimientoSalidaId: mov.id,
+        },
+      })
+    })
+    auditReq('prestamo:crear', req, { prestamoId: prestamo.id, clienteId: data.clienteId, productoId: data.productoId })
+    res.status(201).json(prestamo)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2003')      return res.status(400).json({ error: 'Cliente o producto inválido.' })
+    console.error('[PRESTAMO CREATE]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.patch('/api/prestamos/:id/devolver', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const prestamo = await prisma.equipoPrestamo.findUnique({ where: { id: req.params.id } })
+    if (!prestamo) return res.status(404).json({ error: 'Préstamo no encontrado.' })
+    if (prestamo.fechaDevolucion) return res.status(409).json({ error: 'Préstamo ya devuelto.' })
+    const result = await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoInventario.create({
+        data: { productoId: prestamo.productoId, tipo: 'Entrada', cantidad: prestamo.cantidad },
+      })
+      await tx.producto.update({ where: { id: prestamo.productoId }, data: { stockActual: { increment: prestamo.cantidad } } })
+      return tx.equipoPrestamo.update({
+        where: { id: req.params.id },
+        data:  { fechaDevolucion: new Date(), movimientoEntradaId: mov.id },
+      })
+    })
+    auditReq('prestamo:devolver', req, { prestamoId: req.params.id })
+    res.json(result)
+  } catch (e) {
+    console.error('[PRESTAMO DEVOLVER]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── MSP: OT close + auto-create ActivoCliente ────────────────────────────────
+
+app.patch('/api/ordenes/:id/estado', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  const estadoSchema = z.object({
+    estado:            z.enum(['Pendiente','EnProceso','Cerrada','Cancelada']),
+    fotosRequeridas:   z.number().int().min(0).optional(),
+    limpiezaRealizada: z.boolean().optional(),
+    garantiaDias:      z.number().int().min(0).optional(),
+  })
+  try {
+    const data = estadoSchema.parse(req.body)
+    const ot = await prisma.ordenTrabajo.findUnique({
+      where:   { id: req.params.id },
+      include: { lineas: { select: { productoId: true, cantidad: true } } },
+    })
+    if (!ot) return res.status(404).json({ error: 'OT no encontrada.' })
+
+    const update = { estado: data.estado }
+    if (data.fotosRequeridas   != null) update.fotosRequeridas   = data.fotosRequeridas
+    if (data.limpiezaRealizada != null) update.limpiezaRealizada = data.limpiezaRealizada
+    if (data.garantiaDias      != null) update.garantiaDias      = data.garantiaDias
+    if (data.estado === 'Cerrada') update.completadaEn = new Date()
+
+    await prisma.$transaction(async (tx) => {
+      await tx.ordenTrabajo.update({ where: { id: req.params.id }, data: update })
+
+      // Auto-create ActivoCliente entries for product lines on close
+      if (data.estado === 'Cerrada' && ['Instalacion','CCTV','Reparacion'].includes(ot.tipoOT)) {
+        const garantia = data.garantiaDias ?? ot.garantiaDias ?? 0
+        const fechaInst = new Date()
+        const finGar = garantia > 0 ? new Date(fechaInst.getTime() + garantia * 86_400_000) : null
+        const productoLines = ot.lineas.filter(l => l.productoId)
+        for (const l of productoLines) {
+          await tx.activoCliente.create({
+            data: {
+              clienteId:        ot.clienteId,
+              productoId:       l.productoId,
+              ordenTrabajoId:   ot.id,
+              cantidad:         l.cantidad,
+              fechaInstalacion: fechaInst,
+              finGarantia:      finGar,
+            },
+          })
+        }
+      }
+    })
+
+    auditReq('ot:estado', req, { otId: ot.id, estado: data.estado })
+    res.json({ ok: true })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    console.error('[OT ESTADO]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
 const generateKeyPairAsync = util.promisify(crypto.generateKeyPair);
@@ -1936,11 +2363,12 @@ const categoriaSchema = z.object({
 });
 
 const productoSchema = z.object({
-  sku:         z.string().min(1).max(50).transform(stripTags),
-  nombre:      z.string().min(2).max(200).transform(stripTags),
-  precio:      z.coerce.number().nonnegative(),
-  categoriaId: z.number().int().positive(),
-  tipoItem:    z.enum(['ARTICULO', 'SERVICIO']).optional(),
+  sku:            z.string().min(1).max(50).transform(stripTags),
+  nombre:         z.string().min(2).max(200).transform(stripTags),
+  precio:         z.coerce.number().nonnegative(),
+  categoriaId:    z.number().int().positive(),
+  tipoItem:       z.enum(['ARTICULO', 'SERVICIO']).optional(),
+  esCanibalizado: z.boolean().optional(),
 });
 
 const productoUpdateSchema = productoSchema.omit({ sku: true }).partial();
@@ -2005,13 +2433,15 @@ app.delete('/api/categorias/:id', async (req, res) => {
 
 app.get('/api/productos', async (req, res) => {
   try {
-    const { search, categoriaId, tipoItem, page = '1', limit = '50' } = req.query;
+    const { search, categoriaId, tipoItem, canibalizados, page = '1', limit = '50' } = req.query;
     const take = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
     const pageNum = Math.max(parseInt(page) || 1, 1);
     const skip = (pageNum - 1) * take;
     const where = {};
     if (categoriaId) { const cid = parseInt(categoriaId); if (cid > 0) where.categoriaId = cid; }
     if (tipoItem && ['ARTICULO', 'SERVICIO'].includes(tipoItem)) where.tipoItem = tipoItem;
+    if (canibalizados === 'true')  where.esCanibalizado = true;
+    if (canibalizados === 'false') where.esCanibalizado = false;
     if (search) where.OR = [
       { nombre: { contains: search, mode: 'insensitive' } },
       { sku:    { contains: search, mode: 'insensitive' } },
@@ -2901,13 +3331,17 @@ const lineaOTSchema = z.object({
 })
 
 const ordenTrabajoSchema = z.object({
-  clienteId:     z.string().uuid(),
-  tecnicoId:     z.number().int().optional().nullable(),
-  tipoOT:        z.enum(['ISP', 'CCTV', 'Reparacion', 'CercoElectrico', 'VentaDirecta', 'General']).default('General'),
-  estado:        z.string().default('Pendiente'),
-  notasTecnicas: z.string().optional().nullable(),
-  metadatos:     z.record(z.unknown()).default({}),
-  lineas:        z.array(lineaOTSchema).min(1, 'Agrega al menos un item.'),
+  clienteId:           z.string().uuid(),
+  tecnicoId:           z.number().int().optional().nullable(),
+  tipoOT:              z.enum(['ISP', 'CCTV', 'Reparacion', 'CercoElectrico', 'VentaDirecta', 'General', 'Instalacion', 'Mantenimiento']).default('General'),
+  estado:              z.string().default('Pendiente'),
+  notasTecnicas:       z.string().optional().nullable(),
+  metadatos:           z.record(z.unknown()).default({}),
+  fotosRequeridas:     z.number().int().min(0).default(0),
+  limpiezaRealizada:   z.boolean().default(false),
+  fechaVencimientoSLA: z.coerce.date().optional().nullable(),
+  garantiaDias:        z.number().int().min(0).optional().nullable(),
+  lineas:              z.array(lineaOTSchema).min(1, 'Agrega al menos un item.'),
 })
 
 app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
@@ -2937,9 +3371,15 @@ app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
+const SLA_HORAS_POR_TIPO = { Reparacion: 48, Instalacion: 168, CCTV: 168, Mantenimiento: 72, General: 24, ISP: 72, CercoElectrico: 168, VentaDirecta: 24 }
+
 app.post('/api/ordenes', verificarJWT, billingLimiter, requerirPermiso('ot:crear'), async (req, res) => {
   try {
     const { lineas, ...otData } = ordenTrabajoSchema.parse(req.body)
+    if (!otData.fechaVencimientoSLA) {
+      const horas = SLA_HORAS_POR_TIPO[otData.tipoOT] ?? 48
+      otData.fechaVencimientoSLA = new Date(Date.now() + horas * 3600_000)
+    }
     const orden = await prisma.$transaction(async (tx) => {
       const noOT = await nextNomenclatura(tx, 'OT')
       const ot = await tx.ordenTrabajo.create({ data: { ...otData, noOT } })

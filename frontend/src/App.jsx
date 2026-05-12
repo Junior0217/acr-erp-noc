@@ -20,6 +20,8 @@ import Servicios from './pages/Servicios'
 import Login from './pages/Login'
 import CustomerPortal from './pages/CustomerPortal'
 import PortalTracking from './pages/PortalTracking'
+import Taller from './pages/Taller'
+import TrackTicket from './pages/TrackTicket'
 
 function AppRoutes() {
   const { user } = useAuth()
@@ -38,6 +40,8 @@ function AppRoutes() {
         <Route path="/login" element={<Login />} />
         <Route path="/portal" element={<CustomerPortal />} />
         <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
+        <Route path="/track" element={<TrackTicket />} />
+        <Route path="/track/:pin" element={<TrackTicket />} />
         <Route path="*" element={<Navigate to="/login" replace />} />
       </Routes>
     )
@@ -48,6 +52,8 @@ function AppRoutes() {
       <Route path="/login" element={<Navigate to="/" replace />} />
       <Route path="/portal" element={<CustomerPortal />} />
       <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
+      <Route path="/track" element={<TrackTicket />} />
+      <Route path="/track/:pin" element={<TrackTicket />} />
       <Route path="/" element={<AdminLayout />}>
         <Route index element={<Dashboard />} />
         <Route path="ventas" element={<Ventas />} />
@@ -56,6 +62,7 @@ function AppRoutes() {
         <Route path="contabilidad" element={<Contabilidad />} />
         <Route path="rrhh" element={<RRHH />} />
         <Route path="servicios" element={<Servicios />} />
+        <Route path="taller" element={<Taller />} />
         <Route path="crm" element={<CRM />} />
         <Route path="mapa" element={<MapaNOC />} />
         <Route path="reportes" element={<Reportes />} />

@@ -373,6 +373,43 @@ const TIPO_COLOR = { WISP: 'blue', CCTV: 'emerald', Redes: 'amber', SoporteTecni
 
 // ─── Customer Dashboard ───────────────────────────────────────────────────────
 
+function TallerTrackingCard({ navigate }) {
+  const [pin, setPin] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  function go() {
+    const p = pin.trim().toUpperCase()
+    if (!/^[A-Z2-9]{6}$/.test(p)) { toast.error('PIN inválido. Debe ser 6 caracteres.'); return }
+    setBusy(true)
+    navigate(`/track/${p}`)
+  }
+
+  return (
+    <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
+      <div className="flex items-center gap-2 mb-3">
+        <Wrench size={14} className="text-blue-400" />
+        <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">¿Tu equipo en taller?</h2>
+      </div>
+      <p className="text-xs text-slate-500 mb-3">Ingresa el PIN de 6 caracteres que recibiste al dejar tu equipo.</p>
+      <div className="flex gap-2">
+        <input
+          type="text"
+          maxLength={6}
+          value={pin}
+          onChange={e => setPin(e.target.value.toUpperCase().replace(/[^A-Z2-9]/g, ''))}
+          onKeyDown={e => e.key === 'Enter' && go()}
+          placeholder="A4F2K7"
+          className="flex-1 bg-slate-800 border border-blue-600/30 rounded-lg px-3 py-2 text-base font-mono font-bold tracking-[0.4em] text-center text-emerald-400 placeholder-slate-700 focus:outline-none focus:border-blue-500"
+        />
+        <button onClick={go} disabled={busy || pin.length !== 6}
+          className="px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold disabled:opacity-50">
+          Ver
+        </button>
+      </div>
+    </div>
+  )
+}
+
 function Dashboard({ cliente, onLogout, navigate }) {
   const [sosBusy,      setSosBusy]   = useState(false)
   const [dash,         setDash]      = useState({ servicios: [], facturas: [], deudaTotal: 0 })
@@ -451,6 +488,9 @@ function Dashboard({ cliente, onLogout, navigate }) {
             </button>
           </div>
         )}
+
+        {/* Taller tracking */}
+        <TallerTrackingCard navigate={navigate} />
 
         {/* Active Services */}
         <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
