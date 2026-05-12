@@ -949,13 +949,22 @@ const generateKeyPairAsync = util.promisify(crypto.generateKeyPair);
 
 app.get('/api/auth/challenge', async (req, res) => {
   try {
+    // Serve from pre-warmed pool if available (avoids cold-start RSA failure)
+    const now = Date.now()
+    for (const [cid, entry] of challengeStore) {
+      if (entry.exp > now && entry.publicKey) {
+        challengeStore.set(cid, { privateKey: entry.privateKey, exp: now + 120_000 })
+        setImmediate(() => warmChallengeStore(1))
+        return res.json({ cid, publicKey: entry.publicKey })
+      }
+    }
     const { publicKey, privateKey } = await generateKeyPairAsync('rsa', {
       modulusLength: 2048,
       publicKeyEncoding:  { type: 'spki',  format: 'der' },
       privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
     });
     const cid = crypto.randomUUID();
-    challengeStore.set(cid, { privateKey, exp: Date.now() + 120_000 });
+    challengeStore.set(cid, { privateKey, exp: now + 120_000 });
     res.json({ cid, publicKey: Buffer.from(publicKey).toString('base64') });
   } catch (error) {
     console.error('[CHALLENGE ERROR]', { message: error.message, code: error.code, stack: error.stack });
@@ -3884,6 +3893,23 @@ async function seedNomenclaturas() {
   console.log('[SEED] Nomenclature counters ready (SV/OT/COT).')
 }
 
+async function warmChallengeStore(count = 3) {
+  try {
+    await Promise.all(Array.from({ length: count }, async () => {
+      const { publicKey, privateKey } = await generateKeyPairAsync('rsa', {
+        modulusLength: 2048,
+        publicKeyEncoding:  { type: 'spki',  format: 'der' },
+        privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      })
+      const cid = crypto.randomUUID()
+      challengeStore.set(cid, { publicKey: Buffer.from(publicKey).toString('base64'), privateKey, exp: Date.now() + 5 * 60_000 })
+    }))
+    console.log(`[CHALLENGE] ${count} RSA challenges pre-generated.`)
+  } catch (e) {
+    console.warn('[CHALLENGE] Warm-up failed (non-fatal):', e.message)
+  }
+}
+
 async function startServer() {
   try {
     await prisma.$connect();
@@ -3893,6 +3919,9 @@ async function startServer() {
     console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);
     process.exit(1);
   }
+
+  // Pre-generate RSA challenges so first login after cold start never fails
+  await warmChallengeStore(3)
 
   app.listen(PORT, () => {
     console.log(`[SERVER] ERP backend running on port ${PORT}`);
