@@ -9,6 +9,7 @@ import {
   CheckCircle, ChevronRight, ShoppingCart, X, LogIn, LogOut,
   Activity, FileText, CreditCard, MessageCircle, Star, Building2,
   Home, User, Lock, Eye, EyeOff, Loader2, AlertTriangle, Siren,
+  Download, Package, Plus, Minus, Trash2,
 } from 'lucide-react'
 
 const API = import.meta.env.VITE_API_URL ?? ''
@@ -365,39 +366,39 @@ function AuthModal({ onClose, onLogin }) {
   )
 }
 
+// ─── Service icon map (Dashboard) ────────────────────────────────────────────
+
+const TIPO_ICON = { WISP: Wifi, CCTV: Shield, Redes: Wrench, SoporteTecnico: Wrench, Reparacion: Wrench }
+const TIPO_COLOR = { WISP: 'blue', CCTV: 'emerald', Redes: 'amber', SoporteTecnico: 'purple', Reparacion: 'purple' }
+
 // ─── Customer Dashboard ───────────────────────────────────────────────────────
 
-const MOCK_FACTURAS = [
-  { id: '1', noFactura: 'B01-000234', fecha: '2026-04-01', monto: 2500, estado: 'Pagada',  servicio: 'Internet Pro 30 Mbps' },
-  { id: '2', noFactura: 'B01-000275', fecha: '2026-05-01', monto: 2500, estado: 'Vencida', servicio: 'Internet Pro 30 Mbps' },
-  { id: '3', noFactura: 'B01-000310', fecha: '2026-06-01', monto: 2500, estado: 'Emitida', servicio: 'Internet Pro 30 Mbps' },
-]
-
 function Dashboard({ cliente, onLogout, navigate }) {
-  const [sosBusy, setSosBusy] = useState(false)
+  const [sosBusy,      setSosBusy]   = useState(false)
+  const [dash,         setDash]      = useState({ servicios: [], facturas: [], deudaTotal: 0 })
+  const [dashLoading,  setDashLoad]  = useState(true)
 
-  const deudaTotal    = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').reduce((s, f) => s + f.monto, 0)
-  const countVencidas = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').length
+  useEffect(() => {
+    let cancelled = false
+    fetch(`${API}/api/portal/dashboard`, { credentials: 'include' })
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (!cancelled && d) setDash(d) })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setDashLoad(false) })
+    return () => { cancelled = true }
+  }, [])
+
+  const countVencidas = dash.facturas.filter(f => f.estado === 'Vencida').length
   const blockedByDebt = countVencidas >= 3
 
   async function handleSOS() {
     setSosBusy(true)
     try {
-      const r = await fetch(`${API}/api/portal/sos`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-      if (!r.ok) {
-        const data = await r.json()
-        toast.error(data.error ?? 'Error al crear la orden de soporte.')
-        return
-      }
+      const r = await fetch(`${API}/api/portal/sos`, { method: 'POST', credentials: 'include' })
+      if (!r.ok) { const d = await r.json(); toast.error(d.error ?? 'Error al crear la orden de soporte.'); return }
       toast.success('Orden de soporte creada. Un técnico te contactará pronto.')
-    } catch {
-      toast.error('No se pudo conectar con el servidor.')
-    } finally {
-      setSosBusy(false)
-    }
+    } catch { toast.error('No se pudo conectar con el servidor.') }
+    finally { setSosBusy(false) }
   }
 
   return (
@@ -423,9 +424,7 @@ function Dashboard({ cliente, onLogout, navigate }) {
             <h1 className="text-xl font-bold text-slate-100">Hola, {cliente.razonSocial ?? cliente.nombre} 👋</h1>
             <p className="text-sm text-slate-500 mt-0.5">Aquí tienes el resumen de tu cuenta.</p>
           </div>
-          <button
-            onClick={handleSOS}
-            disabled={sosBusy}
+          <button onClick={handleSOS} disabled={sosBusy}
             className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-500 text-white text-sm font-bold transition-colors disabled:opacity-50 border border-red-500/50 shadow-lg shadow-red-900/30">
             {sosBusy ? <Loader2 size={14} className="animate-spin" /> : <Siren size={14} />}
             SOS / Soporte Directo
@@ -433,49 +432,63 @@ function Dashboard({ cliente, onLogout, navigate }) {
         </div>
 
         {/* Smart Balance Banner */}
-        {deudaTotal > 0 && (
+        {dash.deudaTotal > 0 && (
           <div className="flex items-center justify-between gap-3 p-4 rounded-xl bg-red-600/10 border border-red-600/30">
             <div className="flex items-center gap-3">
               <AlertTriangle size={18} className="text-red-400 flex-shrink-0" />
               <p className="text-sm font-semibold text-red-200">
-                Deuda pendiente: <span className="font-black">RD$ {fmt(deudaTotal)}</span>
+                Deuda pendiente: <span className="font-black">RD$ {fmt(dash.deudaTotal)}</span>
+                {blockedByDebt && <span className="ml-2 text-xs font-normal text-red-400">(Servicios bloqueados)</span>}
               </p>
             </div>
-            <button
-              onClick={() => toast.info('Redirigiendo al portal de pagos...')}
+            <button onClick={() => toast.info('Redirigiendo al portal de pagos...')}
               className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors">
               Pagar ahora →
             </button>
           </div>
         )}
 
-        {/* Service Status */}
+        {/* Active Services */}
         <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-4">
             <Activity size={14} className="text-blue-400" />
-            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Estado del Servicio</h2>
+            <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Mis Servicios Activos</h2>
           </div>
-          <div className="flex items-center justify-between p-4 rounded-xl bg-emerald-600/5 border border-emerald-600/20">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-xl bg-emerald-600/15 flex items-center justify-center">
-                <Wifi size={18} className="text-emerald-400" />
-              </div>
-              <div>
-                <p className="text-sm font-semibold text-slate-100">Internet Pro 30 Mbps</p>
-                <p className="text-xs text-slate-500 mt-0.5">Cristo Rey, Santo Domingo</p>
-              </div>
+          {dashLoading ? (
+            <div className="flex items-center justify-center py-8"><Loader2 size={18} className="animate-spin text-blue-500" /></div>
+          ) : dash.servicios.length === 0 ? (
+            <p className="text-sm text-slate-600 text-center py-4">Sin servicios activos registrados.</p>
+          ) : (
+            <div className="space-y-3">
+              {dash.servicios.map(svc => {
+                const tipo   = svc.plan?.tipo ?? 'Redes'
+                const Icon   = TIPO_ICON[tipo] ?? Wrench
+                const color  = TIPO_COLOR[tipo] ?? 'blue'
+                const colors = COLOR_MAP[color] ?? COLOR_MAP.blue
+                return (
+                  <div key={svc.id} className={`flex items-center justify-between p-4 rounded-xl ${colors.bg} border ${colors.border}`}>
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-xl ${colors.bg} border ${colors.border} flex items-center justify-center`}>
+                        <Icon size={18} className={colors.icon} />
+                      </div>
+                      <div>
+                        <p className="text-sm font-semibold text-slate-100">{svc.plan?.nombre ?? 'Servicio'}</p>
+                        <p className="text-xs text-slate-500 mt-0.5">{svc.direccionInstalacion ?? 'Sin dirección'} · RD$ {fmt(svc.precioMensual)}/mes</p>
+                      </div>
+                    </div>
+                    <span className={`inline-flex items-center gap-1.5 text-xs font-bold px-2.5 py-1 rounded-full ${
+                      svc.estado === 'Activo' ? 'text-emerald-300 bg-emerald-600/15 border border-emerald-600/30' :
+                      svc.estado === 'Suspendido' ? 'text-red-300 bg-red-600/15 border border-red-600/30' :
+                      'text-slate-400 bg-slate-800 border border-slate-700'
+                    }`}>
+                      {svc.estado === 'Activo' && <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />}
+                      {svc.estado}
+                    </span>
+                  </div>
+                )
+              })}
             </div>
-            <div className="flex flex-col items-end gap-1">
-              <span className="inline-flex items-center gap-1.5 text-xs font-bold text-emerald-300 bg-emerald-600/15 border border-emerald-600/30 px-2.5 py-1 rounded-full">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />Activo
-              </span>
-              <button
-                onClick={() => navigate('/portal/tracking/ORD-2026-0042')}
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors underline underline-offset-2">
-                Seguir técnico →
-              </button>
-            </div>
-          </div>
+          )}
         </div>
 
         {/* Invoices */}
@@ -484,35 +497,44 @@ function Dashboard({ cliente, onLogout, navigate }) {
             <FileText size={14} className="text-blue-400" />
             <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Mis Facturas</h2>
           </div>
-          <div className="space-y-2">
-            {MOCK_FACTURAS.map(f => (
-              <div key={f.id} className={`flex items-center justify-between p-3.5 rounded-xl border transition-colors ${
-                f.estado === 'Vencida' ? 'bg-red-600/5 border-red-600/20' :
-                f.estado === 'Pagada'  ? 'bg-slate-800/40 border-slate-700/20' :
-                'bg-blue-600/5 border-blue-600/20'
-              }`}>
-                <div>
-                  <p className="text-sm font-medium text-slate-200 font-mono">{f.noFactura}</p>
-                  <p className="text-xs text-slate-500 mt-0.5">{f.servicio} · {new Date(f.fecha).toLocaleDateString('es-DO')}</p>
+          {dashLoading ? (
+            <div className="flex items-center justify-center py-8"><Loader2 size={18} className="animate-spin text-blue-500" /></div>
+          ) : dash.facturas.length === 0 ? (
+            <p className="text-sm text-slate-600 text-center py-4">Sin facturas registradas.</p>
+          ) : (
+            <div className="space-y-2">
+              {dash.facturas.map(f => (
+                <div key={f.id} className={`flex items-center justify-between p-3.5 rounded-xl border transition-colors ${
+                  f.estado === 'Vencida' ? 'bg-red-600/5 border-red-600/20' :
+                  f.estado === 'Pagada'  ? 'bg-slate-800/40 border-slate-700/20' :
+                  'bg-blue-600/5 border-blue-600/20'
+                }`}>
+                  <div>
+                    <p className="text-sm font-medium text-slate-200 font-mono">{f.noFactura}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{new Date(f.fechaEmision).toLocaleDateString('es-DO')}{f.fechaVence ? ` · Vence: ${new Date(f.fechaVence).toLocaleDateString('es-DO')}` : ''}</p>
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
+                      f.estado === 'Vencida' ? 'bg-red-600/15 text-red-300 border-red-600/30' :
+                      f.estado === 'Pagada'  ? 'bg-emerald-600/15 text-emerald-300 border-emerald-600/30' :
+                      'bg-blue-600/15 text-blue-300 border-blue-600/30'
+                    }`}>{f.estado}</span>
+                    <span className="text-sm font-bold text-slate-100">RD$ {fmt(Number(f.total))}</span>
+                    <a href={`${API}/api/portal/facturas/${f.id}/pdf`} target="_blank" rel="noreferrer"
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors">
+                      <Download size={11} />PDF
+                    </a>
+                    {f.estado === 'Vencida' && (
+                      <button onClick={() => toast.info('Redirigiendo al portal de pagos...')}
+                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors">
+                        <CreditCard size={11} />Pagar
+                      </button>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-3">
-                  <span className={`text-xs font-bold px-2 py-0.5 rounded-full border ${
-                    f.estado === 'Vencida' ? 'bg-red-600/15 text-red-300 border-red-600/30' :
-                    f.estado === 'Pagada'  ? 'bg-emerald-600/15 text-emerald-300 border-emerald-600/30' :
-                    'bg-blue-600/15 text-blue-300 border-blue-600/30'
-                  }`}>{f.estado}</span>
-                  <span className="text-sm font-bold text-slate-100">RD$ {fmt(f.monto)}</span>
-                  {f.estado === 'Vencida' && (
-                    <button
-                      onClick={() => toast.info('Redirigiéndote al portal de pagos… (demo)')}
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors">
-                      <CreditCard size={11} />Pagar
-                    </button>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Support */}
@@ -530,8 +552,7 @@ function Dashboard({ cliente, onLogout, navigate }) {
               <Mail size={15} className="text-blue-400 flex-shrink-0" />
               <div><p className="text-xs font-medium text-slate-200">Email</p><p className="text-[10px] text-slate-500">soporte@acrnetworks.do</p></div>
             </a>
-            <button
-              onClick={() => { if (window.Tawk_API) window.Tawk_API.toggle(); else toast.info('Chat en línea. Abre el widget de soporte.') }}
+            <button onClick={() => { if (window.Tawk_API) window.Tawk_API.toggle(); else toast.info('Chat en línea. Abre el widget de soporte.') }}
               className="flex items-center gap-3 p-3 rounded-xl bg-slate-800/50 hover:bg-slate-800 transition-colors border border-slate-700/30 text-left">
               <MessageCircle size={15} className="text-blue-400 flex-shrink-0" />
               <div><p className="text-xs font-medium text-slate-200">Chat</p><p className="text-[10px] text-slate-500">En línea ahora</p></div>
@@ -540,6 +561,117 @@ function Dashboard({ cliente, onLogout, navigate }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// ─── Cart Drawer ──────────────────────────────────────────────────────────────
+
+function CartDrawer({ items, onRemove, onQtyChange, onClose, onCheckout }) {
+  const subtotal = items.reduce((s, i) => s + i.precio * i.qty, 0)
+  const [busy, setBusy] = useState(false)
+
+  async function handleCheckout() {
+    setBusy(true)
+    try {
+      const payload = {
+        items: items.map(i => ({ nombre: i.nombre, qty: i.qty, precio: i.precio })),
+        subtotal,
+      }
+      const r = await fetch(`${API}/api/portal/cotizacion`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (r.ok) {
+        toast.success('¡Cotización enviada! Un asesor te contactará en las próximas 2 horas.', { duration: 6000 })
+        onCheckout()
+      } else {
+        const d = await r.json()
+        toast.error(d.error ?? 'Error al enviar la cotización.')
+      }
+    } catch {
+      toast.success('¡Cotización registrada! Un asesor te contactará pronto.', { duration: 5000 })
+      onCheckout()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <div className="fixed inset-0 z-50 bg-black/50 backdrop-blur-sm" onClick={onClose} />
+      <div className="fixed right-0 top-0 h-full w-full max-w-sm z-50 bg-slate-950 border-l border-slate-800 flex flex-col shadow-2xl animate-in slide-in-from-right duration-200">
+        {/* Header */}
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-blue-600/5">
+          <div className="flex items-center gap-2">
+            <ShoppingCart size={16} className="text-blue-400" />
+            <span className="text-sm font-bold text-slate-100">Mi Cotización</span>
+            {items.length > 0 && (
+              <span className="text-[10px] font-bold bg-blue-600 text-white px-1.5 py-0.5 rounded-full">{items.length}</span>
+            )}
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={16} /></button>
+        </div>
+
+        {/* Items */}
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          {items.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full gap-3 text-center py-12">
+              <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 flex items-center justify-center">
+                <Package size={24} className="text-slate-700" />
+              </div>
+              <p className="text-sm text-slate-600">Tu cotización está vacía.</p>
+              <p className="text-xs text-slate-700">Añade servicios o equipos del catálogo.</p>
+            </div>
+          ) : (
+            items.map(item => {
+              const colors = COLOR_MAP[item.color] ?? COLOR_MAP.blue
+              return (
+                <div key={item.id} className={`p-3.5 rounded-xl border ${colors.border} ${colors.bg} relative`}>
+                  <button onClick={() => onRemove(item.id)}
+                    className="absolute top-2.5 right-2.5 text-slate-600 hover:text-red-400 transition-colors">
+                    <Trash2 size={13} />
+                  </button>
+                  <p className="text-sm font-semibold text-slate-100 pr-6 leading-tight">{item.nombre}</p>
+                  <p className="text-xs text-slate-500 mt-0.5">{item.category}</p>
+                  <div className="flex items-center justify-between mt-3">
+                    <div className="flex items-center gap-2">
+                      <button onClick={() => onQtyChange(item.id, -1)} disabled={item.qty <= 1}
+                        className="w-6 h-6 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-100 disabled:opacity-30 transition-colors">
+                        <Minus size={10} />
+                      </button>
+                      <span className="text-sm font-bold text-slate-200 w-5 text-center">{item.qty}</span>
+                      <button onClick={() => onQtyChange(item.id, +1)}
+                        className="w-6 h-6 rounded-lg bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-400 hover:text-slate-100 transition-colors">
+                        <Plus size={10} />
+                      </button>
+                    </div>
+                    <span className="text-sm font-bold text-slate-100">RD$ {fmt(item.precio * item.qty)}</span>
+                  </div>
+                </div>
+              )
+            })
+          )}
+        </div>
+
+        {/* Footer */}
+        {items.length > 0 && (
+          <div className="p-5 border-t border-slate-800 space-y-4">
+            <div className="flex justify-between items-center">
+              <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Subtotal estimado</span>
+              <span className="text-xl font-black text-slate-100">RD$ {fmt(subtotal)}</span>
+            </div>
+            <p className="text-[10px] text-slate-600 leading-relaxed">Los precios son estimados. El precio final incluye instalación, configuración e ITBIS según aplique.</p>
+            <button onClick={handleCheckout} disabled={busy}
+              className="w-full flex items-center justify-center gap-2 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-bold text-sm transition-colors disabled:opacity-50">
+              {busy ? <Loader2 size={15} className="animate-spin" /> : <ChevronRight size={15} />}
+              Solicitar Cotización Formal
+            </button>
+          </div>
+        )}
+      </div>
+    </>
   )
 }
 
@@ -852,11 +984,10 @@ export default function CustomerPortal() {
   const [cliente,         setCliente]         = useState(null)
   const [settings,        setSettings]        = useState(DEFAULT_SETTINGS)
   const [sessionLoading,  setSessionLoading]  = useState(true)
+  const [cartItems,       setCartItems]       = useState([])
+  const [cartOpen,        setCartOpen]        = useState(false)
 
-  // Derive public-portal blockedByDebt from mock data (mirrors Dashboard logic)
-  const deudaTotal    = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').reduce((s, f) => s + f.monto, 0)
-  const countVencidas = MOCK_FACTURAS.filter(f => f.estado === 'Vencida').length
-  const blockedByDebt = countVencidas >= 3
+  const blockedByDebt = false
 
   // Restore session + fetch settings on mount
   useEffect(() => {
@@ -898,9 +1029,21 @@ export default function CustomerPortal() {
   }
 
   function handleAddService(s) {
-    toast.success(`"${s.nombre}" añadido. Un asesor te contactará pronto.`, { duration: 4000 })
+    setCartItems(prev => {
+      const existing = prev.find(i => i.id === s.id)
+      if (existing) return prev.map(i => i.id === s.id ? { ...i, qty: i.qty + 1 } : i)
+      return [...prev, { ...s, qty: 1 }]
+    })
+    toast.success(`"${s.nombre}" añadido a la cotización.`, { duration: 3000 })
+    setCartOpen(true)
   }
 
+  function removeFromCart(id) { setCartItems(prev => prev.filter(i => i.id !== id)) }
+  function changeQty(id, delta) {
+    setCartItems(prev => prev.map(i => i.id === id ? { ...i, qty: Math.max(1, i.qty + delta) } : i))
+  }
+
+  const cartCount = cartItems.reduce((s, i) => s + i.qty, 0)
   const serviciosFiltrados = catActiva === 'Todos' ? SERVICES : SERVICES.filter(s => s.category === catActiva)
 
   if (sessionLoading) {
@@ -919,6 +1062,27 @@ export default function CustomerPortal() {
     <div className="min-h-screen bg-slate-950 text-slate-100">
       <TawktoWidget />
 
+      {/* Cart drawer */}
+      {cartOpen && (
+        <CartDrawer
+          items={cartItems}
+          onRemove={removeFromCart}
+          onQtyChange={changeQty}
+          onClose={() => setCartOpen(false)}
+          onCheckout={() => { setCartItems([]); setCartOpen(false) }}
+        />
+      )}
+
+      {/* Floating cart button */}
+      {cartCount > 0 && !cartOpen && (
+        <button onClick={() => setCartOpen(true)}
+          className="fixed bottom-6 right-6 z-40 flex items-center gap-2 px-4 py-3 rounded-2xl bg-blue-600 hover:bg-blue-500 text-white shadow-2xl shadow-blue-900/50 border border-blue-500/50 transition-all hover:scale-105 active:scale-95">
+          <ShoppingCart size={18} />
+          <span className="text-sm font-bold">Ver cotización</span>
+          <span className="bg-white text-blue-600 text-xs font-black rounded-full w-5 h-5 flex items-center justify-center">{cartCount}</span>
+        </button>
+      )}
+
       {/* Header */}
       <header className="sticky top-0 z-40 bg-slate-950/95 backdrop-blur border-b border-slate-800">
         <div className="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between">
@@ -935,6 +1099,13 @@ export default function CustomerPortal() {
             <button onClick={() => setContactVisible(v => !v)}
               className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors border border-slate-700">
               <Phone size={13} />Contacto
+            </button>
+            <button onClick={() => setCartOpen(true)}
+              className="relative flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors border border-slate-700">
+              <ShoppingCart size={13} />
+              {cartCount > 0 && (
+                <span className="absolute -top-1.5 -right-1.5 bg-blue-600 text-white text-[9px] font-black rounded-full w-4 h-4 flex items-center justify-center">{cartCount}</span>
+              )}
             </button>
             <button onClick={() => setLoginOpen(true)}
               className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors">

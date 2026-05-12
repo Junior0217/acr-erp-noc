@@ -162,7 +162,26 @@ setInterval(async () => {
 
 const app = express();
 
-app.use(helmet());
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:      ["'none'"],
+      scriptSrc:       ["'none'"],
+      styleSrc:        ["'none'"],
+      imgSrc:          ["'none'"],
+      connectSrc:      ["'self'"],
+      fontSrc:         ["'none'"],
+      objectSrc:       ["'none'"],
+      mediaSrc:        ["'none'"],
+      frameSrc:        ["'none'"],
+      formAction:      ["'self'"],
+      frameAncestors:  ["'none'"],
+    },
+  },
+  crossOriginOpenerPolicy:    { policy: 'same-origin' },
+  crossOriginResourcePolicy:  { policy: 'cross-origin' },
+  crossOriginEmbedderPolicy:  false,
+}));
 app.use(cookieParser(process.env.COOKIE_SECRET));
 
 const DEV_ORIGINS     = ['http://localhost:5173', 'http://127.0.0.1:5173']
@@ -806,6 +825,47 @@ app.post('/api/portal/sos', verificarPortalJWT, async (req, res) => {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
     res.status(500).json({ error: 'Error interno.' })
   }
+})
+
+app.get('/api/portal/dashboard', verificarPortalJWT, async (req, res) => {
+  try {
+    const [servicios, facturas] = await Promise.all([
+      prisma.servicio.findMany({
+        where:   { clienteId: req.portalUser.sub },
+        include: { plan: { select: { nombre: true, tipo: true } } },
+        orderBy: { createdAt: 'desc' },
+      }),
+      prisma.factura.findMany({
+        where:   { clienteId: req.portalUser.sub, deletedAt: null, esCotizacion: false },
+        select:  { id: true, noFactura: true, total: true, estado: true, fechaEmision: true, fechaVence: true },
+        orderBy: { fechaEmision: 'desc' },
+        take: 20,
+      }),
+    ])
+    const deudaTotal = facturas
+      .filter(f => f.estado === 'Vencida')
+      .reduce((s, f) => s + Number(f.total), 0)
+    res.json({ servicios, facturas, deudaTotal })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.get('/api/portal/facturas/:id/pdf', verificarPortalJWT, async (req, res) => {
+  try {
+    const factura = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      include: {
+        cliente: true,
+        orden:   { include: { lineas: { include: { itemCatalogo: { select: { nombre: true } } } } } },
+      },
+    })
+    if (!factura) return res.status(404).json({ error: 'Factura no encontrada.' })
+    if (factura.clienteId !== req.portalUser.sub) return res.status(403).json({ error: 'Acceso denegado.' })
+    const buf = await buildFacturaPDFBuffer(factura)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="factura-${factura.noFactura}.pdf"`)
+    res.setHeader('Content-Length', buf.length)
+    res.end(buf)
+  } catch { if (!res.headersSent) res.status(500).json({ error: 'Error al generar PDF.' }) }
 })
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
@@ -3270,6 +3330,33 @@ app.get('/api/health', async (req, res) => {
   }
 })
 
+app.get('/api/health/detailed', async (req, res) => {
+  const token = req.headers['authorization']?.replace('Bearer ', '')
+  if (process.env.HEALTH_TOKEN && token !== process.env.HEALTH_TOKEN) {
+    return res.status(401).json({ error: 'Unauthorized.' })
+  }
+  const t0 = Date.now()
+  let dbOk = false, dbMs = null
+  try { await prisma.$queryRaw`SELECT 1`; dbMs = Date.now() - t0; dbOk = true } catch {}
+  const mem = process.memoryUsage()
+  const status = dbOk ? 'ok' : 'degraded'
+  res.status(dbOk ? 200 : 503).json({
+    status,
+    timestamp:  new Date().toISOString(),
+    uptime:     Math.floor(process.uptime()),
+    commit:     process.env.RENDER_GIT_COMMIT ?? 'local',
+    node:       process.version,
+    env:        process.env.NODE_ENV ?? 'development',
+    db:         { ok: dbOk, latencyMs: dbMs },
+    redis:      redisClient ? (redisClient.status === 'ready' ? 'connected' : redisClient.status) : 'not configured',
+    memory: {
+      rss:       Math.round(mem.rss       / 1048576) + 'MB',
+      heapUsed:  Math.round(mem.heapUsed  / 1048576) + 'MB',
+      heapTotal: Math.round(mem.heapTotal / 1048576) + 'MB',
+    },
+  })
+})
+
 // ─── WISP Auto-Biller Cron ────────────────────────────────────────────────────
 
 async function billarOTsISP() {
@@ -3398,6 +3485,102 @@ app.use((err, req, res, next) => {
   if (res.headersSent) return next(err);
   res.status(500).json({ error: 'Error interno del servidor.' });
 });
+
+// ─── Dev Seed ─────────────────────────────────────────────────────────────────
+
+app.post('/api/dev/seed-portal', async (req, res) => {
+  const secret = req.headers['x-seed-secret']
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.SEED_SECRET || secret !== process.env.SEED_SECRET) {
+      return res.status(403).json({ error: 'Forbidden.' })
+    }
+  }
+  try {
+    const catalogItems = await prisma.$transaction(async tx => {
+      const cats = await Promise.all([
+        tx.itemCatalogo.upsert({ where: { id: 'seed-cam-hd' },    update: {}, create: { id: 'seed-cam-hd',    nombre: 'Cámara IP HD 1080p Exterior', tipo: 'VentaUnica', categoria: 'CCTV',  precio: 8500,  costo: 4800, tipoItem: 'ARTICULO', activo: true } }),
+        tx.itemCatalogo.upsert({ where: { id: 'seed-cam-4k' },    update: {}, create: { id: 'seed-cam-4k',    nombre: 'Cámara IP 4K Analíticas IA',   tipo: 'VentaUnica', categoria: 'CCTV',  precio: 18000, costo: 9500, tipoItem: 'ARTICULO', activo: true } }),
+        tx.itemCatalogo.upsert({ where: { id: 'seed-router-ent'}, update: {}, create: { id: 'seed-router-ent',nombre: 'Router Mikrotik RB4011',        tipo: 'VentaUnica', categoria: 'Redes', precio: 22000, costo: 13000,tipoItem: 'ARTICULO', activo: true } }),
+        tx.itemCatalogo.upsert({ where: { id: 'seed-ap-unifi' },  update: {}, create: { id: 'seed-ap-unifi',  nombre: 'AP UniFi U6 Pro WiFi 6',        tipo: 'VentaUnica', categoria: 'Redes', precio: 14500, costo: 8200, tipoItem: 'ARTICULO', activo: true } }),
+        tx.itemCatalogo.upsert({ where: { id: 'seed-audit-red' }, update: {}, create: { id: 'seed-audit-red', nombre: 'Auditoría de Red Corporativa',   tipo: 'Servicio',   categoria: 'Redes', precio: 35000, costo: 8000, tipoItem: 'SERVICIO', activo: true } }),
+        tx.itemCatalogo.upsert({ where: { id: 'seed-mant-mens' }, update: {}, create: { id: 'seed-mant-mens', nombre: 'Mantenimiento Mensual Preventivo',tipo: 'Recurrente', categoria: 'Redes', precio: 5500,  costo: 1500, tipoItem: 'SERVICIO', activo: true } }),
+      ])
+      return cats
+    })
+
+    const planFibra = await prisma.plan.upsert({
+      where:  { id: 'seed-plan-fibra' },
+      update: {},
+      create: { id: 'seed-plan-fibra', nombre: 'Fibra Empresarial 200 Mbps', tipo: 'WISP', precioMensualBase: 9500, precioInstalBase: 5000, activo: true },
+    })
+    const planCCTV = await prisma.plan.upsert({
+      where:  { id: 'seed-plan-cctv' },
+      update: {},
+      create: { id: 'seed-plan-cctv',  nombre: 'Videovigilancia Corporativa 8 Cámaras', tipo: 'CCTV', precioMensualBase: 3500, precioInstalBase: 42000, activo: true },
+    })
+
+    const count   = await prisma.cliente.count()
+    const noCliente = `EMP-${String(count + 1).padStart(4, '0')}`
+    const hash    = await bcrypt.hash('Demo2026!', 12)
+    const cliente = await prisma.cliente.upsert({
+      where:  { email: 'demo.empresa@acrtest.do' },
+      update: { passwordHash: hash },
+      create: {
+        noCliente,
+        razonSocial:       'Corporación Demo S.R.L.',
+        email:             'demo.empresa@acrtest.do',
+        passwordHash:      hash,
+        tipoEmpresa:       'Sociedad de Responsabilidad Limitada',
+        tipoCliente:       'Corporativo',
+        nombreContacto:    'Carlos Empresario',
+        apellidoContacto:  'Demo',
+        cargo:             'Gerente de TI',
+        telefono:          '809-555-1234',
+        telefonoPrincipal: '809-555-1234',
+        direccion:         'Av. Winston Churchill #55, Torre Empresarial, Piso 8',
+        sector:            'Piantini',
+        provincia:         'Distrito Nacional',
+        limiteCredito:     100000,
+        diasCredito:       30,
+        itbis:             true,
+      },
+    })
+
+    const [svc1, svc2] = await Promise.all([
+      prisma.servicio.upsert({
+        where:  { id: 'seed-svc-fibra' },
+        update: {},
+        create: { id: 'seed-svc-fibra', clienteId: cliente.id, planId: planFibra.id, estado: 'Activo',     precioMensual: 9500,  precioInstalacion: 5000,  notasTecnicas: 'Fibra óptica FTTH instalada el 2026-01-15', direccionInstalacion: 'Torre Empresarial Piso 8' },
+      }),
+      prisma.servicio.upsert({
+        where:  { id: 'seed-svc-cctv' },
+        update: {},
+        create: { id: 'seed-svc-cctv',  clienteId: cliente.id, planId: planCCTV.id,  estado: 'Activo',     precioMensual: 3500,  precioInstalacion: 42000, notasTecnicas: '8 cámaras IP 4K instaladas, NVR configurado con retención 30 días', direccionInstalacion: 'Torre Empresarial — todas las plantas' },
+      }),
+    ])
+
+    const factBase = { clienteId: cliente.id, subtotal: 9500, itbis: 1235, total: 10735, tipoNcf: 'Crédito Fiscal', esCotizacion: false }
+    const now = new Date()
+    const d = (daysAgo) => { const d = new Date(now); d.setDate(d.getDate() - daysAgo); return d }
+    await Promise.all([
+      prisma.factura.upsert({ where: { noFactura: 'B01-SEED-001' }, update: {}, create: { ...factBase, noFactura: 'B01-SEED-001', estado: 'Vencida', ncf: 'B0100000001', fechaEmision: d(45), fechaVence: d(15) } }),
+      prisma.factura.upsert({ where: { noFactura: 'B01-SEED-002' }, update: {}, create: { ...factBase, noFactura: 'B01-SEED-002', estado: 'Pagada',  ncf: 'B0100000002', fechaEmision: d(75), fechaVence: d(45), fechaPago: d(40) } }),
+      prisma.factura.upsert({ where: { noFactura: 'B01-SEED-003' }, update: {}, create: { ...factBase, noFactura: 'B01-SEED-003', estado: 'Emitida', ncf: 'B0100000003', fechaEmision: d(10), fechaVence: d(-20) } }),
+    ])
+
+    res.json({
+      ok:       true,
+      cliente:  { id: cliente.id, email: 'demo.empresa@acrtest.do', password: 'Demo2026!' },
+      servicios: 2,
+      facturas:  3,
+      catalogo:  catalogItems.length,
+      msg: 'Login en el portal con demo.empresa@acrtest.do / Demo2026!',
+    })
+  } catch (e) {
+    console.error('[SEED]', e.message)
+    res.status(500).json({ error: e.message })
+  }
+})
 
 // ─── Startup checks ───────────────────────────────────────────────────────────
 const REQUIRED_ENV = ['JWT_SECRET', 'COOKIE_SECRET', 'DATABASE_URL'];
