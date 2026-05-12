@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
-import toast from 'react-hot-toast'
+import { toast } from 'sonner'
 
 const fmt = v => Number(v ?? 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
