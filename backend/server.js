@@ -212,7 +212,11 @@ const billingLimiter = rateLimit({
 app.use(express.json({ limit: '50kb' }));
 
 // ─── CSRF Double-Submit Cookie ────────────────────────────────────────────────
-const CSRF_SKIP = new Set(['/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout'])
+const CSRF_SKIP = new Set([
+  '/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout',
+  '/api/portal/auth/register', '/api/portal/auth/login', '/api/portal/auth/logout',
+  '/api/portal/settings',
+])
 function csrfMiddleware(req, res, next) {
   const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
   if (!mutating || CSRF_SKIP.has(req.path)) return next()
@@ -483,6 +487,40 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
     return response
   })
 }
+
+// ─── Portal JWT ───────────────────────────────────────────────────────────────
+
+const PORTAL_JWT_SECRET = (process.env.JWT_SECRET || '') + ':portal'
+
+function signPortalToken(cliente) {
+  return jwt.sign(
+    { sub: cliente.id, email: cliente.email, nombre: cliente.razonSocial, type: 'portal' },
+    PORTAL_JWT_SECRET,
+    { expiresIn: '30d' }
+  )
+}
+
+async function verificarPortalJWT(req, res, next) {
+  const raw = req.cookies?.pct
+  if (!raw) return res.status(401).json({ error: 'No autenticado.' })
+  try {
+    const payload = jwt.verify(raw, PORTAL_JWT_SECRET)
+    if (payload.type !== 'portal') throw new Error('wrong type')
+    req.portalUser = payload
+    next()
+  } catch {
+    res.clearCookie('pct')
+    res.status(401).json({ error: 'Sesión expirada.' })
+  }
+}
+
+const portalLoginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  keyGenerator: reqFingerprint,
+  message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
+  skipSuccessfulRequests: true,
+})
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 
@@ -3070,6 +3108,152 @@ async function billarMoras() {
 }
 
 cron.schedule('10 0 * * *', billarMoras, { timezone: 'America/Santo_Domingo' })
+
+// ─── Portal Auth Routes ───────────────────────────────────────────────────────
+
+const portalRegisterSchema = z.object({
+  nombre:   z.string().min(2).max(200),
+  email:    z.string().email().trim().toLowerCase(),
+  password: z.string().min(6).max(100),
+})
+
+const portalLoginSchema = z.object({
+  email:    z.string().email().trim().toLowerCase(),
+  password: z.string().min(1),
+})
+
+function setPortalCookie(res, token) {
+  const isProd = process.env.NODE_ENV === 'production'
+  res.cookie('pct', token, {
+    httpOnly: true,
+    secure:   isProd,
+    sameSite: isProd ? 'none' : 'lax',
+    maxAge:   30 * 24 * 60 * 60 * 1000,
+    ...(isProd ? { partitioned: true } : {}),
+  })
+}
+
+app.post('/api/portal/auth/register', portalLoginLimiter, async (req, res) => {
+  try {
+    const { nombre, email, password } = portalRegisterSchema.parse(req.body)
+    const existing = await prisma.cliente.findFirst({ where: { email } })
+    if (existing) {
+      if (existing.passwordHash) return res.status(409).json({ error: 'Email ya registrado.' })
+      // Link password to existing client record (no portal account yet)
+      const hash = await bcrypt.hash(password, 12)
+      const updated = await prisma.cliente.update({ where: { id: existing.id }, data: { passwordHash: hash } })
+      const token = signPortalToken(updated)
+      setPortalCookie(res, token)
+      auditReq('portal:register', req, { clienteId: updated.id, email }, { userId: null, userName: nombre })
+      return res.json({ id: updated.id, nombre: updated.razonSocial, email: updated.email })
+    }
+    // New client: auto-generate noCliente
+    const count = await prisma.cliente.count()
+    const noCliente = `PRT-${String(count + 1).padStart(5, '0')}`
+    const hash = await bcrypt.hash(password, 12)
+    const cliente = await prisma.cliente.create({
+      data: {
+        noCliente,
+        razonSocial:       nombre,
+        email,
+        passwordHash:      hash,
+        tipoEmpresa:       'Persona Física',
+        tipoCliente:       'Residencial',
+        nombreContacto:    nombre,
+        direccion:         'Por completar',
+        sector:            'Por completar',
+        provincia:         'Distrito Nacional',
+        telefonoPrincipal: '000-000-0000',
+      },
+    })
+    const token = signPortalToken(cliente)
+    setPortalCookie(res, token)
+    auditReq('portal:register', req, { clienteId: cliente.id, email }, { userId: null, userName: nombre })
+    res.status(201).json({ id: cliente.id, nombre: cliente.razonSocial, email: cliente.email })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
+    console.error('[PORTAL REGISTER]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.post('/api/portal/auth/login', portalLoginLimiter, async (req, res) => {
+  try {
+    const { email, password } = portalLoginSchema.parse(req.body)
+    const cliente = await prisma.cliente.findFirst({ where: { email } })
+    if (!cliente || !cliente.passwordHash) {
+      return res.status(401).json({ error: 'Credenciales inválidas.' })
+    }
+    const valid = await bcrypt.compare(password, cliente.passwordHash)
+    if (!valid) {
+      auditReq('portal:login_fail', req, { email }, { userId: null })
+      return res.status(401).json({ error: 'Credenciales inválidas.' })
+    }
+    const token = signPortalToken(cliente)
+    setPortalCookie(res, token)
+    auditReq('portal:login', req, { clienteId: cliente.id, email }, { userId: null, userName: cliente.razonSocial })
+    res.json({ id: cliente.id, nombre: cliente.razonSocial, email: cliente.email })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.post('/api/portal/auth/logout', (req, res) => {
+  res.clearCookie('pct')
+  res.status(204).end()
+})
+
+app.get('/api/portal/auth/me', verificarPortalJWT, async (req, res) => {
+  try {
+    const cliente = await prisma.cliente.findUnique({
+      where:  { id: req.portalUser.sub },
+      select: { id: true, razonSocial: true, email: true, noCliente: true, telefonoPrincipal: true, activo: true },
+    })
+    if (!cliente) { res.clearCookie('pct'); return res.status(401).json({ error: 'Cliente no encontrado.' }) }
+    res.json(cliente)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── Portal Settings Routes ───────────────────────────────────────────────────
+
+async function getOrCreatePortalSettings() {
+  return prisma.portalSettings.upsert({
+    where:  { id: 1 },
+    update: {},
+    create: { id: 1 },
+  })
+}
+
+app.get('/api/portal/settings', async (req, res) => {
+  try {
+    const settings = await getOrCreatePortalSettings()
+    res.json(settings)
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+app.put('/api/portal/settings', verificarJWT, requerirPermiso('sistema:config'), async (req, res) => {
+  try {
+    const schema = z.object({
+      mostrarEquipos:   z.boolean().optional(),
+      permitirPagos:    z.boolean().optional(),
+      mostrarMapa:      z.boolean().optional(),
+      mostrarCotizador: z.boolean().optional(),
+      mostrarServicios: z.boolean().optional(),
+    })
+    const data = schema.parse(req.body)
+    const settings = await prisma.portalSettings.upsert({
+      where:  { id: 1 },
+      update: data,
+      create: { id: 1, ...data },
+    })
+    auditReq('portal:settings_updated', req, data)
+    res.json(settings)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 

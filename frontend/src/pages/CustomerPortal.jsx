@@ -1,5 +1,5 @@
 // build: 2026-05-11
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { MapContainer, TileLayer, Polygon, Tooltip } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
@@ -7,9 +7,11 @@ import { toast } from 'sonner'
 import {
   Zap, Wifi, Shield, Wrench, Globe, Phone, Mail, MapPin,
   CheckCircle, ChevronRight, ShoppingCart, X, LogIn, LogOut,
-  Activity, AlertTriangle, Clock, FileText, CreditCard,
-  MessageCircle, Star, Building2, Home,
+  Activity, FileText, CreditCard, MessageCircle, Star, Building2,
+  Home, User, Lock, Eye, EyeOff, Loader2,
 } from 'lucide-react'
+
+const API = import.meta.env.VITE_API_URL ?? ''
 
 // ─── Coverage polygon: Cristo Rey, Santo Domingo ──────────────────────────────
 
@@ -23,14 +25,14 @@ const CRISTO_REY_POLYGON = [
 // ─── Services catalog ─────────────────────────────────────────────────────────
 
 const SERVICES = [
-  { id: 1, category: 'WISP', icon: Wifi,    color: 'blue',    nombre: 'Internet Residencial Basic',      descripcion: '15 Mbps simétrico. Ideal para hogares.',             precio: 1500,  features: ['15 Mbps simétrico', 'IP dinámica', 'Soporte 24/7'] },
-  { id: 2, category: 'WISP', icon: Wifi,    color: 'blue',    nombre: 'Internet Residencial Pro',        descripcion: '30 Mbps. Streaming y trabajo desde casa.',           precio: 2500,  features: ['30 Mbps simétrico', 'IP dinámica', 'Router incluido', 'Soporte 24/7'], badge: 'Popular' },
-  { id: 3, category: 'WISP', icon: Globe,   color: 'indigo',  nombre: 'Internet Empresarial',            descripcion: '100 Mbps + IP estática. Para negocios exigentes.',  precio: 6000,  features: ['100 Mbps simétrico', 'IP estática', 'SLA 99.8%', 'Soporte prioritario'], badge: 'Business' },
-  { id: 4, category: 'CCTV', icon: Shield,  color: 'emerald', nombre: 'Kit CCTV Básico 4 Cámaras',      descripcion: 'Sistema HD con DVR 4 canales y disco 1TB.',          precio: 18500, features: ['4 cámaras HD 1080p', 'DVR 4 canales', '1TB almacenamiento', 'Acceso remoto'] },
-  { id: 5, category: 'CCTV', icon: Shield,  color: 'emerald', nombre: 'Kit CCTV Pro 8 Cámaras',         descripcion: 'Cámaras IP 4K, NVR y visión nocturna avanzada.',     precio: 42000, features: ['8 cámaras IP 4K', 'NVR 8 canales', '2TB almacenamiento', 'Analíticas IA', 'Nube'], badge: 'Pro' },
-  { id: 6, category: 'Redes', icon: Wrench, color: 'amber',   nombre: 'Instalación Red LAN',             descripcion: 'Cableado Cat6, puntos de red, switches configurados.', precio: 12000, features: ['Cableado Cat6', 'Hasta 8 puntos', 'Switch incluido', 'Certificación'] },
-  { id: 7, category: 'Redes', icon: Wrench, color: 'amber',   nombre: 'WiFi Corporativo Mesh',           descripcion: 'APs UniFi mesh para alta densidad empresarial.',     precio: 25000, features: ['3 APs UniFi', 'Cobertura 200m²', 'Gestión centralizada', 'VLANs'], badge: 'Enterprise' },
-  { id: 8, category: 'Soporte', icon: Wrench, color: 'purple', nombre: 'Mantenimiento Mensual',          descripcion: 'Soporte preventivo y correctivo con visita mensual.', precio: 3500,  features: ['1 visita mensual', 'Soporte remoto', 'Reporte de estado', 'Prioridad alta'] },
+  { id: 1, category: 'WISP',    icon: Wifi,    color: 'blue',    nombre: 'Internet Residencial Basic',   descripcion: '15 Mbps simétrico. Ideal para hogares.',              precio: 1500,  features: ['15 Mbps simétrico', 'IP dinámica', 'Soporte 24/7'] },
+  { id: 2, category: 'WISP',    icon: Wifi,    color: 'blue',    nombre: 'Internet Residencial Pro',     descripcion: '30 Mbps. Streaming y trabajo desde casa.',            precio: 2500,  features: ['30 Mbps simétrico', 'IP dinámica', 'Router incluido', 'Soporte 24/7'], badge: 'Popular' },
+  { id: 3, category: 'WISP',    icon: Globe,   color: 'indigo',  nombre: 'Internet Empresarial',         descripcion: '100 Mbps + IP estática. Para negocios exigentes.',   precio: 6000,  features: ['100 Mbps simétrico', 'IP estática', 'SLA 99.8%', 'Soporte prioritario'], badge: 'Business' },
+  { id: 4, category: 'CCTV',    icon: Shield,  color: 'emerald', nombre: 'Kit CCTV Básico 4 Cámaras',   descripcion: 'Sistema HD con DVR 4 canales y disco 1TB.',           precio: 18500, features: ['4 cámaras HD 1080p', 'DVR 4 canales', '1TB almacenamiento', 'Acceso remoto'] },
+  { id: 5, category: 'CCTV',    icon: Shield,  color: 'emerald', nombre: 'Kit CCTV Pro 8 Cámaras',      descripcion: 'Cámaras IP 4K, NVR y visión nocturna avanzada.',      precio: 42000, features: ['8 cámaras IP 4K', 'NVR 8 canales', '2TB almacenamiento', 'Analíticas IA', 'Nube'], badge: 'Pro' },
+  { id: 6, category: 'Redes',   icon: Wrench,  color: 'amber',   nombre: 'Instalación Red LAN',          descripcion: 'Cableado Cat6, puntos de red, switches configurados.', precio: 12000, features: ['Cableado Cat6', 'Hasta 8 puntos', 'Switch incluido', 'Certificación'] },
+  { id: 7, category: 'Redes',   icon: Wrench,  color: 'amber',   nombre: 'WiFi Corporativo Mesh',        descripcion: 'APs UniFi mesh para alta densidad empresarial.',      precio: 25000, features: ['3 APs UniFi', 'Cobertura 200m²', 'Gestión centralizada', 'VLANs'], badge: 'Enterprise' },
+  { id: 8, category: 'Soporte', icon: Wrench,  color: 'purple',  nombre: 'Mantenimiento Mensual',        descripcion: 'Soporte preventivo y correctivo con visita mensual.',  precio: 3500,  features: ['1 visita mensual', 'Soporte remoto', 'Reporte de estado', 'Prioridad alta'] },
 ]
 
 const CATEGORIES = ['Todos', 'WISP', 'CCTV', 'Redes', 'Soporte']
@@ -43,13 +45,11 @@ const COLOR_MAP = {
   purple:  { bg: 'bg-purple-600/10',  border: 'border-purple-600/20',  icon: 'text-purple-400',  badge: 'bg-purple-600/20 text-purple-300 border-purple-600/30' },
 }
 
-// ─── Quoter plans ─────────────────────────────────────────────────────────────
-
 const QUOTER_PLANS = [
-  { id: 'basic',      label: 'Basic 15 Mbps',  base: 1500,  icon: '🏠' },
-  { id: 'pro',        label: 'Pro 30 Mbps',     base: 2500,  icon: '💼', popular: true },
-  { id: 'empresarial',label: 'Empresarial 100', base: 6000,  icon: '🏢' },
-  { id: 'fibra',      label: 'Fibra 200 Mbps',  base: 9500,  icon: '⚡' },
+  { id: 'basic',       label: 'Basic 15 Mbps',  base: 1500, icon: '🏠' },
+  { id: 'pro',         label: 'Pro 30 Mbps',     base: 2500, icon: '💼', popular: true },
+  { id: 'empresarial', label: 'Empresarial 100', base: 6000, icon: '🏢' },
+  { id: 'fibra',       label: 'Fibra 200 Mbps',  base: 9500, icon: '⚡' },
 ]
 
 const fmt = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 0 })
@@ -60,9 +60,8 @@ function TawktoWidget() {
   useEffect(() => {
     if (document.getElementById('tawkto-script')) return
     const s = document.createElement('script')
-    s.id  = 'tawkto-script'
+    s.id = 'tawkto-script'
     s.async = true
-    // Replace with your real Tawk.to property ID
     s.src = 'https://embed.tawk.to/placeholder/default'
     s.charset = 'UTF-8'
     s.setAttribute('crossorigin', '*')
@@ -92,15 +91,9 @@ function CoverageMap() {
         </Polygon>
       </MapContainer>
       <div className="absolute bottom-3 right-3 z-[400] flex flex-col gap-1.5">
-        <span className="px-2.5 py-1 rounded-full bg-blue-600/90 text-white text-[10px] font-bold border border-blue-400/40 backdrop-blur-sm">
-          🟦 Zona WISP Activa
-        </span>
-        <span className="px-2.5 py-1 rounded-full bg-slate-800/90 text-slate-300 text-[10px] font-bold border border-slate-600/40 backdrop-blur-sm">
-          🌐 Venta Nacional de Equipos
-        </span>
-        <span className="px-2.5 py-1 rounded-full bg-emerald-600/90 text-white text-[10px] font-bold border border-emerald-400/40 backdrop-blur-sm">
-          ✅ SLA: 99.8% Estabilidad
-        </span>
+        <span className="px-2.5 py-1 rounded-full bg-blue-600/90 text-white text-[10px] font-bold border border-blue-400/40 backdrop-blur-sm">🟦 Zona WISP Activa</span>
+        <span className="px-2.5 py-1 rounded-full bg-slate-800/90 text-slate-300 text-[10px] font-bold border border-slate-600/40 backdrop-blur-sm">🌐 Venta Nacional de Equipos</span>
+        <span className="px-2.5 py-1 rounded-full bg-emerald-600/90 text-white text-[10px] font-bold border border-emerald-400/40 backdrop-blur-sm">✅ SLA: 99.8% Estabilidad</span>
       </div>
     </div>
   )
@@ -148,92 +141,131 @@ function ServiceCard({ service, onAdd }) {
   )
 }
 
-// ─── OTP Login Modal ──────────────────────────────────────────────────────────
+// ─── Auth Modal (Login / Register tabs) ──────────────────────────────────────
 
-function LoginModal({ onClose, onLogin }) {
-  const [step, setStep]       = useState('cedula')  // cedula | otp
-  const [cedula, setCedula]   = useState('')
-  const [code, setCode]       = useState('')
-  const [busy, setBusy]       = useState(false)
-  const [mockCode]            = useState(() => String(Math.floor(1000 + Math.random() * 9000)))
+function AuthModal({ onClose, onLogin }) {
+  const [tab,        setTab]      = useState('login')   // 'login' | 'register'
+  const [nombre,     setNombre]   = useState('')
+  const [email,      setEmail]    = useState('')
+  const [password,   setPassword] = useState('')
+  const [showPwd,    setShowPwd]  = useState(false)
+  const [busy,       setBusy]     = useState(false)
 
-  async function sendOTP() {
-    if (cedula.trim().length < 9) { toast.error('Cédula/RNC inválido.'); return }
+  async function handleLogin(e) {
+    e.preventDefault()
     setBusy(true)
-    await new Promise(r => setTimeout(r, 800))
-    setBusy(false)
-    toast.success(`SMS enviado al número registrado para ${cedula}. Código de prueba: ${mockCode}`, { duration: 10000 })
-    setStep('otp')
+    try {
+      const r = await fetch(`${API}/api/portal/auth/login`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: email.trim().toLowerCase(), password }),
+      })
+      const data = await r.json()
+      if (!r.ok) { toast.error(data.error ?? 'Error al iniciar sesión.'); return }
+      onLogin(data)
+    } finally {
+      setBusy(false)
+    }
   }
 
-  async function verifyOTP() {
-    if (code.length !== 4) { toast.error('Ingresa el código de 4 dígitos.'); return }
+  async function handleRegister(e) {
+    e.preventDefault()
+    if (password.length < 6) { toast.error('Contraseña mínimo 6 caracteres.'); return }
     setBusy(true)
-    await new Promise(r => setTimeout(r, 600))
-    if (code === mockCode) {
-      onLogin({ cedula, nombre: 'Cliente ACR', noCliente: 'ACR-00042' })
-    } else {
-      toast.error('Código incorrecto. Intenta de nuevo.')
+    try {
+      const r = await fetch(`${API}/api/portal/auth/register`, {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nombre: nombre.trim(), email: email.trim().toLowerCase(), password }),
+      })
+      const data = await r.json()
+      if (!r.ok) { toast.error(data.error ?? 'Error al registrarse.'); return }
+      onLogin(data)
+    } finally {
+      setBusy(false)
     }
-    setBusy(false)
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
       <div className="relative z-10 w-full max-w-sm bg-slate-900 border border-slate-700/60 rounded-xl shadow-2xl overflow-hidden">
+        {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 bg-blue-600/5">
           <div className="flex items-center gap-2">
             <Zap size={16} className="text-blue-400" />
             <span className="text-sm font-bold text-slate-100">Acceso al Portal</span>
           </div>
-          <button onClick={onClose} className="text-slate-500 hover:text-slate-100"><X size={16} /></button>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={16} /></button>
         </div>
-        <div className="p-6 space-y-4">
-          {step === 'cedula' ? (
-            <>
-              <p className="text-xs text-slate-400">Ingresa tu Cédula o RNC para recibir un código de acceso por SMS.</p>
-              <div>
-                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Cédula / RNC</label>
+
+        {/* Tabs */}
+        <div className="flex border-b border-slate-800">
+          {[['login', 'Iniciar Sesión'], ['register', 'Registrarse']].map(([id, label]) => (
+            <button key={id} onClick={() => setTab(id)}
+              className={`flex-1 py-2.5 text-sm font-semibold transition-colors ${tab === id ? 'text-blue-400 border-b-2 border-blue-500 bg-blue-600/5' : 'text-slate-500 hover:text-slate-300'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        <form onSubmit={tab === 'login' ? handleLogin : handleRegister} className="p-6 space-y-4">
+          {tab === 'register' && (
+            <div>
+              <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Nombre completo</label>
+              <div className="relative">
+                <User size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
                 <input
-                  type="text" value={cedula} onChange={e => setCedula(e.target.value.replace(/\D/g, ''))}
-                  placeholder="001-0000000-0"
-                  className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2.5 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors font-mono tracking-wider"
-                  autoFocus maxLength={11}
+                  type="text" value={nombre} onChange={e => setNombre(e.target.value)}
+                  placeholder="Tu nombre" required minLength={2}
+                  className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
                 />
               </div>
-              <button onClick={sendOTP} disabled={busy || cedula.length < 9}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
-                {busy ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <Phone size={14} />}
-                Enviar código SMS
-              </button>
-            </>
-          ) : (
-            <>
-              <div className="text-center">
-                <div className="w-12 h-12 rounded-full bg-blue-600/15 flex items-center justify-center mx-auto mb-3">
-                  <Phone size={20} className="text-blue-400" />
-                </div>
-                <p className="text-xs text-slate-400">Ingresa el código de 4 dígitos enviado a tu número.</p>
-              </div>
-              <input
-                type="text" inputMode="numeric" maxLength={4}
-                value={code} onChange={e => setCode(e.target.value.replace(/\D/g, ''))}
-                placeholder="0000"
-                className="w-full text-center text-3xl font-mono tracking-[0.6em] bg-slate-800 border border-slate-700 focus:border-blue-500 focus:outline-none rounded-lg px-4 py-3 text-slate-100 placeholder-slate-600 transition-colors"
-                autoFocus
-              />
-              <button onClick={verifyOTP} disabled={busy || code.length !== 4}
-                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
-                {busy ? <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" /> : <LogIn size={14} />}
-                Verificar y Entrar
-              </button>
-              <button onClick={() => setStep('cedula')} className="w-full text-xs text-slate-600 hover:text-slate-400 transition-colors py-1">
-                ← Cambiar número
-              </button>
-            </>
+            </div>
           )}
-        </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Email</label>
+            <div className="relative">
+              <Mail size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+              <input
+                type="email" value={email} onChange={e => setEmail(e.target.value)}
+                placeholder="tu@email.com" required autoComplete="email"
+                className="w-full pl-9 pr-3 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Contraseña</label>
+            <div className="relative">
+              <Lock size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-600" />
+              <input
+                type={showPwd ? 'text' : 'password'} value={password} onChange={e => setPassword(e.target.value)}
+                placeholder="••••••••" required minLength={6}
+                className="w-full pl-9 pr-10 py-2.5 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors"
+              />
+              <button type="button" onClick={() => setShowPwd(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-600 hover:text-slate-400 transition-colors">
+                {showPwd ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+
+          <button type="submit" disabled={busy}
+            className="w-full flex items-center justify-center gap-2 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+            {busy ? <Loader2 size={14} className="animate-spin" /> : <LogIn size={14} />}
+            {tab === 'login' ? 'Entrar' : 'Crear cuenta'}
+          </button>
+
+          <p className="text-center text-xs text-slate-600">
+            {tab === 'login' ? '¿No tienes cuenta?' : '¿Ya tienes cuenta?'}{' '}
+            <button type="button" onClick={() => setTab(tab === 'login' ? 'register' : 'login')}
+              className="text-blue-400 hover:text-blue-300 transition-colors font-medium">
+              {tab === 'login' ? 'Regístrate' : 'Inicia sesión'}
+            </button>
+          </p>
+        </form>
       </div>
     </div>
   )
@@ -242,9 +274,9 @@ function LoginModal({ onClose, onLogin }) {
 // ─── Customer Dashboard ───────────────────────────────────────────────────────
 
 const MOCK_FACTURAS = [
-  { id: '1', noFactura: 'B01-000234', fecha: '2026-04-01', monto: 2500,  estado: 'Pagada',  servicio: 'Internet Pro 30 Mbps' },
-  { id: '2', noFactura: 'B01-000275', fecha: '2026-05-01', monto: 2500,  estado: 'Vencida', servicio: 'Internet Pro 30 Mbps' },
-  { id: '3', noFactura: 'B01-000310', fecha: '2026-06-01', monto: 2500,  estado: 'Emitida', servicio: 'Internet Pro 30 Mbps' },
+  { id: '1', noFactura: 'B01-000234', fecha: '2026-04-01', monto: 2500, estado: 'Pagada',  servicio: 'Internet Pro 30 Mbps' },
+  { id: '2', noFactura: 'B01-000275', fecha: '2026-05-01', monto: 2500, estado: 'Vencida', servicio: 'Internet Pro 30 Mbps' },
+  { id: '3', noFactura: 'B01-000310', fecha: '2026-06-01', monto: 2500, estado: 'Emitida', servicio: 'Internet Pro 30 Mbps' },
 ]
 
 function Dashboard({ cliente, onLogout, navigate }) {
@@ -266,10 +298,9 @@ function Dashboard({ cliente, onLogout, navigate }) {
       </header>
 
       <div className="max-w-3xl mx-auto px-4 py-8 space-y-6">
-        {/* Welcome */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-slate-100">Hola, {cliente.nombre} 👋</h1>
+            <h1 className="text-xl font-bold text-slate-100">Hola, {cliente.razonSocial ?? cliente.nombre} 👋</h1>
             <p className="text-sm text-slate-500 mt-0.5">Aquí tienes el resumen de tu cuenta.</p>
           </div>
         </div>
@@ -296,8 +327,7 @@ function Dashboard({ cliente, onLogout, navigate }) {
               </span>
               <button
                 onClick={() => navigate('/portal/tracking/ORD-2026-0042')}
-                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors underline underline-offset-2"
-              >
+                className="text-[10px] text-blue-400 hover:text-blue-300 transition-colors underline underline-offset-2">
                 Seguir técnico →
               </button>
             </div>
@@ -377,10 +407,10 @@ function Quoter({ onSolicitar }) {
   const [puntos,  setPuntos]  = useState(0)
   const [tipo,    setTipo]    = useState('hogar')
 
-  const selectedPlan = QUOTER_PLANS.find(p => p.id === plan)
+  const selectedPlan  = QUOTER_PLANS.find(p => p.id === plan)
   const precioCamaras = camaras * 3500
   const precioPuntos  = puntos  * 1200
-  const total = (selectedPlan?.base ?? 0) + precioCamaras + precioPuntos
+  const total         = (selectedPlan?.base ?? 0) + precioCamaras + precioPuntos
 
   return (
     <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6 space-y-5">
@@ -390,7 +420,6 @@ function Quoter({ onSolicitar }) {
         <span className="text-[10px] font-semibold text-amber-400 bg-amber-600/15 border border-amber-600/30 px-2 py-0.5 rounded-full ml-1">Cotizador Inbound</span>
       </div>
 
-      {/* Tipo */}
       <div className="grid grid-cols-2 gap-2">
         {[{ id: 'hogar', label: 'Hogar / Residencial', icon: Home }, { id: 'empresa', label: 'Empresa / Negocio', icon: Building2 }].map(t => (
           <button key={t.id} onClick={() => setTipo(t.id)}
@@ -400,7 +429,6 @@ function Quoter({ onSolicitar }) {
         ))}
       </div>
 
-      {/* Plan */}
       <div>
         <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Plan de Internet</label>
         <div className="grid grid-cols-2 gap-2">
@@ -416,28 +444,21 @@ function Quoter({ onSolicitar }) {
         </div>
       </div>
 
-      {/* Cameras */}
       <div>
         <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
           Cámaras CCTV: <span className="text-slate-300">{camaras === 0 ? 'Ninguna' : `${camaras} cámara${camaras !== 1 ? 's' : ''}`}</span>
         </label>
-        <input type="range" min={0} max={16} step={1} value={camaras} onChange={e => setCamaras(+e.target.value)}
-          className="w-full accent-emerald-500 h-1.5" />
-        <div className="flex justify-between text-[9px] text-slate-700 mt-1 font-mono">
-          <span>0</span><span>4</span><span>8</span><span>12</span><span>16</span>
-        </div>
+        <input type="range" min={0} max={16} step={1} value={camaras} onChange={e => setCamaras(+e.target.value)} className="w-full accent-emerald-500 h-1.5" />
+        <div className="flex justify-between text-[9px] text-slate-700 mt-1 font-mono"><span>0</span><span>4</span><span>8</span><span>12</span><span>16</span></div>
       </div>
 
-      {/* Network points */}
       <div>
         <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
           Puntos de Red LAN: <span className="text-slate-300">{puntos === 0 ? 'Ninguno' : `${puntos} punto${puntos !== 1 ? 's' : ''}`}</span>
         </label>
-        <input type="range" min={0} max={24} step={1} value={puntos} onChange={e => setPuntos(+e.target.value)}
-          className="w-full accent-amber-500 h-1.5" />
+        <input type="range" min={0} max={24} step={1} value={puntos} onChange={e => setPuntos(+e.target.value)} className="w-full accent-amber-500 h-1.5" />
       </div>
 
-      {/* Price summary */}
       <div className="bg-slate-800/60 rounded-xl p-4 space-y-2 border border-slate-700/30">
         <div className="flex justify-between text-xs text-slate-400">
           <span>Internet {selectedPlan?.label}</span><span>RD$ {fmt(selectedPlan?.base)}/mes</span>
@@ -469,19 +490,50 @@ function Quoter({ onSolicitar }) {
 
 // ─── Main portal ──────────────────────────────────────────────────────────────
 
+const DEFAULT_SETTINGS = { mostrarMapa: true, mostrarCotizador: true, mostrarServicios: true }
+
 export default function CustomerPortal() {
-  const navigate          = useNavigate()
-  const [catActiva, setCatActiva] = useState('Todos')
-  const [loginOpen, setLoginOpen] = useState(false)
-  const [contactVisible, setContactVisible] = useState(false)
-  const [cliente, setCliente] = useState(null)  // null = not authenticated
+  const navigate = useNavigate()
+  const [catActiva,       setCatActiva]       = useState('Todos')
+  const [loginOpen,       setLoginOpen]       = useState(false)
+  const [contactVisible,  setContactVisible]  = useState(false)
+  const [cliente,         setCliente]         = useState(null)
+  const [settings,        setSettings]        = useState(DEFAULT_SETTINGS)
+  const [sessionLoading,  setSessionLoading]  = useState(true)
 
-  const serviciosFiltrados = catActiva === 'Todos' ? SERVICES : SERVICES.filter(s => s.category === catActiva)
+  // Restore session + fetch settings on mount
+  useEffect(() => {
+    let cancelled = false
+    async function init() {
+      const [meRes, settingsRes] = await Promise.allSettled([
+        fetch(`${API}/api/portal/auth/me`, { credentials: 'include' }),
+        fetch(`${API}/api/portal/settings`),
+      ])
+      if (cancelled) return
+      if (meRes.status === 'fulfilled' && meRes.value.ok) {
+        const data = await meRes.value.json()
+        setCliente(data)
+      }
+      if (settingsRes.status === 'fulfilled' && settingsRes.value.ok) {
+        const data = await settingsRes.value.json()
+        setSettings(prev => ({ ...prev, ...data }))
+      }
+      setSessionLoading(false)
+    }
+    init()
+    return () => { cancelled = true }
+  }, [])
 
-  function handleLogin(c) {
-    setCliente(c)
+  async function handleLogout() {
+    await fetch(`${API}/api/portal/auth/logout`, { method: 'POST', credentials: 'include' })
+    setCliente(null)
+    toast.success('Sesión cerrada.')
+  }
+
+  function handleLogin(data) {
+    setCliente(data)
     setLoginOpen(false)
-    toast.success(`Bienvenido, ${c.nombre}!`)
+    toast.success(`Bienvenido, ${data.razonSocial ?? data.nombre}!`)
   }
 
   function handleSolicitar(datos) {
@@ -492,8 +544,18 @@ export default function CustomerPortal() {
     toast.success(`"${s.nombre}" añadido. Un asesor te contactará pronto.`, { duration: 4000 })
   }
 
+  const serviciosFiltrados = catActiva === 'Todos' ? SERVICES : SERVICES.filter(s => s.category === catActiva)
+
+  if (sessionLoading) {
+    return (
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+        <Loader2 size={22} className="animate-spin text-blue-500" />
+      </div>
+    )
+  }
+
   if (cliente) {
-    return <Dashboard cliente={cliente} onLogout={() => setCliente(null)} navigate={navigate} />
+    return <Dashboard cliente={cliente} onLogout={handleLogout} navigate={navigate} />
   }
 
   return (
@@ -509,7 +571,7 @@ export default function CustomerPortal() {
             </div>
             <div>
               <div className="text-sm font-black text-slate-100 leading-none">ACR Networks</div>
-              <div className="text-[9px] text-slate-600 font-mono leading-none mt-0.5">& Solutions</div>
+              <div className="text-[9px] text-slate-600 font-mono leading-none mt-0.5">&amp; Solutions</div>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -562,10 +624,12 @@ export default function CustomerPortal() {
           WISP, videovigilancia e infraestructura de redes para empresas y hogares en Santo Domingo.
         </p>
         <div className="flex items-center justify-center gap-3">
-          <button onClick={() => document.getElementById('cotizador')?.scrollIntoView({ behavior: 'smooth' })}
-            className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors">
-            Armar mi Plan <ChevronRight size={16} />
-          </button>
+          {settings.mostrarCotizador && (
+            <button onClick={() => document.getElementById('cotizador')?.scrollIntoView({ behavior: 'smooth' })}
+              className="inline-flex items-center gap-2 px-6 py-3 rounded-xl bg-blue-600 hover:bg-blue-500 text-white font-semibold text-sm transition-colors">
+              Armar mi Plan <ChevronRight size={16} />
+            </button>
+          )}
           <button onClick={() => setLoginOpen(true)}
             className="inline-flex items-center gap-2 px-5 py-3 rounded-xl border border-slate-700 text-slate-300 hover:text-slate-100 hover:border-slate-600 font-semibold text-sm transition-colors">
             <LogIn size={14} />Acceder
@@ -574,53 +638,59 @@ export default function CustomerPortal() {
       </section>
 
       {/* Coverage Map */}
-      <section className="max-w-6xl mx-auto px-4 pb-12">
-        <div className="flex items-center justify-between mb-5">
-          <h2 className="text-xl font-bold text-slate-100">Cobertura de Red</h2>
-          <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-300 bg-emerald-600/15 border border-emerald-600/30 px-3 py-1.5 rounded-full">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />SLA: 99.8% Estabilidad
-          </span>
-        </div>
-        <CoverageMap />
-      </section>
+      {settings.mostrarMapa && (
+        <section className="max-w-6xl mx-auto px-4 pb-12">
+          <div className="flex items-center justify-between mb-5">
+            <h2 className="text-xl font-bold text-slate-100">Cobertura de Red</h2>
+            <span className="flex items-center gap-1.5 text-xs font-bold text-emerald-300 bg-emerald-600/15 border border-emerald-600/30 px-3 py-1.5 rounded-full">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />SLA: 99.8% Estabilidad
+            </span>
+          </div>
+          <CoverageMap />
+        </section>
+      )}
 
       {/* Quoter */}
-      <section id="cotizador" className="max-w-6xl mx-auto px-4 pb-16">
-        <div className="max-w-2xl mx-auto">
-          <Quoter onSolicitar={handleSolicitar} />
-        </div>
-      </section>
+      {settings.mostrarCotizador && (
+        <section id="cotizador" className="max-w-6xl mx-auto px-4 pb-16">
+          <div className="max-w-2xl mx-auto">
+            <Quoter onSolicitar={handleSolicitar} />
+          </div>
+        </section>
+      )}
 
       {/* Services */}
-      <section id="servicios" className="max-w-6xl mx-auto px-4 pb-20">
-        <div className="flex items-center justify-between mb-6">
-          <h2 className="text-2xl font-bold text-slate-100">Nuestros Servicios</h2>
-        </div>
-        <div className="flex gap-2 flex-wrap mb-6">
-          {CATEGORIES.map(cat => (
-            <button key={cat} onClick={() => setCatActiva(cat)}
-              className={`px-4 py-1.5 rounded-full text-sm font-semibold transition-colors ${catActiva === cat ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 border border-slate-700'}`}>
-              {cat}
-            </button>
-          ))}
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-          {serviciosFiltrados.map(s => <ServiceCard key={s.id} service={s} onAdd={handleAddService} />)}
-        </div>
-      </section>
+      {settings.mostrarServicios && (
+        <section id="servicios" className="max-w-6xl mx-auto px-4 pb-20">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-2xl font-bold text-slate-100">Nuestros Servicios</h2>
+          </div>
+          <div className="flex gap-2 flex-wrap mb-6">
+            {CATEGORIES.map(cat => (
+              <button key={cat} onClick={() => setCatActiva(cat)}
+                className={`px-4 py-1.5 rounded-full text-sm font-semibold transition-colors ${catActiva === cat ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700 hover:text-slate-200 border border-slate-700'}`}>
+                {cat}
+              </button>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+            {serviciosFiltrados.map(s => <ServiceCard key={s.id} service={s} onAdd={handleAddService} />)}
+          </div>
+        </section>
+      )}
 
       {/* Footer */}
       <footer className="border-t border-slate-800 py-8">
         <div className="max-w-6xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-4">
           <div className="flex items-center gap-2">
             <Zap size={14} className="text-blue-400" />
-            <span className="text-sm text-slate-500 font-mono">ACR Networks & Solutions · Santo Domingo, DO</span>
+            <span className="text-sm text-slate-500 font-mono">ACR Networks &amp; Solutions · Santo Domingo, DO</span>
           </div>
-          <span className="text-xs text-slate-700 font-mono">v2.0.0 · {new Date().getFullYear()}</span>
+          <span className="text-xs text-slate-700 font-mono">v2.1.0 · {new Date().getFullYear()}</span>
         </div>
       </footer>
 
-      {loginOpen && <LoginModal onClose={() => setLoginOpen(false)} onLogin={handleLogin} />}
+      {loginOpen && <AuthModal onClose={() => setLoginOpen(false)} onLogin={handleLogin} />}
     </div>
   )
 }

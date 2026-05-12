@@ -61,7 +61,8 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
     finally { setSaving(false) }
   }
 
-  const callerNivel  = user?.nivelMax ?? 0
+  const isOwner      = user?.permisos?.includes('sistema:owner') ?? false
+  const callerNivel  = isOwner ? 101 : (user?.nivelMax ?? 0)
   const sortedRoles  = [...roles].sort((a, b) => (b.nivel ?? 0) - (a.nivel ?? 0))
   const pwdValid     = !password || (password.length >= 8 && /[^a-zA-Z0-9\s]/.test(password))
   const canSave      = nombre.trim() && email.trim() && pwdValid && (!!empleado || password.length >= 8)
@@ -110,7 +111,7 @@ function FormularioEmpleado({ empleado, onClose, onSaved }) {
                 <div className="space-y-1.5 max-h-44 overflow-y-auto pr-1">
                   {sortedRoles.map(r => {
                     const on       = selectedRoleIds.includes(r.id)
-                    const locked   = (r.nivel ?? 0) >= callerNivel
+                    const locked   = !isOwner && (r.nivel ?? 0) >= callerNivel
                     return (
                       <label key={r.id} className={`flex items-center gap-2.5 p-2.5 rounded-lg border transition-all ${
                         locked

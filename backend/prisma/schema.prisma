@@ -250,11 +250,26 @@ model Cliente {
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
+  passwordHash   String?    @default("")
+
   @@index([noCliente])
   @@index([rnc])
   @@index([activo])
   @@index([razonSocial])
   @@index([createdAt])
+  @@index([email])
+}
+
+// ─── Portal ───────────────────────────────────────────────────────────────────
+
+model PortalSettings {
+  id                Int      @id @default(1)
+  mostrarEquipos    Boolean  @default(false)
+  permitirPagos     Boolean  @default(false)
+  mostrarMapa       Boolean  @default(true)
+  mostrarCotizador  Boolean  @default(true)
+  mostrarServicios  Boolean  @default(true)
+  updatedAt         DateTime @updatedAt
 }
 
 // ─── Servicios ────────────────────────────────────────────────────────────────

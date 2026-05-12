@@ -167,15 +167,18 @@ function PanelRol({ rol, permGroups, onUpdated }) {
     setRequire2FA(rol?.require2FA ?? false)
   }, [rol])
 
-  const isOwner    = me?.permisos?.includes('sistema:owner')
-  const myNivelMax = me?.nivelMax ?? 0
-  const nivelMax   = isOwner ? 100 : Math.max(0, myNivelMax - 1)
+  const isOwner    = me?.permisos?.includes('sistema:owner') ?? false
+  const myNivelMax = isOwner ? 100 : (me?.nivelMax ?? 0)
+  // editMax: ceiling a non-owner can set; owner can set 0-100
+  const editMax    = isOwner ? 100 : Math.max(0, myNivelMax - 1)
+  // canEditNivel: false if editing a role whose nivel exceeds caller's authority
+  const canEditNivel = isOwner || nivel <= editMax
 
   async function guardar() {
     if (!nombre.trim()) { toast.error('El nombre del rol es obligatorio.'); return }
-    const nivelVal = Math.min(Math.max(0, parseInt(nivel) || 0), 100)
+    const nivelVal = Math.min(Math.max(0, parseInt(nivel) || 0), isOwner ? 100 : editMax)
     if (!isOwner && nivelVal >= myNivelMax) {
-      toast.error(`Nivel máximo permitido para ti: ${myNivelMax - 1}.`); return
+      toast.error(`Nivel máximo permitido: ${editMax}.`); return
     }
     setSaving(true)
     try {
@@ -216,25 +219,28 @@ function PanelRol({ rol, permGroups, onUpdated }) {
 
       <div>
         <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">
-          Nivel de Privilegio (0 – {nivelMax})
+          Nivel de Privilegio (0 – {editMax})
+          {!canEditNivel && <span className="ml-2 text-amber-500 normal-case font-normal">— solo lectura (nivel superior al tuyo)</span>}
         </label>
         <div className="flex items-center gap-3">
           <input
-            type="range" min={0} max={nivelMax} step={1}
-            value={Math.min(nivel, nivelMax)}
+            type="range" min={0} max={editMax} step={1}
+            value={nivel}
             onChange={e => setNivel(parseInt(e.target.value))}
-            className="flex-1 accent-blue-500 h-1.5"
+            disabled={!canEditNivel}
+            className="flex-1 accent-blue-500 h-1.5 disabled:opacity-40"
           />
           <input
-            type="number" min={0} max={nivelMax} step={1}
-            value={Math.min(nivel, nivelMax)}
-            onChange={e => setNivel(Math.min(nivelMax, Math.max(0, parseInt(e.target.value) || 0)))}
-            className="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-slate-100 text-center focus:outline-none focus:border-blue-500 transition-colors"
+            type="number" min={0} max={editMax} step={1}
+            value={nivel}
+            onChange={e => setNivel(Math.max(0, Math.min(editMax, parseInt(e.target.value) || 0)))}
+            disabled={!canEditNivel}
+            className="w-16 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-slate-100 text-center focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-40"
           />
         </div>
         <p className="text-[10px] text-slate-600 mt-1 font-mono">
           {nivel === 0 ? 'Sin privilegio especial' : nivel < 50 ? 'Operativo' : nivel < 80 ? 'Supervisor' : nivel < 100 ? 'Administrador' : 'Propietario'}
-          {!isOwner && ` · máx. permitido: ${nivelMax}`}
+          {!isOwner && ` · tu techo: ${editMax}`}
         </p>
       </div>
 
