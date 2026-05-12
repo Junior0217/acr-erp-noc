@@ -350,6 +350,13 @@ async function main() {
       { ...nextFiscal(), clienteId: c03.id, estado: EstadoFactura.Vencida, tipoNcf: 'Fiscal',           itbis: true,  sub: 3500,  fechaEmision: dAgo(65),  fechaPago: null,       lineas: [{ descripcion: 'Soporte Técnico 3h',              cantidad: 3, precioUnitario: 1200  }] },
       { ...nextFiscal(), clienteId: c06.id, estado: EstadoFactura.Emitida, tipoNcf: 'Fiscal',           itbis: true,  sub: 4500,  fechaEmision: dAgo(15),  fechaPago: null,       lineas: [{ descripcion: 'Mantenimiento preventivo mensual', cantidad: 1, precioUnitario: 4500  }] },
       { ...nextCF(),     clienteId: c04.id, estado: EstadoFactura.Emitida, tipoNcf: 'Consumidor Final', itbis: false, sub: 1500,  fechaEmision: dAgo(10),  fechaPago: null,       lineas: [{ descripcion: 'Plan Fibra 10 Mbps',              cantidad: 1, precioUnitario: 1500  }] },
+      // ── Pagadas esta semana (para Reporte Semanal vivo) ──
+      { ...nextFiscal(), clienteId: c02.id, estado: EstadoFactura.Pagada,  tipoNcf: 'Fiscal',           itbis: true,  sub: 15000, fechaEmision: dAgo(1), fechaPago: dAgo(1), lineas: [{ descripcion: 'Instalación CCTV 8 Cámaras',        cantidad: 1, precioUnitario: 15000 }] },
+      { ...nextCF(),     clienteId: c03.id, estado: EstadoFactura.Pagada,  tipoNcf: 'Consumidor Final', itbis: false, sub: 4500,  fechaEmision: dAgo(2), fechaPago: dAgo(2), lineas: [{ descripcion: 'Reparación motherboard',            cantidad: 1, precioUnitario: 3500 }, { descripcion: 'Memoria RAM 8GB DDR4', cantidad: 1, precioUnitario: 1000 }] },
+      { ...nextFiscal(), clienteId: c06.id, estado: EstadoFactura.Pagada,  tipoNcf: 'Fiscal',           itbis: true,  sub: 28000, fechaEmision: dAgo(3), fechaPago: dAgo(3), lineas: [{ descripcion: 'CCTV 16 Cámaras Hospital fase 2',   cantidad: 1, precioUnitario: 28000 }] },
+      { ...nextCF(),     clienteId: c05.id, estado: EstadoFactura.Pagada,  tipoNcf: 'Consumidor Final', itbis: false, sub: 2500,  fechaEmision: dAgo(4), fechaPago: dAgo(4), lineas: [{ descripcion: 'Soporte técnico remoto + diagnóstico', cantidad: 1, precioUnitario: 2500 }] },
+      { ...nextFiscal(), clienteId: c10.id, estado: EstadoFactura.Pagada,  tipoNcf: 'Fiscal',           itbis: true,  sub: 9500,  fechaEmision: dAgo(5), fechaPago: dAgo(5), lineas: [{ descripcion: 'Rack 12U + Patch Panel',             cantidad: 1, precioUnitario: 9500 }] },
+      { ...nextCF(),     clienteId: c08.id, estado: EstadoFactura.Pagada,  tipoNcf: 'Consumidor Final', itbis: false, sub: 1800,  fechaEmision: dAgo(6), fechaPago: dAgo(6), lineas: [{ descripcion: 'Instalación SO + drivers',           cantidad: 1, precioUnitario: 1800 }] },
     ]
 
     for (const f of facturas) {
@@ -521,7 +528,7 @@ async function main() {
 
   // ─── 15. TicketTaller (5 tickets, varios estados) ──────────────────────────
   const tickCount = await prisma.ticketTaller.count()
-  if (tickCount < 5) {
+  if (tickCount < 6) {
     function pin6() {
       const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; let s = ''
       for (let i = 0; i < 6; i++) s += A[Math.floor(Math.random() * A.length)]
@@ -533,12 +540,13 @@ async function main() {
       { noTicket: 'TLR-00003', clienteId: c05.id, tecnicoId: empTec1.id, equipo: 'NVR Hikvision',         marca: 'Hikvision', modelo: 'DS-7608NI', numeroSerie: 'HK-NV-7608-A', falla: 'Pérdida de canales 3 y 5.',                                     estado: 'Listo',           diagnostico: 'Puertos PoE quemados. Reemplazo de placa madre del NVR.',  costoEstimado: 12000, recibidoEn: dAgo(8), listoEn: dAgo(1) },
       { noTicket: 'TLR-00004', clienteId: c02.id, tecnicoId: null,        equipo: 'Laptop HP Pavilion',   marca: 'HP',      modelo: '14-dv0500', numeroSerie: 'HP-PAV-3322',   falla: 'Recuperar archivos de disco dañado.',                            estado: 'Recibido',         costoEstimado: 4500, recibidoEn: dAgo(0) },
       { noTicket: 'TLR-00005', clienteId: c08.id, tecnicoId: empTec2.id, equipo: 'PC Workstation',       marca: 'Lenovo',  modelo: 'ThinkStation', numeroSerie: 'LV-TS-AA01',  falla: 'Limpieza preventiva + cambio de pasta térmica.',                 estado: 'Entregado',        diagnostico: 'Mantenimiento completo + reemplazo de pasta térmica.',     costoEstimado: 1500, recibidoEn: dAgo(15), listoEn: dAgo(12), entregadoEn: dAgo(10) },
+      { noTicket: 'TLR-00006', clienteId: c03.id, tecnicoId: null,        equipo: 'iMac Antiguo',          marca: 'Apple',   modelo: 'iMac 21.5"',  numeroSerie: 'IM-2014-X1',   falla: 'Pantalla rota. Cliente decidió no reparar.',                     estado: 'Cancelado',        diagnostico: 'Pantalla con costo > 90% del equipo. Cliente retiró sin reparar.', costoEstimado: 0, recibidoEn: dAgo(12) },
     ]
     for (const t of tickets) {
       const exists = await prisma.ticketTaller.findFirst({ where: { noTicket: t.noTicket } })
       if (!exists) await prisma.ticketTaller.create({ data: { ...t, codigoPin: pin6() } })
     }
-    console.log('  ✓ TicketTaller (5) — estados variados')
+    console.log('  ✓ TicketTaller (6) — 1 por cada estado del enum')
   } else {
     console.log(`  ↷ TicketTaller ya tiene ${tickCount} tickets — saltando`)
   }
@@ -750,6 +758,37 @@ async function main() {
     }
     console.log(`  ✓ ${ots.length} OT(s) cerradas para reportes`)
   } else { console.log(`  ↷ OTs cerradas ya hay ${otsCerradas} — saltando`) }
+
+  // ─── 24. IncidenciaReconciliacion (seed historial, además del cron) ────────
+  const incCount = await prisma.incidenciaReconciliacion.count()
+  if (incCount < 3) {
+    const incidencias = [
+      {
+        tipo: 'ROBO_EQUIPO', severidad: 'CRITICA',
+        descripcion: 'Salida de "Cámara Hikvision DS-2CD" (1 unid.) del Kardex sin OT vinculada el 2026-05-10.',
+        datos: { sku: 'CAM-HIK-DS2CD', cantidad: 1, fecha: '2026-05-10', _hash: 'seed-robo-1' },
+        resueltoEn: dAgo(3), resolucion: 'Falsa alarma. Equipo encontrado en bodega secundaria. Se actualizó manualmente Kardex.', asignadoA: empSup.id,
+      },
+      {
+        tipo: 'FUGA_EFECTIVO', severidad: 'ALTA',
+        descripcion: 'OT OT-9999 cerrada el 2026-04-28 SIN factura emitida. Técnico: Pedro Demo.',
+        datos: { noOT: 'OT-9999', tecnico: 'Pedro Demo', cerradaEn: '2026-04-28', _hash: 'seed-fuga-1' },
+        resueltoEn: null, resolucion: null,
+      },
+      {
+        tipo: 'DISCREPANCIA_STOCK', severidad: 'MEDIA',
+        descripcion: 'Producto "Cable UTP Cat6" (CAB-CAT6): stockActual=120, balance Kardex=125, diferencia=-5.',
+        datos: { sku: 'CAB-CAT6', stockActual: 120, balanceKardex: 125, _hash: 'seed-disc-1' },
+        resueltoEn: null, resolucion: null,
+      },
+    ]
+    for (const i of incidencias) {
+      await prisma.incidenciaReconciliacion.create({ data: i })
+    }
+    console.log(`  ✓ IncidenciaReconciliacion (${incidencias.length}) — 1 resuelta + 2 pendientes`)
+  } else {
+    console.log(`  ↷ IncidenciaReconciliacion ya tiene ${incCount} — saltando`)
+  }
 
   // ─── Final summary ────────────────────────────────────────────────────────
   const [fClientes, fProds, fItems, fFacts, fCots, fOTs, fSvcs, fMovs, fEmps, fSups, fPros, fAsis, fUsr, fTick, fCred, fAct, fPres, fFoto, fAud] = await Promise.all([

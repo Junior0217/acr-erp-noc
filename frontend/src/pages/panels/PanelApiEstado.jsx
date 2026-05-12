@@ -51,8 +51,8 @@ export default function PanelApiEstado() {
 
   const grouped = useMemo(() => {
     return filtered.reduce((acc, e) => {
-      const grupo = e.path.split('/')[2] || 'root'
-      ;(acc[grupo] = acc[grupo] || []).push(e)
+      const key = e.modulo ? `${e.emoji ?? ''} ${e.modulo}`.trim() : (e.path.split('/')[2] || 'root')
+      ;(acc[key] = acc[key] || []).push(e)
       return acc
     }, {})
   }, [filtered])
@@ -114,7 +114,7 @@ export default function PanelApiEstado() {
           <div key={g} className="bg-slate-800/40 border border-slate-700/50 rounded-xl overflow-hidden">
             <button onClick={() => toggleGroup(g)} className="w-full flex items-center gap-2 px-4 py-3 hover:bg-slate-800/60 text-left">
               {open ? <ChevronDown size={14} className="text-slate-500" /> : <ChevronRight size={14} className="text-slate-500" />}
-              <span className="text-sm font-bold text-slate-200 uppercase tracking-wider">/api/{g}</span>
+              <span className="text-sm font-bold text-slate-200 tracking-wider">{g}</span>
               <span className="ml-auto text-xs text-slate-500">{items.length} endpoint{items.length !== 1 ? 's' : ''}</span>
             </button>
             {open && (

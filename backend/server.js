@@ -2036,45 +2036,106 @@ app.patch('/api/incidencias/:id/resolver', verificarJWT, requerirPermiso('sistem
 
 // ─── API Dictionary: endpoint meta / introspección ────────────────────────────
 
+// Mapping path -> módulo de negocio (NO refactor de URLs, solo agrupación lógica)
+const MODULE_MAP = [
+  { test: /^\/api\/_meta/,                                    modulo: 'Sistema',         emoji: '⚙️' },
+  { test: /^\/api\/health/,                                   modulo: 'Sistema',         emoji: '⚙️' },
+  { test: /^\/api\/auth\//,                                   modulo: 'Autenticación',   emoji: '🔐' },
+  { test: /^\/api\/incidencias/,                              modulo: 'Seguridad',       emoji: '🛡️' },
+  { test: /^\/api\/credenciales/,                             modulo: 'Seguridad (Vault)', emoji: '🔑' },
+  { test: /^\/api\/empleados/,                                modulo: 'RRHH',            emoji: '👥' },
+  { test: /^\/api\/asistencia/,                               modulo: 'RRHH',            emoji: '👥' },
+  { test: /^\/api\/roles/,                                    modulo: 'RRHH',            emoji: '👥' },
+  { test: /^\/api\/clientes/,                                 modulo: 'CRM',             emoji: '🤝' },
+  { test: /^\/api\/suplidores/,                               modulo: 'CRM',             emoji: '🤝' },
+  { test: /^\/api\/prospectos/,                               modulo: 'CRM',             emoji: '🤝' },
+  { test: /^\/api\/usuarios-portal/,                          modulo: 'CRM',             emoji: '🤝' },
+  { test: /^\/api\/(productos|categorias|inventario|kardex)/, modulo: 'Inventario',      emoji: '📦' },
+  { test: /^\/api\/prestamos/,                                modulo: 'Inventario',      emoji: '📦' },
+  { test: /^\/api\/(items-catalogo|catalogo)/,                modulo: 'Ventas',          emoji: '💼' },
+  { test: /^\/api\/(facturas|cotizaciones|cotizacion|ncf)/,   modulo: 'Ventas',          emoji: '💼' },
+  { test: /^\/api\/ordenes/,                                  modulo: 'Ventas',          emoji: '💼' },
+  { test: /^\/api\/(servicios|planes|plantillas)/,            modulo: 'Servicios',       emoji: '🛠️' },
+  { test: /^\/api\/taller/,                                   modulo: 'Taller (RMA)',    emoji: '🔧' },
+  { test: /^\/api\/track/,                                    modulo: 'Tracking Público',emoji: '📍' },
+  { test: /^\/api\/activos-cliente/,                          modulo: 'CMDB',            emoji: '🗂️' },
+  { test: /^\/api\/reportes/,                                 modulo: 'Reportes',        emoji: '📊' },
+  { test: /^\/api\/dashboard/,                                modulo: 'Dashboard',       emoji: '📈' },
+  { test: /^\/api\/mapa-noc/,                                 modulo: 'NOC / Mapa',      emoji: '🗺️' },
+  { test: /^\/api\/portal\/(auth|sos|dashboard|cotizacion|catalogo|checkout|settings|facturas)/, modulo: 'Portal B2C', emoji: '🌐' },
+  { test: /^\/api\/webhooks/,                                 modulo: 'Webhooks',        emoji: '🪝' },
+  { test: /^\/api\/carrito/,                                  modulo: 'Ventas',          emoji: '💼' },
+]
+function resolveModule(path) {
+  for (const m of MODULE_MAP) if (m.test.test(path)) return { modulo: m.modulo, emoji: m.emoji }
+  return { modulo: 'Otros', emoji: '❓' }
+}
+
+// Express 5.x: usa app.router (NO app._router). Robusto contra middlewares anidados.
 function _scanRoutes(app) {
   const out = []
+  const router = app.router ?? app._router // Express 5 vs 4 compat
+  if (!router || !Array.isArray(router.stack)) return out
+
   function walk(stack, basePath = '') {
     for (const layer of stack) {
-      if (layer.route) {
-        const path = basePath + layer.route.path
-        const methods = Object.keys(layer.route.methods).filter(m => layer.route.methods[m])
-        for (const m of methods) {
-          // Inferir guard de auth a partir del nombre de middlewares
-          const handlers = layer.route.stack.map(s => s.name).filter(Boolean)
-          const auth =
-            handlers.includes('verificarJWT')        ? 'JWT' :
-            handlers.includes('verificarPortalJWT')  ? 'PortalJWT' :
-            handlers.some(h => h.includes('Limiter'))? 'rate-limit' : 'public'
-          out.push({ method: m.toUpperCase(), path, auth, handlers })
+      try {
+        if (layer.route) {
+          // Express 5: route.path puede ser string, array de strings, o RegExp
+          let pathStr = layer.route.path
+          if (Array.isArray(pathStr)) pathStr = pathStr[0]
+          if (pathStr instanceof RegExp) pathStr = pathStr.toString()
+          if (typeof pathStr !== 'string') pathStr = String(pathStr ?? '')
+          const path = basePath + pathStr
+          const methodsObj = layer.route.methods || {}
+          const methods = Object.keys(methodsObj).filter(m => methodsObj[m])
+          for (const m of methods) {
+            const handlerNames = (layer.route.stack || []).map(s => s?.name).filter(Boolean)
+            const auth =
+              handlerNames.includes('verificarJWT')          ? 'JWT'        :
+              handlerNames.includes('verificarPortalJWT')    ? 'PortalJWT'  :
+              handlerNames.some(h => /Limiter$/.test(h))     ? 'rate-limit' :
+              'public'
+            const permiso =
+              handlerNames.find(h => h.startsWith('requerirPermiso')) ? 'role-restricted' : null
+            const { modulo, emoji } = resolveModule(path)
+            out.push({ method: m.toUpperCase(), path, modulo, emoji, auth, permiso })
+          }
+        } else if (layer.name === 'router' && layer.handle?.stack) {
+          walk(layer.handle.stack, basePath)
         }
-      } else if (layer.name === 'router' && layer.handle?.stack) {
-        walk(layer.handle.stack, basePath)
+      } catch (e) {
+        console.error('[SCAN ROUTES] skip layer:', e.message)
       }
     }
   }
-  walk(app._router.stack)
+  walk(router.stack)
   return out
 }
 
 let _routesCache = null
 app.get('/api/_meta/endpoints', verificarJWT, requerirPermiso('sistema:owner'), (req, res) => {
   try {
-    if (!_routesCache) _routesCache = _scanRoutes(app).sort((a, b) => a.path.localeCompare(b.path))
-    // Health public ping (no auth) — we expose generic info, no secrets
+    if (!_routesCache || req.query.refresh === '1') {
+      _routesCache = _scanRoutes(app)
+        .filter(r => r.path.startsWith('/api/'))
+        .sort((a, b) => a.modulo.localeCompare(b.modulo) || a.path.localeCompare(b.path))
+    }
     const grouped = _routesCache.reduce((acc, r) => {
-      const grupo = r.path.split('/')[2] || 'root'
-      ;(acc[grupo] = acc[grupo] || []).push(r)
+      const key = `${r.emoji} ${r.modulo}`
+      ;(acc[key] = acc[key] || []).push(r)
       return acc
     }, {})
-    res.json({ total: _routesCache.length, endpoints: _routesCache, grouped, generadoEn: new Date() })
+    res.json({
+      total:     _routesCache.length,
+      endpoints: _routesCache,
+      grouped,
+      modulos:   Object.keys(grouped).sort(),
+      generadoEn: new Date(),
+    })
   } catch (e) {
-    console.error('[META ENDPOINTS]', e.message)
-    res.json({ total: 0, endpoints: [], grouped: {}, _error: 'Error escaneando rutas.' })
+    console.error('[META ENDPOINTS]', e.message, e.stack)
+    res.json({ total: 0, endpoints: [], grouped: {}, modulos: [], _error: 'Error escaneando rutas: ' + e.message })
   }
 })
 
