@@ -13,13 +13,25 @@ import CarritoSlideOver from '../components/CarritoSlideOver'
 import ACRLogo from '../components/ACRLogo'
 
 function Setup2FAModal() {
-  const { refreshUser } = useAuth()
+  const { refreshUser, logout } = useAuth()
   const [qrCode, setQrCode]   = useState(null)
   const [secret, setSecret]   = useState('')
   const [pin, setPin]         = useState('')
   const [err, setErr]         = useState('')
   const [busy, setBusy]       = useState(false)
+  const [escapeBusy, setEscapeBusy] = useState(false)
   const [step, setStep]       = useState('loading') // loading | qr | error
+
+  async function handleEscape() {
+    // Escape hatch: el usuario no tiene su código a mano. Lo dejamos salir
+    // limpiamente vía logout en lugar de obligarlo a borrar caché.
+    setEscapeBusy(true)
+    try {
+      if (typeof logout === 'function') await logout()
+    } catch {}
+    // Hard redirect garantiza que el modal desaparezca aún si el state no se actualizó.
+    window.location.href = '/login'
+  }
 
   useEffect(() => {
     apiFetch('/api/auth/2fa/setup')
@@ -56,12 +68,23 @@ function Setup2FAModal() {
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/90 backdrop-blur-md">
       <div className="bg-slate-900 border border-blue-700/40 rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
-        <div className="bg-gradient-to-r from-blue-900/40 to-slate-900 px-6 py-5 border-b border-slate-800 flex items-center gap-3">
-          <ShieldCheck size={22} className="text-blue-400 flex-shrink-0" />
-          <div>
-            <h2 className="text-base font-semibold text-slate-100">Configura tu Autenticación de 2 Pasos</h2>
-            <p className="text-xs text-slate-400 mt-0.5">Tu rol de Propietario requiere 2FA. Hazlo ahora para continuar.</p>
+        <div className="bg-gradient-to-r from-blue-900/40 to-slate-900 px-6 py-5 border-b border-slate-800 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-3">
+            <ShieldCheck size={22} className="text-blue-400 flex-shrink-0" />
+            <div>
+              <h2 className="text-base font-semibold text-slate-100">Configura tu Autenticación de 2 Pasos</h2>
+              <p className="text-xs text-slate-400 mt-0.5">Tu rol exige 2FA para continuar.</p>
+            </div>
           </div>
+          <button
+            type="button"
+            onClick={handleEscape}
+            disabled={escapeBusy}
+            title="Cerrar sesión y volver al login"
+            className="text-slate-500 hover:text-red-400 transition-colors p-1.5 rounded hover:bg-slate-800 flex-shrink-0 disabled:opacity-50"
+          >
+            <LogOut size={16} />
+          </button>
         </div>
 
         <div className="px-6 py-6 space-y-5">
@@ -125,6 +148,19 @@ function Setup2FAModal() {
               </form>
             </>
           )}
+
+          {/* Escape hatch: usuario sin código a mano puede salir sin borrar caché */}
+          <div className="pt-3 border-t border-slate-800 text-center">
+            <button
+              type="button"
+              onClick={handleEscape}
+              disabled={escapeBusy}
+              className="text-[11px] text-slate-500 hover:text-slate-300 transition-colors inline-flex items-center gap-1.5 disabled:opacity-50"
+            >
+              {escapeBusy ? <Loader2 size={11} className="animate-spin" /> : <LogOut size={11} />}
+              ¿No tienes tu código ahora? Cerrar sesión y volver al login
+            </button>
+          </div>
         </div>
       </div>
     </div>

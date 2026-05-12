@@ -1,80 +1,103 @@
-// build: 2026-05-11
+// build: 2026-05-12
+import { lazy, Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster } from 'sonner'
 import { useAuth, AuthProvider } from './contexts/AuthContext'
 import { CartProvider } from './contexts/CartContext'
 import PWAUpdatePrompt from './components/PWAUpdatePrompt'
 import ErrorBoundary from './components/ErrorBoundary'
+
+// ─── EAGER (route shell + Login) ──────────────────────────────────────────────
+// AdminLayout + Login se cargan al inicio porque son el camino de entrada.
 import AdminLayout from './layouts/AdminLayout'
-import Dashboard from './pages/Dashboard'
-import Ventas from './pages/Ventas'
-import Compras from './pages/Compras'
-import Inventario from './pages/Inventario'
-import Contabilidad from './pages/Contabilidad'
-import RRHH from './pages/RRHH'
-import CRM from './pages/CRM'
-import MapaNOC from './pages/MapaNOC'
-import Reportes from './pages/Reportes'
-import Configuracion from './pages/Configuracion'
-import Servicios from './pages/Servicios'
 import Login from './pages/Login'
-import CustomerPortal from './pages/CustomerPortal'
-import PortalTracking from './pages/PortalTracking'
-import Taller from './pages/Taller'
-import TrackTicket from './pages/TrackTicket'
-import Tienda from './pages/Tienda'
-import CotizacionDGII from './pages/CotizacionDGII'
+
+// ─── LAZY (split por ruta para reducir bundle inicial) ────────────────────────
+const Dashboard       = lazy(() => import('./pages/Dashboard'))
+const Ventas          = lazy(() => import('./pages/Ventas'))
+const Compras         = lazy(() => import('./pages/Compras'))
+const Inventario      = lazy(() => import('./pages/Inventario'))
+const Contabilidad    = lazy(() => import('./pages/Contabilidad'))
+const RRHH            = lazy(() => import('./pages/RRHH'))
+const CRM             = lazy(() => import('./pages/CRM'))
+const MapaNOC         = lazy(() => import('./pages/MapaNOC'))
+const Reportes        = lazy(() => import('./pages/Reportes'))
+const Configuracion   = lazy(() => import('./pages/Configuracion'))
+const Servicios       = lazy(() => import('./pages/Servicios'))
+const Taller          = lazy(() => import('./pages/Taller'))
+const CustomerPortal  = lazy(() => import('./pages/CustomerPortal'))
+const PortalTracking  = lazy(() => import('./pages/PortalTracking'))
+const TrackTicket     = lazy(() => import('./pages/TrackTicket'))
+const Tienda          = lazy(() => import('./pages/Tienda'))
+const CotizacionDGII  = lazy(() => import('./pages/CotizacionDGII'))
+
+function PageLoader() {
+  return (
+    <div className="min-h-[60vh] flex items-center justify-center">
+      <div className="flex flex-col items-center gap-3 text-slate-500">
+        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+        <p className="text-xs font-mono tracking-wider">Cargando módulo...</p>
+      </div>
+    </div>
+  )
+}
+
+function FullPageLoader() {
+  return (
+    <div className="min-h-screen bg-slate-950 flex items-center justify-center">
+      <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
+    </div>
+  )
+}
 
 function AppRoutes() {
   const { user } = useAuth()
 
-  if (user === undefined) {
-    return (
-      <div className="min-h-screen bg-slate-950 flex items-center justify-center">
-        <div className="w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full animate-spin" />
-      </div>
-    )
-  }
+  if (user === undefined) return <FullPageLoader />
 
   if (user === null) {
     return (
-      <Routes>
-        <Route path="/login" element={<Login />} />
-        <Route path="/portal" element={<CustomerPortal />} />
-        <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
-        <Route path="/track" element={<TrackTicket />} />
-        <Route path="/track/:pin" element={<TrackTicket />} />
-        <Route path="/tienda" element={<Tienda />} />
-        <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
-        <Route path="*" element={<Navigate to="/login" replace />} />
-      </Routes>
+      <Suspense fallback={<FullPageLoader />}>
+        <Routes>
+          <Route path="/login" element={<Login />} />
+          <Route path="/portal" element={<CustomerPortal />} />
+          <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
+          <Route path="/track" element={<TrackTicket />} />
+          <Route path="/track/:pin" element={<TrackTicket />} />
+          <Route path="/tienda" element={<Tienda />} />
+          <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
+          <Route path="*" element={<Navigate to="/login" replace />} />
+        </Routes>
+      </Suspense>
     )
   }
 
   return (
-    <Routes>
-      <Route path="/login" element={<Navigate to="/" replace />} />
-      <Route path="/portal" element={<CustomerPortal />} />
-      <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
-      <Route path="/track" element={<TrackTicket />} />
-      <Route path="/track/:pin" element={<TrackTicket />} />
-      <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
-      <Route path="/" element={<AdminLayout />}>
-        <Route index element={<Dashboard />} />
-        <Route path="ventas" element={<Ventas />} />
-        <Route path="compras" element={<Compras />} />
-        <Route path="inventario" element={<Inventario />} />
-        <Route path="contabilidad" element={<Contabilidad />} />
-        <Route path="rrhh" element={<RRHH />} />
-        <Route path="servicios" element={<Servicios />} />
-        <Route path="taller" element={<Taller />} />
-        <Route path="crm" element={<CRM />} />
-        <Route path="mapa" element={<MapaNOC />} />
-        <Route path="reportes" element={<Reportes />} />
-        <Route path="configuracion" element={<Configuracion />} />
-      </Route>
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+    <Suspense fallback={<FullPageLoader />}>
+      <Routes>
+        <Route path="/login" element={<Navigate to="/" replace />} />
+        <Route path="/portal" element={<CustomerPortal />} />
+        <Route path="/portal/tracking/:ordenId" element={<PortalTracking />} />
+        <Route path="/track" element={<TrackTicket />} />
+        <Route path="/track/:pin" element={<TrackTicket />} />
+        <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
+        <Route path="/" element={<AdminLayout />}>
+          <Route index            element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
+          <Route path="ventas"    element={<Suspense fallback={<PageLoader />}><Ventas /></Suspense>} />
+          <Route path="compras"   element={<Suspense fallback={<PageLoader />}><Compras /></Suspense>} />
+          <Route path="inventario" element={<Suspense fallback={<PageLoader />}><Inventario /></Suspense>} />
+          <Route path="contabilidad" element={<Suspense fallback={<PageLoader />}><Contabilidad /></Suspense>} />
+          <Route path="rrhh"      element={<Suspense fallback={<PageLoader />}><RRHH /></Suspense>} />
+          <Route path="servicios" element={<Suspense fallback={<PageLoader />}><Servicios /></Suspense>} />
+          <Route path="taller"    element={<Suspense fallback={<PageLoader />}><Taller /></Suspense>} />
+          <Route path="crm"       element={<Suspense fallback={<PageLoader />}><CRM /></Suspense>} />
+          <Route path="mapa"      element={<Suspense fallback={<PageLoader />}><MapaNOC /></Suspense>} />
+          <Route path="reportes"  element={<Suspense fallback={<PageLoader />}><Reportes /></Suspense>} />
+          <Route path="configuracion" element={<Suspense fallback={<PageLoader />}><Configuracion /></Suspense>} />
+        </Route>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   )
 }
 

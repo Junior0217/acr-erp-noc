@@ -245,13 +245,13 @@ async function main() {
     upsertItem('Cerco Eléctrico Avanzado',        TipoFacturacion.VentaUnica, TipoServicio.CercoElectrico, 32000, 15000, TipoItem.SERVICIO,  null),
     upsertItem('Mantenimiento Preventivo CCTV',   TipoFacturacion.Recurrente, TipoServicio.CCTV,            3500,  0,    TipoItem.SERVICIO,  null),
     // ── Repuestos / Hardware (PRODUCTO)
-    upsertItem('Disco Duro HDD 1TB',              TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  3800,  2200, TipoItem.PRODUCTO,  15),
-    upsertItem('SSD 480GB SATA',                  TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  4500,  2800, TipoItem.PRODUCTO,  10),
-    upsertItem('Fuente Alimentación ATX 600W',    TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  2800,  1600, TipoItem.PRODUCTO,  8),
-    upsertItem('Memoria RAM 8GB DDR4',            TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  3200,  1900, TipoItem.PRODUCTO,  12),
-    upsertItem('Balun BNC Pasivo (par)',          TipoFacturacion.VentaUnica, TipoServicio.CCTV,             380,   180, TipoItem.PRODUCTO,  50),
-    upsertItem('Cable Coaxial RG59 (metro)',       TipoFacturacion.VentaUnica, TipoServicio.CCTV,              45,    20, TipoItem.PRODUCTO,  500),
-    upsertItem('Conector BNC Macho (×10)',        TipoFacturacion.VentaUnica, TipoServicio.CCTV,             250,   100, TipoItem.PRODUCTO,  200),
+    upsertItem('Disco Duro HDD 1TB',              TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  3800,  2200, TipoItem.ARTICULO,  15),
+    upsertItem('SSD 480GB SATA',                  TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  4500,  2800, TipoItem.ARTICULO,  10),
+    upsertItem('Fuente Alimentación ATX 600W',    TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  2800,  1600, TipoItem.ARTICULO,  8),
+    upsertItem('Memoria RAM 8GB DDR4',            TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  3200,  1900, TipoItem.ARTICULO,  12),
+    upsertItem('Balun BNC Pasivo (par)',          TipoFacturacion.VentaUnica, TipoServicio.CCTV,             380,   180, TipoItem.ARTICULO,  50),
+    upsertItem('Cable Coaxial RG59 (metro)',       TipoFacturacion.VentaUnica, TipoServicio.CCTV,              45,    20, TipoItem.ARTICULO,  500),
+    upsertItem('Conector BNC Macho (×10)',        TipoFacturacion.VentaUnica, TipoServicio.CCTV,             250,   100, TipoItem.ARTICULO,  200),
   ])
   console.log('  ✓ ItemCatalogo (26)')
 
@@ -759,6 +759,23 @@ async function main() {
     console.log(`  ✓ ${ots.length} OT(s) cerradas para reportes`)
   } else { console.log(`  ↷ OTs cerradas ya hay ${otsCerradas} — saltando`) }
 
+  // ─── 23.5 OTs y Facturas frescas (semana actual, para reportes vivos) ─────
+  const otsHoy = await prisma.ordenTrabajo.count({ where: { createdAt: { gte: dAgo(7) } } })
+  if (otsHoy < 3) {
+    const noOTFresca = (n) => `OT-${String(13 + n).padStart(4, '0')}-W`
+    const frescas = [
+      { noOT: noOTFresca(1), clienteId: c02.id, tecnicoId: empTec1.id, tipoOT: 'CCTV',       estado: 'Cerrada',    notasTecnicas: 'CCTV 8 cam plaza — entregado hoy.',  completadaEn: dAgo(0), createdAt: dAgo(2), garantiaDias: 365, limpiezaRealizada: true,  lineas: [{ descripcion: 'Cámara Domo Hikvision', cantidad: 8, precioUnitario: 4800, productoId: p04.id }] },
+      { noOT: noOTFresca(2), clienteId: c03.id, tecnicoId: empTec2.id, tipoOT: 'Reparacion', estado: 'EnProceso',  notasTecnicas: 'Reparación motherboard cliente — esperando pieza.', createdAt: dAgo(1),  lineas: [{ descripcion: 'SSD 480GB SATA', cantidad: 1, precioUnitario: 4500 }] },
+      { noOT: noOTFresca(3), clienteId: c05.id, tecnicoId: null,        tipoOT: 'CCTV',       estado: 'Pendiente',  notasTecnicas: 'Cotización aprobada hoy. Coordinar visita.', createdAt: dAgo(0),  lineas: [{ descripcion: 'Cámara Bala Dahua 4MP', cantidad: 4, precioUnitario: 5200, productoId: p05.id }] },
+    ]
+    for (const ot of frescas) {
+      const { lineas, ...rest } = ot
+      const exists = await prisma.ordenTrabajo.findFirst({ where: { noOT: rest.noOT } })
+      if (!exists) await prisma.ordenTrabajo.create({ data: { ...rest, lineas: { create: lineas } } })
+    }
+    console.log('  ✓ 3 OTs frescas creadas (Cerrada hoy, EnProceso ayer, Pendiente hoy)')
+  } else { console.log(`  ↷ OTs frescas ya hay ${otsHoy} en últimos 7 días — saltando`) }
+
   // ─── 24. IncidenciaReconciliacion (seed historial, además del cron) ────────
   const incCount = await prisma.incidenciaReconciliacion.count()
   if (incCount < 3) {
@@ -833,6 +850,33 @@ async function main() {
   console.log(`  Préstamos    : ${fPres}`)
   console.log(`  FotosOT      : ${fFoto}`)
   console.log(`  AuditLog     : ${fAud} eventos`)
+  console.log('═══════════════════════════════════════════════════════')
+
+  // ─── Diagnóstico UI: lo que cada vista del frontend debería ver ───────────
+  console.log('\n══ DIAGNOSTICO UI (data visible por filtro estándar) ════════')
+
+  const otPorEstado = await prisma.ordenTrabajo.groupBy({
+    by: ['estado'], _count: true, where: { deletedAt: null },
+  })
+  console.log('  /ventas (OT por estado, deletedAt=null):')
+  otPorEstado.forEach(g => console.log(`     ${String(g._count).padStart(3)} · ${g.estado}`))
+
+  const factCerradas = await prisma.factura.count({ where: { esCotizacion: false, deletedAt: null } })
+  const cotPendientes = await prisma.factura.count({ where: { esCotizacion: true,  deletedAt: null, estado: 'Borrador' } })
+  console.log(`  /ventas?tab=facturas:    ${factCerradas} (excluye cotizaciones)`)
+  console.log(`  /ventas?tab=cotizaciones: ${cotPendientes} (Borrador)`)
+
+  const itemsServ = await prisma.itemCatalogo.count({ where: { activo: true, tipoItem: 'SERVICIO' } })
+  const itemsArt  = await prisma.itemCatalogo.count({ where: { activo: true, tipoItem: 'ARTICULO' } })
+  console.log(`  /inventario?tab=servicios: ${itemsServ} activos (tipoItem=SERVICIO)`)
+  console.log(`  /inventario?tab=articulos: ${itemsArt} activos (tipoItem=ARTICULO)`)
+
+  const tickPorEstado = await prisma.ticketTaller.groupBy({ by: ['estado'], _count: true })
+  console.log('  /taller (tickets por estado):')
+  tickPorEstado.forEach(g => console.log(`     ${String(g._count).padStart(3)} · ${g.estado}`))
+
+  console.log('\n  Si alguna vista del frontend muestra "vacío" cuando aquí dice >0:')
+  console.log('  → revisa el filtro de la pestaña activa o el endpoint que la alimenta.')
   console.log('═══════════════════════════════════════════════════════\n')
 }
 

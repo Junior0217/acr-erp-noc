@@ -44,16 +44,49 @@ function VaultTab({ clienteId }) {
     } catch { toast.error("Error de red."); }
   }
 
-  async function reveal(id) {
-    if (revealed[id]) { setRevealed(r => { const n = { ...r }; delete n[id]; return n; }); return; }
+  const [revealTarget, setRevealTarget] = useState(null);
+
+  function toggleReveal(id) {
+    if (revealed[id]) {
+      setRevealed(r => { const n = { ...r }; delete n[id]; return n; });
+      return;
+    }
+    // Pide TOTP antes de llamar al backend (server lo exige obligatorio)
+    setRevealTarget(id);
+  }
+
+  async function doReveal(id, totp) {
     try {
-      const r = await apiFetch(`/api/credenciales/${id}/reveal`);
+      const r = await apiFetch(`/api/credenciales/${id}/reveal`, {
+        headers: { "X-TOTP": totp },
+      });
+      const j = await r.json().catch(() => ({}));
       if (r.ok) {
-        const j = await r.json();
-        setRevealed(r => ({ ...r, [id]: j.password }));
-        toast.warning("Password revelado. Evento auditado.");
-      } else { toast.error("Error al descifrar."); }
-    } catch { toast.error("Error de red."); }
+        setRevealed(rv => ({ ...rv, [id]: j.password }));
+        toast.warning("Password revelado · Evento auditado · 30s cool-down activo");
+        setRevealTarget(null);
+        return true;
+      }
+      if (j.code === "TOTP_NOT_CONFIGURED") {
+        toast.error("Activa 2FA en Configuración > Mi Perfil primero.");
+        setRevealTarget(null);
+        return false;
+      }
+      if (j.code === "TOTP_INVALID" || j.code === "TOTP_REQUIRED") {
+        toast.error(j.error ?? "Código TOTP inválido.");
+        return false;
+      }
+      if (j.code === "VAULT_COOLDOWN") {
+        toast.warning(`Cool-down · espera ${Math.ceil((j.retryAfterMs ?? 0) / 1000)}s`);
+        setRevealTarget(null);
+        return false;
+      }
+      toast.error(j.error ?? "Error al descifrar.");
+      return false;
+    } catch {
+      toast.error("Error de red.");
+      return false;
+    }
   }
 
   async function eliminar(id) {
@@ -138,7 +171,7 @@ function VaultTab({ clienteId }) {
                   </div>
                 </div>
                 <div className="flex gap-1">
-                  <button type="button" onClick={() => reveal(c.id)} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-blue-400" title={revealed[c.id] ? "Ocultar" : "Revelar (auditado)"}>
+                  <button type="button" onClick={() => toggleReveal(c.id)} className="p-1.5 rounded hover:bg-slate-700 text-slate-400 hover:text-blue-400" title={revealed[c.id] ? "Ocultar" : "Revelar (requiere 2FA + auditado)"}>
                     {revealed[c.id] ? <EyeOff size={13} /> : <Eye size={13} />}
                   </button>
                   <button type="button" onClick={() => eliminar(c.id)} className="p-1.5 rounded hover:bg-red-600/20 text-slate-500 hover:text-red-400">
@@ -151,6 +184,53 @@ function VaultTab({ clienteId }) {
           ))}
         </div>
       )}
+
+      {revealTarget && (
+        <TOTPRevealModal
+          onCancel={() => setRevealTarget(null)}
+          onSubmit={(totp) => doReveal(revealTarget, totp)}
+        />
+      )}
+    </div>
+  );
+}
+
+function TOTPRevealModal({ onCancel, onSubmit }) {
+  const [pin, setPin] = useState("");
+  const [busy, setBusy] = useState(false);
+  async function submit(e) {
+    e?.preventDefault?.();
+    if (pin.length !== 6) return;
+    setBusy(true);
+    const ok = await onSubmit(pin);
+    setBusy(false);
+    if (!ok) setPin("");
+  }
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+      <form onSubmit={submit} className="bg-slate-900 border border-red-600/40 rounded-xl w-full max-w-sm p-5 space-y-3">
+        <div className="flex items-center gap-2">
+          <ShieldCheck size={18} className="text-red-400" />
+          <h3 className="text-sm font-bold text-slate-100">2FA requerido para revelar</h3>
+        </div>
+        <p className="text-xs text-slate-400 leading-snug">
+          La bóveda PAM exige código TOTP en cada revelación. Cooldown de 30s + evento auditado.
+        </p>
+        <input
+          type="text" inputMode="numeric" maxLength={6}
+          value={pin}
+          onChange={e => setPin(e.target.value.replace(/\D/g, ""))}
+          placeholder="000000"
+          autoFocus
+          className="w-full text-center text-xl font-mono tracking-[0.5em] bg-slate-800 border border-slate-700 focus:border-red-500 focus:outline-none rounded px-3 py-2.5 text-slate-100"
+        />
+        <div className="flex gap-2">
+          <button type="button" onClick={onCancel} disabled={busy} className="flex-1 py-2 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs">Cancelar</button>
+          <button type="submit" disabled={pin.length !== 6 || busy} className="flex-1 py-2 rounded bg-red-600 hover:bg-red-500 text-white text-xs font-semibold disabled:opacity-50">
+            {busy ? "Verificando…" : "Revelar"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }
