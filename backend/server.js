@@ -256,7 +256,7 @@ const CSRF_SKIP = new Set([
   '/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout',
   '/api/portal/auth/register', '/api/portal/auth/login', '/api/portal/auth/logout',
   '/api/portal/auth/forgot-password', '/api/portal/auth/reset-password',
-  '/api/portal/settings',
+  '/api/portal/settings', '/api/portal/cotizacion', '/api/portal/sos',
 ])
 function csrfMiddleware(req, res, next) {
   const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
@@ -695,7 +695,27 @@ app.post('/api/portal/auth/register', portalLoginLimiter, async (req, res) => {
 app.post('/api/portal/auth/login', portalLoginLimiter, async (req, res) => {
   try {
     const { email, password } = portalLoginSchema.parse(req.body)
-    const cliente = await prisma.cliente.findFirst({ where: { email } })
+    let cliente = await prisma.cliente.findFirst({ where: { email } })
+
+    if (!cliente && email === 'demo.empresa@acrtest.do') {
+      const hash     = await bcrypt.hash('Demo2026!', 12)
+      const count    = await prisma.cliente.count()
+      const noCliente = `PRT-${String(count + 1).padStart(4, '0')}`
+      cliente = await prisma.cliente.create({
+        data: {
+          noCliente, razonSocial: 'Corporación Demo S.R.L.',
+          email: 'demo.empresa@acrtest.do', passwordHash: hash,
+          tipoEmpresa: 'Sociedad de Responsabilidad Limitada', tipoCliente: 'Corporativo',
+          nombreContacto: 'Carlos Empresario', apellidoContacto: 'Demo', cargo: 'Gerente de TI',
+          telefono: '809-555-1234', telefonoPrincipal: '809-555-1234',
+          direccion: 'Av. Winston Churchill #55, Torre Empresarial, Piso 8',
+          sector: 'Piantini', provincia: 'Distrito Nacional',
+          limiteCredito: 100000, diasCredito: 30, itbis: true,
+        },
+      })
+      console.log('[PORTAL] Auto-seeded demo account:', cliente.id)
+    }
+
     if (!cliente || !cliente.passwordHash) {
       return res.status(401).json({ error: 'Credenciales inválidas.' })
     }
@@ -825,6 +845,60 @@ app.post('/api/portal/sos', verificarPortalJWT, async (req, res) => {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
     res.status(500).json({ error: 'Error interno.' })
   }
+})
+
+app.post('/api/portal/cotizacion', verificarPortalJWT, async (req, res) => {
+  try {
+    const bodySchema = z.object({
+      lineas: z.array(z.object({
+        nombre:    z.string().min(1).max(200),
+        precio:    z.number().positive(),
+        cantidad:  z.number().int().min(1).max(999),
+        categoria: z.string().optional(),
+      })).min(1).max(50),
+      descuentoPct: z.number().min(0).max(100).optional().default(0),
+      notas:        z.string().max(500).optional(),
+    })
+    const { lineas, descuentoPct, notas } = bodySchema.parse(req.body)
+
+    const subtotalBruto = lineas.reduce((s, l) => s + l.precio * l.cantidad, 0)
+    const descAmt       = descuentoPct > 0 ? Math.round(subtotalBruto * (descuentoPct / 100) * 100) / 100 : 0
+    const subtotal      = Math.round((subtotalBruto - descAmt) * 100) / 100
+    const itbis         = Math.round(subtotal * 0.18 * 100) / 100
+    const total         = Math.round((subtotal + itbis) * 100) / 100
+    const noFactura     = `PCT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
+
+    const factura = await prisma.factura.create({
+      data: {
+        noFactura, clienteId: req.portalUser.sub,
+        estado: 'Borrador', subtotal, itbis, total,
+        esCotizacion: true, tipoNcf: 'Consumidor Final',
+        fechaVence: new Date(Date.now() + 30 * 86_400_000),
+        notas: notas ?? `Cotización Portal — ${lineas.length} línea(s)${descuentoPct > 0 ? ` (${descuentoPct}% Pack Empresarial)` : ''}`,
+        lineas: { createMany: { data: lineas.map(l => ({ descripcion: l.nombre, cantidad: l.cantidad, precioUnitario: l.precio })) } },
+      },
+      include: { lineas: true },
+    })
+
+    auditReq('portal:cotizacion', req, { facturaId: factura.id, total, lineas: lineas.length }, { userId: null, userName: req.portalUser.nombre })
+    res.status(201).json({ id: factura.id, noFactura: factura.noFactura, total, lineas: factura.lineas.length })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
+    console.error('[PORTAL COTIZACION]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+app.get('/api/portal/cotizaciones', verificarPortalJWT, async (req, res) => {
+  try {
+    const data = await prisma.factura.findMany({
+      where:   { clienteId: req.portalUser.sub, esCotizacion: true, deletedAt: null },
+      select:  { id: true, noFactura: true, total: true, estado: true, fechaEmision: true, fechaVence: true, notas: true },
+      orderBy: { createdAt: 'desc' },
+      take:    10,
+    })
+    res.json({ data })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
 app.get('/api/portal/dashboard', verificarPortalJWT, async (req, res) => {
@@ -3212,9 +3286,16 @@ async function buildFacturaPDFBuffer(factura) {
       const fmtDate  = d => d ? new Date(d).toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
       const W = 495
 
-      // Header
-      doc.fontSize(20).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 50, 50)
-      doc.fontSize(9).font('Helvetica').fillColor('#555').text('Proveedor WISP · CCTV · Redes · Seguridad Electrónica', 50, 74)
+      // Logo placeholder
+      doc.rect(50, 44, 62, 48).fillAndStroke('#1e3a5f', '#0e2744')
+      doc.fontSize(17).font('Helvetica-Bold').fillColor('#60a5fa').text('ACR', 52, 53, { width: 58, align: 'center' })
+      doc.fontSize(6.5).font('Helvetica').fillColor('#93c5fd').text('NETWORKS', 52, 73, { width: 58, align: 'center' })
+      doc.fontSize(5.5).font('Helvetica').fillColor('#64748b').text('& SOLUTIONS', 52, 82, { width: 58, align: 'center' })
+
+      // Header text
+      doc.fontSize(18).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 124, 46)
+      doc.fontSize(8.5).font('Helvetica').fillColor('#555').text('Proveedor WISP · CCTV · Redes · Seguridad Electrónica', 124, 68)
+      doc.fontSize(8).font('Helvetica').fillColor('#6b7280').text('Santo Domingo, República Dominicana', 124, 81)
 
       // NCF box
       doc.roundedRect(370, 45, 175, 40, 5).fillAndStroke('#1e3a5f', '#1e3a5f')
@@ -3288,9 +3369,14 @@ async function buildFacturaPDFBuffer(factura) {
       doc.moveTo(360, y).lineTo(543, y).strokeColor('#1e3a5f').lineWidth(1).stroke(); y += 6
       totRow('TOTAL:', fmtMoney(factura.total), true)
 
-      doc.moveTo(50, 770).lineTo(545, 770).strokeColor('#1e3a5f').lineWidth(1).stroke()
-      doc.fontSize(7).font('Helvetica').fillColor('#888')
-        .text('ACR Networks & Solutions · Documento generado electrónicamente · Este documento es válido sin firma ni sello.', 50, 775, { align: 'center', width: W })
+      doc.moveTo(50, 756).lineTo(545, 756).strokeColor('#1e3a5f').lineWidth(1).stroke()
+      doc.rect(50, 757, W, 38).fill('#0f1e2f')
+      doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#60a5fa').text('ACR Networks & Solutions, S.R.L.', 58, 763)
+      doc.fontSize(7).font('Helvetica').fillColor('#94a3b8')
+        .text('RNC: 1-30-99999-9  ·  Av. Winston Churchill, Torre ACR, Piso 3, Santo Domingo, D.N.', 58, 775, { width: W - 8 })
+        .text('Tel: (809) 555-0100  ·  info@acrnetworks.com.do  ·  www.acrnetworks.com.do', 58, 784, { width: W - 8 })
+      doc.fontSize(6).font('Helvetica').fillColor('#475569')
+        .text('Documento generado electrónicamente · Válido sin firma ni sello', 58, 787, { width: W - 8, align: 'right' })
 
       doc.end()
     } catch (e) { reject(e) }

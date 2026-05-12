@@ -347,7 +347,14 @@ export default function CRM() {
                     <tr><td colSpan={8} className="text-center py-10 text-slate-500">No se encontraron clientes.</td></tr>
                   ) : clientes.map((c) => (
                     <tr key={c.id} className="hover:bg-slate-800/50 transition-colors">
-                      <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{c.noCliente}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">
+                        <div className="flex items-center gap-1.5">
+                          {c.noCliente}
+                          {c.noCliente?.startsWith('PRT-') && (
+                            <span className="inline-flex items-center px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-blue-600/20 text-blue-400 border border-blue-600/30 uppercase tracking-wider">Portal B2C</span>
+                          )}
+                        </div>
+                      </td>
                       <td className="px-4 py-3">
                         <div className="font-medium text-slate-100 whitespace-nowrap">{c.razonSocial}</div>
                         <div className="text-xs text-slate-500">{c.nombreComercial}</div>

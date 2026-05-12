@@ -483,13 +483,242 @@ function TabMovimientos({ canExport }) {
   )
 }
 
+// ─── Tab: Catálogo Web (ItemCatalogo) ─────────────────────────────────────────
+
+const TIPO_FACTURACION = ['VentaUnica', 'Recurrente', 'Servicio']
+const TIPO_SERVICIO    = ['WISP', 'CCTV', 'Redes', 'SoporteTecnico', 'Reparacion', 'General']
+
+function TabCatalogoWeb({ canCreate }) {
+  const [rows,    setRows]    = useState([])
+  const [loading, setLoading] = useState(false)
+  const [modal,   setModal]   = useState(null)  // null | 'new' | item
+  const [saving,  setSaving]  = useState(false)
+  const [deleting, setDeleting] = useState(null)
+
+  const emptyForm = { nombre: '', descripcion: '', tipo: 'VentaUnica', categoria: 'Redes', tipoItem: 'ARTICULO', precio: '', costo: '', stock: 0, activo: true }
+  const [form, setForm] = useState(emptyForm)
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const r = await apiFetch('/api/catalogo')
+      if (!r.ok) throw new Error()
+      const j = await r.json()
+      setRows(j.data ?? [])
+    } catch { toast.error('Error al cargar catálogo web.') }
+    finally { setLoading(false) }
+  }, [])
+
+  useEffect(() => { load() }, [load])
+
+  function openNew()  { setForm(emptyForm); setModal('new') }
+  function openEdit(item) {
+    setForm({ nombre: item.nombre, descripcion: item.descripcion ?? '', tipo: item.tipo, categoria: item.categoria, tipoItem: item.tipoItem, precio: String(item.precio), costo: String(item.costo ?? ''), stock: item.stock ?? 0, activo: item.activo })
+    setModal(item)
+  }
+
+  async function handleSave(e) {
+    e.preventDefault()
+    if (!form.nombre.trim() || !form.precio) { toast.error('Nombre y precio son obligatorios.'); return }
+    setSaving(true)
+    try {
+      const body = { ...form, precio: Number(form.precio), costo: Number(form.costo) || 0 }
+      const isNew = modal === 'new'
+      const r = await apiFetch(isNew ? '/api/catalogo' : `/api/catalogo/${modal.id}`, {
+        method: isNew ? 'POST' : 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      if (!r.ok) { const d = await r.json(); toast.error(d.error ?? 'Error al guardar.'); return }
+      toast.success(isNew ? 'Ítem creado en catálogo web.' : 'Ítem actualizado.')
+      setModal(null)
+      load()
+    } catch { toast.error('Error de conexión.') }
+    finally { setSaving(false) }
+  }
+
+  async function handleDelete(id) {
+    setDeleting(id)
+    try {
+      const r = await apiFetch(`/api/catalogo/${id}`, { method: 'DELETE' })
+      if (!r.ok) { const d = await r.json(); toast.error(d.error ?? 'No se puede eliminar.'); return }
+      toast.success('Ítem eliminado del catálogo web.')
+      load()
+    } catch { toast.error('Error de conexión.') }
+    finally { setDeleting(null) }
+  }
+
+  async function toggleActivo(item) {
+    try {
+      const r = await apiFetch(`/api/catalogo/${item.id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...item, precio: Number(item.precio), costo: Number(item.costo ?? 0), activo: !item.activo }),
+      })
+      if (!r.ok) return
+      setRows(prev => prev.map(x => x.id === item.id ? { ...x, activo: !x.activo } : x))
+    } catch {}
+  }
+
+  const inp = 'w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-colors'
+  const sel = inp + ' cursor-pointer'
+
+  return (
+    <div className="p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm text-slate-400">Ítems visibles en el Portal B2C. Gestiona nombre, precio y disponibilidad.</p>
+        {canCreate && (
+          <button onClick={openNew}
+            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-semibold text-white transition-colors">
+            <Plus size={15} />Nuevo Ítem
+          </button>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="flex items-center justify-center py-16"><Loader2 size={20} className="animate-spin text-blue-500" /></div>
+      ) : rows.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-3 text-slate-600">
+          <ShoppingCart size={32} />
+          <p className="text-sm">Catálogo web vacío. Crea el primer ítem.</p>
+        </div>
+      ) : (
+        <div className="overflow-x-auto rounded-xl border border-slate-800">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="bg-slate-800/60 border-b border-slate-700/70">
+                <th className={TH}>Nombre</th>
+                <th className={TH}>Tipo</th>
+                <th className={TH}>Categoría</th>
+                <th className={TH}>Precio</th>
+                <th className={TH}>Stock</th>
+                <th className={TH}>Activo</th>
+                {canCreate && <th className="px-4 py-3" />}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-800/80">
+              {rows.map(item => (
+                <tr key={item.id} className="hover:bg-slate-800/40 transition-colors">
+                  <td className={TD}>
+                    <div className="font-medium text-slate-100">{item.nombre}</div>
+                    {item.descripcion && <div className="text-xs text-slate-500 truncate max-w-xs">{item.descripcion}</div>}
+                  </td>
+                  <td className={TD}><span className="text-xs px-2 py-0.5 rounded-full bg-blue-600/15 text-blue-400 border border-blue-600/30">{item.tipo}</span></td>
+                  <td className={TD}><span className="text-xs px-2 py-0.5 rounded-full bg-slate-700 text-slate-300 border border-slate-600">{item.categoria}</span></td>
+                  <td className={TD + ' font-semibold text-emerald-400 tabular-nums'}>RD$ {fmt(item.precio)}</td>
+                  <td className={TD + ' tabular-nums'}>{item.tipoItem === 'ARTICULO' ? <StockBadge stock={item.stock ?? 0} /> : <span className="text-slate-600 text-xs">N/A</span>}</td>
+                  <td className={TD}>
+                    <button onClick={() => canCreate && toggleActivo(item)} disabled={!canCreate}
+                      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${item.activo ? 'bg-blue-600' : 'bg-slate-700'} ${canCreate ? 'cursor-pointer' : 'cursor-default opacity-50'}`}>
+                      <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${item.activo ? 'translate-x-4' : 'translate-x-1'}`} />
+                    </button>
+                  </td>
+                  {canCreate && (
+                    <td className="px-4 py-3">
+                      <div className="flex items-center gap-1.5 justify-end">
+                        <button onClick={() => openEdit(item)}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-700/60 hover:bg-slate-600/60 border border-slate-600/50 text-slate-300 hover:text-white text-xs font-medium transition-all">
+                          <Pencil size={11} />Editar
+                        </button>
+                        <button onClick={() => handleDelete(item.id)} disabled={deleting === item.id}
+                          className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-red-600/10 hover:bg-red-600/20 border border-red-600/20 text-red-400 text-xs font-medium transition-all disabled:opacity-40">
+                          {deleting === item.id ? <Loader2 size={11} className="animate-spin" /> : <Trash2 size={11} />}
+                        </button>
+                      </div>
+                    </td>
+                  )}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* Modal crear/editar */}
+      {modal !== null && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setModal(null)} />
+          <div className="relative z-10 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 sticky top-0 bg-slate-900">
+              <div className="flex items-center gap-2">
+                <ShoppingCart size={15} className="text-blue-400" />
+                <h2 className="font-semibold text-slate-100">{modal === 'new' ? 'Nuevo Ítem Catálogo Web' : 'Editar Ítem'}</h2>
+              </div>
+              <button onClick={() => setModal(null)} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
+            </div>
+            <form onSubmit={handleSave} className="p-5 space-y-4">
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Nombre *</label>
+                <input className={inp} value={form.nombre} onChange={e => setForm(f => ({ ...f, nombre: e.target.value }))} placeholder="Ej: Cámara IP 4K Exterior" required />
+              </div>
+              <div>
+                <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Descripción</label>
+                <textarea className={inp + ' resize-none'} rows={2} value={form.descripcion} onChange={e => setForm(f => ({ ...f, descripcion: e.target.value }))} placeholder="Descripción visible al cliente" />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Tipo Facturación</label>
+                  <select className={sel} value={form.tipo} onChange={e => setForm(f => ({ ...f, tipo: e.target.value }))}>
+                    {TIPO_FACTURACION.map(t => <option key={t}>{t}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Categoría</label>
+                  <select className={sel} value={form.categoria} onChange={e => setForm(f => ({ ...f, categoria: e.target.value }))}>
+                    {TIPO_SERVICIO.map(c => <option key={c}>{c}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Tipo Ítem</label>
+                  <select className={sel} value={form.tipoItem} onChange={e => setForm(f => ({ ...f, tipoItem: e.target.value }))}>
+                    <option value="ARTICULO">Artículo Físico</option>
+                    <option value="SERVICIO">Servicio</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Stock (artículos)</label>
+                  <input className={inp} type="number" min={0} value={form.stock} onChange={e => setForm(f => ({ ...f, stock: +e.target.value }))} disabled={form.tipoItem === 'SERVICIO'} />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Precio (RD$) *</label>
+                  <input className={inp} type="number" min={0} step="0.01" value={form.precio} onChange={e => setForm(f => ({ ...f, precio: e.target.value }))} required />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5">Costo (RD$)</label>
+                  <input className={inp} type="number" min={0} step="0.01" value={form.costo} onChange={e => setForm(f => ({ ...f, costo: e.target.value }))} />
+                </div>
+              </div>
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={() => setForm(f => ({ ...f, activo: !f.activo }))}
+                  className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${form.activo ? 'bg-blue-600' : 'bg-slate-700'} cursor-pointer`}>
+                  <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${form.activo ? 'translate-x-4' : 'translate-x-1'}`} />
+                </button>
+                <span className="text-sm text-slate-400">Visible en portal ({form.activo ? 'Activo' : 'Inactivo'})</span>
+              </div>
+              <div className="flex justify-end gap-2 pt-2">
+                <button type="button" onClick={() => setModal(null)} className="px-4 py-2 rounded-lg text-sm text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">Cancelar</button>
+                <button type="submit" disabled={saving}
+                  className="flex items-center gap-1.5 px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-sm font-semibold transition-colors disabled:opacity-50">
+                  {saving ? <Loader2 size={13} className="animate-spin" /> : null}
+                  {modal === 'new' ? 'Crear' : 'Guardar'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 const TABS = [
-  { key: 'articulos',   label: '📦 Productos Físicos', Icon: Package,  tipoItem: 'ARTICULO' },
-  { key: 'servicios',   label: '🛠️ Servicios',          Icon: Wrench,   tipoItem: 'SERVICIO' },
-  { key: 'categorias',  label: 'Categorías',            Icon: Tag,      tipoItem: null       },
-  { key: 'movimientos', label: 'Movimientos (Kardex)',  Icon: BarChart2, tipoItem: null      },
+  { key: 'articulos',    label: '📦 Productos Físicos', Icon: Package,     tipoItem: 'ARTICULO' },
+  { key: 'servicios',    label: '🛠️ Servicios',          Icon: Wrench,      tipoItem: 'SERVICIO' },
+  { key: 'categorias',   label: 'Categorías',            Icon: Tag,         tipoItem: null       },
+  { key: 'movimientos',  label: 'Movimientos (Kardex)',  Icon: BarChart2,   tipoItem: null       },
+  { key: 'catalogo_web', label: '🛒 Catálogo Web',       Icon: ShoppingCart, tipoItem: null      },
 ]
 
 export default function Inventario() {
@@ -554,8 +783,9 @@ export default function Inventario() {
             canExport={canExport}
           />
         )}
-        {tab === 'categorias'  && <TabCategorias categorias={categorias} loading={catLoading} onRefresh={fetchCategorias} canCreate={canCreate} />}
-        {tab === 'movimientos' && <TabMovimientos canExport={canExport} />}
+        {tab === 'categorias'   && <TabCategorias categorias={categorias} loading={catLoading} onRefresh={fetchCategorias} canCreate={canCreate} />}
+        {tab === 'movimientos'  && <TabMovimientos canExport={canExport} />}
+        {tab === 'catalogo_web' && <TabCatalogoWeb canCreate={canCreate} />}
       </div>
     </div>
   )

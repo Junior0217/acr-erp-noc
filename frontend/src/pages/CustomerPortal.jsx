@@ -377,14 +377,18 @@ function Dashboard({ cliente, onLogout, navigate }) {
   const [sosBusy,      setSosBusy]   = useState(false)
   const [dash,         setDash]      = useState({ servicios: [], facturas: [], deudaTotal: 0 })
   const [dashLoading,  setDashLoad]  = useState(true)
+  const [cotizaciones, setCotizaciones] = useState([])
 
   useEffect(() => {
     let cancelled = false
-    fetch(`${API}/api/portal/dashboard`, { credentials: 'include' })
-      .then(r => r.ok ? r.json() : null)
-      .then(d => { if (!cancelled && d) setDash(d) })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setDashLoad(false) })
+    Promise.allSettled([
+      fetch(`${API}/api/portal/dashboard`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
+      fetch(`${API}/api/portal/cotizaciones`, { credentials: 'include' }).then(r => r.ok ? r.json() : null),
+    ]).then(([dashRes, cotRes]) => {
+      if (cancelled) return
+      if (dashRes.status === 'fulfilled' && dashRes.value) setDash(dashRes.value)
+      if (cotRes.status === 'fulfilled' && cotRes.value?.data) setCotizaciones(cotRes.value.data)
+    }).finally(() => { if (!cancelled) setDashLoad(false) })
     return () => { cancelled = true }
   }, [])
 
@@ -537,6 +541,31 @@ function Dashboard({ cliente, onLogout, navigate }) {
           )}
         </div>
 
+        {/* Cotizaciones */}
+        {cotizaciones.length > 0 && (
+          <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
+            <div className="flex items-center gap-2 mb-4">
+              <Star size={14} className="text-amber-400" />
+              <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">Mis Cotizaciones</h2>
+              <span className="text-[10px] font-bold bg-amber-600/20 text-amber-400 border border-amber-600/30 px-1.5 py-0.5 rounded-full">{cotizaciones.length}</span>
+            </div>
+            <div className="space-y-2">
+              {cotizaciones.map(c => (
+                <div key={c.id} className="flex items-center justify-between p-3.5 rounded-xl bg-amber-600/5 border border-amber-600/15">
+                  <div>
+                    <p className="text-sm font-medium text-slate-200 font-mono">{c.noFactura}</p>
+                    <p className="text-xs text-slate-500 mt-0.5">{new Date(c.fechaEmision).toLocaleDateString('es-DO')}{c.notas ? ` · ${c.notas.slice(0, 50)}` : ''}</p>
+                  </div>
+                  <div className="flex items-center gap-2.5">
+                    <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-amber-600/15 text-amber-300 border border-amber-600/30">{c.estado}</span>
+                    <span className="text-sm font-bold text-slate-100">RD$ {fmt(Number(c.total))}</span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
         {/* Support */}
         <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-4">
@@ -567,15 +596,21 @@ function Dashboard({ cliente, onLogout, navigate }) {
 // ─── Cart Drawer ──────────────────────────────────────────────────────────────
 
 function CartDrawer({ items, onRemove, onQtyChange, onClose, onCheckout }) {
-  const subtotal = items.reduce((s, i) => s + i.precio * i.qty, 0)
   const [busy, setBusy] = useState(false)
+
+  const uniqueCategories = [...new Set(items.map(i => i.category))]
+  const hasBundle   = uniqueCategories.length >= 2
+  const descuentoPct = hasBundle ? 10 : 0
+  const subtotalBruto = items.reduce((s, i) => s + i.precio * i.qty, 0)
+  const descuentoAmt  = hasBundle ? Math.round(subtotalBruto * 0.10) : 0
+  const subtotal      = subtotalBruto - descuentoAmt
 
   async function handleCheckout() {
     setBusy(true)
     try {
       const payload = {
-        items: items.map(i => ({ nombre: i.nombre, qty: i.qty, precio: i.precio })),
-        subtotal,
+        lineas: items.map(i => ({ nombre: i.nombre, precio: i.precio, cantidad: i.qty, categoria: i.category })),
+        descuentoPct,
       }
       const r = await fetch(`${API}/api/portal/cotizacion`, {
         method: 'POST',
@@ -613,6 +648,17 @@ function CartDrawer({ items, onRemove, onQtyChange, onClose, onCheckout }) {
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={16} /></button>
         </div>
+
+        {/* Bundle badge */}
+        {hasBundle && (
+          <div className="mx-5 mt-4 flex items-center gap-2 p-2.5 rounded-xl bg-amber-600/10 border border-amber-500/30">
+            <Star size={13} className="text-amber-400 flex-shrink-0" />
+            <div>
+              <p className="text-xs font-bold text-amber-300">Pack Empresarial — 10% Off</p>
+              <p className="text-[10px] text-amber-600">Combinando {uniqueCategories.join(' + ')} aplica descuento automático.</p>
+            </div>
+          </div>
+        )}
 
         {/* Items */}
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
@@ -657,7 +703,19 @@ function CartDrawer({ items, onRemove, onQtyChange, onClose, onCheckout }) {
 
         {/* Footer */}
         {items.length > 0 && (
-          <div className="p-5 border-t border-slate-800 space-y-4">
+          <div className="p-5 border-t border-slate-800 space-y-3">
+            {hasBundle && (
+              <div className="flex justify-between text-xs text-slate-500">
+                <span>Subtotal bruto</span>
+                <span className="line-through text-slate-600">RD$ {fmt(subtotalBruto)}</span>
+              </div>
+            )}
+            {hasBundle && (
+              <div className="flex justify-between text-xs text-amber-400 font-semibold">
+                <span>Descuento Pack Empresarial (10%)</span>
+                <span>-RD$ {fmt(descuentoAmt)}</span>
+              </div>
+            )}
             <div className="flex justify-between items-center">
               <span className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Subtotal estimado</span>
               <span className="text-xl font-black text-slate-100">RD$ {fmt(subtotal)}</span>
@@ -972,6 +1030,77 @@ function Quoter({ onSolicitar, cliente, blockedByDebt }) {
   )
 }
 
+// ─── ROI Calculator ───────────────────────────────────────────────────────────
+
+function ROICalculator() {
+  const [empleados,  setEmpleados]  = useState(10)
+  const [salario,    setSalario]    = useState(35000)
+  const [downtime,   setDowntime]   = useState(4)
+
+  const costoHora       = salario / 160
+  const costoDowntime   = Math.round(empleados * costoHora * downtime)
+  const costoACRMes     = 6000
+  const roi             = costoDowntime > 0 ? ((costoDowntime - costoACRMes) / costoDowntime * 100).toFixed(0) : 0
+
+  return (
+    <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-6 space-y-5">
+      <div className="flex items-center gap-2 mb-1">
+        <Activity size={16} className="text-emerald-400" />
+        <h3 className="text-base font-bold text-slate-100">Calculadora de ROI</h3>
+        <span className="text-[10px] font-semibold text-emerald-400 bg-emerald-600/15 border border-emerald-600/30 px-2 py-0.5 rounded-full ml-1">¿Cuánto te cuesta el downtime?</span>
+      </div>
+
+      <div className="space-y-4">
+        <div>
+          <label className="flex justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
+            <span>Empleados afectados</span><span className="text-slate-300">{empleados}</span>
+          </label>
+          <input type="range" min={1} max={200} step={1} value={empleados} onChange={e => setEmpleados(+e.target.value)} className="w-full accent-blue-500 h-1.5" />
+        </div>
+        <div>
+          <label className="flex justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
+            <span>Salario mensual promedio (RD$)</span><span className="text-slate-300">{fmt(salario)}</span>
+          </label>
+          <input type="range" min={15000} max={150000} step={1000} value={salario} onChange={e => setSalario(+e.target.value)} className="w-full accent-blue-500 h-1.5" />
+        </div>
+        <div>
+          <label className="flex justify-between text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">
+            <span>Horas de downtime/mes</span><span className="text-slate-300">{downtime}h</span>
+          </label>
+          <input type="range" min={1} max={40} step={1} value={downtime} onChange={e => setDowntime(+e.target.value)} className="w-full accent-red-500 h-1.5" />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-red-600/10 border border-red-600/20 rounded-xl p-3 text-center">
+          <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Costo Downtime</p>
+          <p className="text-lg font-black text-red-300">RD$ {fmt(costoDowntime)}</p>
+          <p className="text-[9px] text-red-600">{downtime}h × {empleados} emp.</p>
+        </div>
+        <div className="bg-blue-600/10 border border-blue-600/20 rounded-xl p-3 text-center">
+          <p className="text-[10px] text-blue-400 font-bold uppercase tracking-wider mb-1">Plan ACR Pro</p>
+          <p className="text-lg font-black text-blue-300">RD$ {fmt(costoACRMes)}</p>
+          <p className="text-[9px] text-blue-600">100 Mbps · SLA 99.8%</p>
+        </div>
+        <div className={`${roi > 0 ? 'bg-emerald-600/10 border-emerald-600/20' : 'bg-slate-800/40 border-slate-700/30'} border rounded-xl p-3 text-center`}>
+          <p className="text-[10px] text-emerald-400 font-bold uppercase tracking-wider mb-1">Ahorro ROI</p>
+          <p className={`text-lg font-black ${roi > 0 ? 'text-emerald-300' : 'text-slate-500'}`}>{roi > 0 ? `${roi}%` : 'N/A'}</p>
+          <p className="text-[9px] text-emerald-600">{roi > 0 ? 'vs costo downtime' : 'ajusta valores'}</p>
+        </div>
+      </div>
+
+      {costoDowntime > costoACRMes && (
+        <div className="flex items-start gap-2.5 p-3.5 rounded-xl bg-emerald-600/8 border border-emerald-600/20">
+          <CheckCircle size={14} className="text-emerald-400 flex-shrink-0 mt-0.5" />
+          <p className="text-xs text-emerald-300 leading-relaxed">
+            Con ACR Pro ahorras <span className="font-bold">RD$ {fmt(costoDowntime - costoACRMes)}/mes</span> comparado con el costo de {downtime}h de downtime. El plan se paga en su primer día de uso.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ─── Main portal ──────────────────────────────────────────────────────────────
 
 const DEFAULT_SETTINGS = { mostrarMapa: true, mostrarCotizador: true, mostrarServicios: true }
@@ -1178,11 +1307,12 @@ export default function CustomerPortal() {
         </section>
       )}
 
-      {/* Quoter */}
+      {/* Quoter + ROI Calculator */}
       {settings.mostrarCotizador && (
         <section id="cotizador" className="max-w-6xl mx-auto px-4 pb-16">
-          <div className="max-w-2xl mx-auto">
+          <div className="max-w-2xl mx-auto space-y-6">
             <Quoter onSolicitar={handleSolicitar} cliente={cliente} blockedByDebt={blockedByDebt} />
+            <ROICalculator />
           </div>
         </section>
       )}
