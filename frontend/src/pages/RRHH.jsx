@@ -349,6 +349,29 @@ function TabEmpleados() {
 
 // ─── Tab: Asistencia ──────────────────────────────────────────────────────────
 
+const ACR_LAT = 18.4735;
+const ACR_LNG = -69.9313;
+const RADIO_M  = 500;
+
+function haversineMetros(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+function getGeoPos() {
+  return new Promise((resolve) => {
+    if (!navigator.geolocation) return resolve(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
+      ()    => resolve(null),
+      { timeout: 5000, maximumAge: 60000 },
+    );
+  });
+}
+
 function TabAsistencia() {
   const now = new Date()
   const [empleados, setEmpleados]     = useState([])
@@ -389,9 +412,16 @@ function TabAsistencia() {
     setRegistrando(true)
     try {
       const tipo = estaAdentro ? 'Salida' : 'Entrada'
-      const r = await apiFetch('/api/asistencia', {
-        method: 'POST', body: JSON.stringify({ empleadoId: parseInt(empleadoId), tipo }),
-      })
+      const geo  = await getGeoPos()
+      if (geo) {
+        const dist = haversineMetros(geo.lat, geo.lng, ACR_LAT, ACR_LNG)
+        if (dist > RADIO_M) {
+          toast.warning(`Fuera de oficina ACR (${Math.round(dist)} m). Asistencia registrada igual.`)
+        }
+      }
+      const body = { empleadoId: parseInt(empleadoId), tipo }
+      if (geo) { body.latitud = String(geo.lat); body.longitud = String(geo.lng) }
+      const r = await apiFetch('/api/asistencia', { method: 'POST', body: JSON.stringify(body) })
       if (r.ok) {
         toast.success(`${tipo} registrada.`)
         fetchRegistros()

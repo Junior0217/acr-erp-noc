@@ -306,6 +306,8 @@ const empleadoUpdateSchema = z.object({
 const asistenciaSchema = z.object({
   empleadoId: z.number().int().positive(),
   tipo:       z.enum(['Entrada', 'Salida']),
+  latitud:    z.string().max(30).optional().nullable(),
+  longitud:   z.string().max(30).optional().nullable(),
 });
 
 const clienteBaseShape = z.object({
@@ -537,9 +539,9 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
 
 const PORTAL_JWT_SECRET = (process.env.JWT_SECRET || '') + ':portal'
 
-function signPortalToken(cliente) {
+function signPortalToken(usuario) {
   return jwt.sign(
-    { sub: cliente.id, email: cliente.email, nombre: cliente.razonSocial, type: 'portal' },
+    { sub: usuario.id, email: usuario.email, nombre: usuario.nombre, clienteId: usuario.clienteId ?? null, type: 'portal' },
     PORTAL_JWT_SECRET,
     { expiresIn: '30d' }
   )
@@ -671,38 +673,18 @@ app.put('/api/portal/settings', verificarJWT, requerirPermiso('sistema:config'),
 app.post('/api/portal/auth/register', portalLoginLimiter, async (req, res) => {
   try {
     const { nombre, email, password } = portalRegisterSchema.parse(req.body)
-    const existing = await prisma.cliente.findFirst({ where: { email } })
-    if (existing) {
-      if (existing.passwordHash) return res.status(409).json({ error: 'Email ya registrado.' })
-      const hash = await bcrypt.hash(password, 12)
-      const updated = await prisma.cliente.update({ where: { id: existing.id }, data: { passwordHash: hash } })
-      const token = signPortalToken(updated)
-      setPortalCookie(res, token)
-      auditReq('portal:register', req, { clienteId: updated.id, email }, { userId: null, userName: nombre })
-      return res.json({ id: updated.id, nombre: updated.razonSocial, email: updated.email })
-    }
-    const count = await prisma.cliente.count()
-    const noCliente = `PRT-${String(count + 1).padStart(5, '0')}`
+    const existing = await prisma.usuarioPortal.findFirst({ where: { email } })
+    if (existing) return res.status(409).json({ error: 'Email ya registrado.' })
+    const count    = await prisma.usuarioPortal.count()
+    const noUsuario = `USR-${String(count + 1).padStart(4, '0')}`
     const hash = await bcrypt.hash(password, 12)
-    const cliente = await prisma.cliente.create({
-      data: {
-        noCliente,
-        razonSocial:       nombre,
-        email,
-        passwordHash:      hash,
-        tipoEmpresa:       'Persona Física',
-        tipoCliente:       'Residencial',
-        nombreContacto:    nombre,
-        direccion:         'Por completar',
-        sector:            'Por completar',
-        provincia:         'Distrito Nacional',
-        telefonoPrincipal: '000-000-0000',
-      },
+    const usuario = await prisma.usuarioPortal.create({
+      data: { noUsuario, nombre, email, passwordHash: hash },
     })
-    const token = signPortalToken(cliente)
+    const token = signPortalToken(usuario)
     setPortalCookie(res, token)
-    auditReq('portal:register', req, { clienteId: cliente.id, email }, { userId: null, userName: nombre })
-    res.status(201).json({ id: cliente.id, nombre: cliente.razonSocial, email: cliente.email })
+    auditReq('portal:register', req, { usuarioId: usuario.id, email }, { userId: null, userName: nombre })
+    res.status(201).json({ id: usuario.id, nombre: usuario.nombre, email: usuario.email, noUsuario: usuario.noUsuario })
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
     console.error('[PORTAL REGISTER]', e.message)
@@ -713,39 +695,33 @@ app.post('/api/portal/auth/register', portalLoginLimiter, async (req, res) => {
 app.post('/api/portal/auth/login', portalLoginLimiter, async (req, res) => {
   try {
     const { email, password } = portalLoginSchema.parse(req.body)
-    let cliente = await prisma.cliente.findFirst({ where: { email } })
+    let usuario = await prisma.usuarioPortal.findFirst({ where: { email } })
 
-    if (!cliente && email === 'demo.empresa@acrtest.do') {
-      const hash     = await bcrypt.hash('Demo2026!', 12)
-      const count    = await prisma.cliente.count()
-      const noCliente = `PRT-${String(count + 1).padStart(4, '0')}`
-      cliente = await prisma.cliente.create({
+    // Auto-seed demo account
+    if (!usuario && email === 'demo.empresa@acrtest.do') {
+      const hash    = await bcrypt.hash('Demo2026!', 12)
+      const count   = await prisma.usuarioPortal.count()
+      usuario = await prisma.usuarioPortal.create({
         data: {
-          noCliente, razonSocial: 'Corporación Demo S.R.L.',
-          email: 'demo.empresa@acrtest.do', passwordHash: hash,
-          tipoEmpresa: 'Sociedad de Responsabilidad Limitada', tipoCliente: 'Corporativo',
-          nombreContacto: 'Carlos Empresario', apellidoContacto: 'Demo', cargo: 'Gerente de TI',
-          telefono: '809-555-1234', telefonoPrincipal: '809-555-1234',
-          direccion: 'Av. Winston Churchill #55, Torre Empresarial, Piso 8',
-          sector: 'Piantini', provincia: 'Distrito Nacional',
-          limiteCredito: 100000, diasCredito: 30, itbis: true,
+          noUsuario: `USR-${String(count + 1).padStart(4, '0')}`,
+          nombre: 'Carlos Demo', email: 'demo.empresa@acrtest.do', passwordHash: hash,
+          telefono: '809-555-1234',
         },
       })
-      console.log('[PORTAL] Auto-seeded demo account:', cliente.id)
+      console.log('[PORTAL] Auto-seeded demo account:', usuario.id)
     }
 
-    if (!cliente || !cliente.passwordHash) {
-      return res.status(401).json({ error: 'Credenciales inválidas.' })
-    }
-    const valid = await bcrypt.compare(password, cliente.passwordHash)
+    if (!usuario) return res.status(401).json({ error: 'Credenciales inválidas.' })
+    if (!usuario.activo) return res.status(403).json({ error: 'Cuenta inactiva.' })
+    const valid = await bcrypt.compare(password, usuario.passwordHash)
     if (!valid) {
       auditReq('portal:login_fail', req, { email }, { userId: null })
       return res.status(401).json({ error: 'Credenciales inválidas.' })
     }
-    const token = signPortalToken(cliente)
+    const token = signPortalToken(usuario)
     setPortalCookie(res, token)
-    auditReq('portal:login', req, { clienteId: cliente.id, email }, { userId: null, userName: cliente.razonSocial })
-    res.json({ id: cliente.id, nombre: cliente.razonSocial, email: cliente.email })
+    auditReq('portal:login', req, { usuarioId: usuario.id, email }, { userId: null, userName: usuario.nombre })
+    res.json({ id: usuario.id, nombre: usuario.nombre, email: usuario.email, noUsuario: usuario.noUsuario, clienteId: usuario.clienteId })
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
     res.status(500).json({ error: 'Error interno.' })
@@ -759,12 +735,16 @@ app.post('/api/portal/auth/logout', (req, res) => {
 
 app.get('/api/portal/auth/me', verificarPortalJWT, async (req, res) => {
   try {
-    const cliente = await prisma.cliente.findUnique({
+    const usuario = await prisma.usuarioPortal.findUnique({
       where:  { id: req.portalUser.sub },
-      select: { id: true, razonSocial: true, email: true, noCliente: true, telefonoPrincipal: true, direccion: true, activo: true },
+      select: {
+        id: true, noUsuario: true, nombre: true, email: true, telefono: true, activo: true, clienteId: true,
+        cliente: { select: { id: true, noCliente: true, razonSocial: true, telefonoPrincipal: true, direccion: true, tipoCliente: true } },
+      },
     })
-    if (!cliente) { res.clearCookie('pct'); return res.status(401).json({ error: 'Cliente no encontrado.' }) }
-    res.json(cliente)
+    if (!usuario) { res.clearCookie('pct'); return res.status(401).json({ error: 'Usuario no encontrado.' }) }
+    if (!usuario.activo) { res.clearCookie('pct'); return res.status(403).json({ error: 'Cuenta inactiva.' }) }
+    res.json(usuario)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
@@ -803,20 +783,19 @@ const forgotLimiter = rateLimit({
 app.post('/api/portal/auth/forgot-password', forgotLimiter, async (req, res) => {
   try {
     const { email } = z.object({ email: z.string().email().trim().toLowerCase() }).parse(req.body)
-    const cliente = await prisma.cliente.findFirst({ where: { email }, select: { id: true, razonSocial: true, passwordHash: true } })
-    // Always 200 — no user enumeration
+    const usuario = await prisma.usuarioPortal.findFirst({ where: { email }, select: { id: true, nombre: true } })
     res.json({ ok: true })
-    if (!cliente || !cliente.passwordHash) return
+    if (!usuario) return
     const token = crypto.randomBytes(32).toString('hex')
-    await storeResetToken(token, cliente.id)
+    await storeResetToken(token, usuario.id)
     const resetUrl = `${process.env.PORTAL_URL || process.env.CORS_ORIGIN || 'http://localhost:5173'}/portal?reset=${token}`
     console.log(`[PORTAL RESET] ${email} → ${resetUrl}`)
     if (process.env.SMTP_USER) {
       emailTransporter.sendMail({
         from:    `"ACR Networks" <${process.env.SMTP_USER}>`,
         to:      email,
-        subject: 'Restablecer contraseña — ACR Networks',
-        html: `<p>Hola <strong>${cliente.razonSocial}</strong>,</p>
+        subject: 'Restablecer contraseña — ACR',
+        html: `<p>Hola <strong>${usuario.nombre}</strong>,</p>
                <p>Haz clic en el enlace para restablecer tu contraseña (válido 15 min):</p>
                <p><a href="${resetUrl}">${resetUrl}</a></p>`,
       }).catch(err => console.error('[PORTAL RESET EMAIL]', err.message))
@@ -833,11 +812,11 @@ app.post('/api/portal/auth/reset-password', async (req, res) => {
       token:    z.string().min(64).max(64),
       password: z.string().min(6).max(100),
     }).parse(req.body)
-    const clienteId = await consumeResetToken(token)
-    if (!clienteId) return res.status(400).json({ error: 'Token inválido o expirado.' })
+    const usuarioId = await consumeResetToken(token)
+    if (!usuarioId) return res.status(400).json({ error: 'Token inválido o expirado.' })
     const hash = await bcrypt.hash(password, 12)
-    await prisma.cliente.update({ where: { id: clienteId }, data: { passwordHash: hash } })
-    auditReq('portal:password_reset', req, { clienteId }, { userId: null, userName: null })
+    await prisma.usuarioPortal.update({ where: { id: usuarioId }, data: { passwordHash: hash } })
+    auditReq('portal:password_reset', req, { usuarioId }, { userId: null, userName: null })
     res.json({ ok: true })
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.' })
@@ -848,13 +827,15 @@ app.post('/api/portal/auth/reset-password', async (req, res) => {
 app.post('/api/portal/sos', verificarPortalJWT, async (req, res) => {
   try {
     const { descripcion } = z.object({ descripcion: z.string().max(500).optional() }).parse(req.body)
+    const clienteId = req.portalUser.clienteId
+    if (!clienteId) return res.status(422).json({ error: 'Tu cuenta no está vinculada a un cliente. Contacta a ACR para vincularla.' })
     const ot = await prisma.ordenTrabajo.create({
       data: {
-        clienteId:     req.portalUser.sub,
+        clienteId,
         tipoOT:        'SoporteTecnico',
         estado:        'Pendiente',
         notasTecnicas: descripcion || 'Solicitud de soporte técnico vía Portal B2C',
-        metadatos:     { origen: 'portal_sos' },
+        metadatos:     { origen: 'portal_sos', usuarioId: req.portalUser.sub },
       },
     })
     auditReq('portal:sos_created', req, { otId: ot.id }, { userId: null, userName: req.portalUser.nombre })
@@ -886,9 +867,11 @@ app.post('/api/portal/cotizacion', verificarPortalJWT, async (req, res) => {
     const total         = Math.round((subtotal + itbis) * 100) / 100
     const noFactura     = `PCT${new Date().getFullYear()}-${String(Date.now()).slice(-8)}`
 
+    const clienteId = req.portalUser.clienteId
+    if (!clienteId) return res.status(422).json({ error: 'Tu cuenta no está vinculada a un cliente. Contacta a ACR.' })
     const factura = await prisma.factura.create({
       data: {
-        noFactura, clienteId: req.portalUser.sub,
+        noFactura, clienteId,
         estado: 'Borrador', subtotal, itbis, total,
         esCotizacion: true, tipoNcf: 'Consumidor Final',
         fechaVence: new Date(Date.now() + 30 * 86_400_000),
@@ -909,8 +892,10 @@ app.post('/api/portal/cotizacion', verificarPortalJWT, async (req, res) => {
 
 app.get('/api/portal/cotizaciones', verificarPortalJWT, async (req, res) => {
   try {
+    const clienteId = req.portalUser.clienteId
+    if (!clienteId) return res.json({ data: [] })
     const data = await prisma.factura.findMany({
-      where:   { clienteId: req.portalUser.sub, esCotizacion: true, deletedAt: null },
+      where:   { clienteId, esCotizacion: true, deletedAt: null },
       select:  { id: true, noFactura: true, total: true, estado: true, fechaEmision: true, fechaVence: true, notas: true },
       orderBy: { createdAt: 'desc' },
       take:    10,
@@ -921,23 +906,31 @@ app.get('/api/portal/cotizaciones', verificarPortalJWT, async (req, res) => {
 
 app.get('/api/portal/dashboard', verificarPortalJWT, async (req, res) => {
   try {
-    const [servicios, facturas] = await Promise.all([
+    const clienteId = req.portalUser.clienteId
+    if (!clienteId) return res.json({ servicios: [], facturas: [], ordenes: [], deudaTotal: 0, sinVincular: true })
+    const [servicios, facturas, ordenes] = await Promise.all([
       prisma.servicio.findMany({
-        where:   { clienteId: req.portalUser.sub },
+        where:   { clienteId },
         include: { plan: { select: { nombre: true, tipo: true } } },
         orderBy: { createdAt: 'desc' },
       }),
       prisma.factura.findMany({
-        where:   { clienteId: req.portalUser.sub, deletedAt: null, esCotizacion: false },
+        where:   { clienteId, deletedAt: null, esCotizacion: false },
         select:  { id: true, noFactura: true, total: true, estado: true, fechaEmision: true, fechaVence: true },
         orderBy: { fechaEmision: 'desc' },
         take: 20,
+      }),
+      prisma.ordenTrabajo.findMany({
+        where:   { clienteId, deletedAt: null },
+        select:  { id: true, noOT: true, tipoOT: true, estado: true, createdAt: true, notasTecnicas: true },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
       }),
     ])
     const deudaTotal = facturas
       .filter(f => f.estado === 'Vencida')
       .reduce((s, f) => s + Number(f.total), 0)
-    res.json({ servicios, facturas, deudaTotal })
+    res.json({ servicios, facturas, ordenes, deudaTotal })
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
@@ -952,7 +945,7 @@ app.get('/api/portal/facturas/:id/pdf', verificarPortalJWT, async (req, res) => 
       },
     })
     if (!factura) return res.status(404).json({ error: 'Factura no encontrada.' })
-    if (factura.clienteId !== req.portalUser.sub) return res.status(403).json({ error: 'Acceso denegado.' })
+    if (factura.clienteId !== req.portalUser.clienteId) return res.status(403).json({ error: 'Acceso denegado.' })
     const buf = await buildFacturaPDFBuffer(factura)
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `inline; filename="factura-${factura.noFactura}.pdf"`)
@@ -960,6 +953,178 @@ app.get('/api/portal/facturas/:id/pdf', verificarPortalJWT, async (req, res) => 
     res.end(buf)
   } catch { if (!res.headersSent) res.status(500).json({ error: 'Error al generar PDF.' }) }
 })
+
+// ─── Usuarios Portal (NOC Admin) ──────────────────────────────────────────────
+
+app.get('/api/usuarios-portal', verificarJWT, requerirPermiso('crm:ver'), async (req, res) => {
+  try {
+    const { search, page = '1', limit = '50' } = req.query;
+    const take    = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const skip    = (pageNum - 1) * take;
+    const where   = {};
+    if (search) {
+      where.OR = [
+        { nombre:    { contains: search, mode: 'insensitive' } },
+        { email:     { contains: search, mode: 'insensitive' } },
+        { noUsuario: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    const [usuarios, total] = await Promise.all([
+      prisma.usuarioPortal.findMany({
+        where,
+        select: {
+          id: true, noUsuario: true, nombre: true, email: true,
+          telefono: true, activo: true, clienteId: true, createdAt: true,
+          cliente: { select: { id: true, noCliente: true, razonSocial: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      prisma.usuarioPortal.count({ where }),
+    ]);
+    res.json({ data: usuarios, meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1) } });
+  } catch (e) {
+    console.error('[USUARIOS PORTAL]', e.message);
+    res.status(500).json({ error: 'Error interno.' });
+  }
+});
+
+app.post('/api/usuarios-portal/:id/vincular', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' });
+  const { clienteId } = req.body;
+  if (clienteId !== null && !validUUID(clienteId)) return res.status(400).json({ error: 'clienteId inválido.' });
+  try {
+    if (clienteId) {
+      const cliente = await prisma.cliente.findUnique({ where: { id: clienteId } });
+      if (!cliente) return res.status(404).json({ error: 'Cliente no encontrado.' });
+    }
+    const usuario = await prisma.usuarioPortal.update({
+      where:  { id: req.params.id },
+      data:   { clienteId: clienteId ?? null },
+      select: {
+        id: true, noUsuario: true, nombre: true, email: true, activo: true, clienteId: true,
+        cliente: { select: { id: true, noCliente: true, razonSocial: true } },
+      },
+    });
+    auditReq('portal:vincular', req, { usuarioId: req.params.id, clienteId });
+    res.json({ usuario });
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Usuario portal no encontrado.' });
+    console.error('[VINCULAR PORTAL]', e.message);
+    res.status(500).json({ error: 'Error interno.' });
+  }
+});
+
+// ─── Reportes ─────────────────────────────────────────────────────────────────
+
+app.get('/api/reportes/semanal', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const ahora     = new Date();
+    const inicioDia = new Date(ahora.getFullYear(), ahora.getMonth(), ahora.getDate());
+    const inicioSemana = new Date(inicioDia);
+    inicioSemana.setDate(inicioDia.getDate() - 6);
+
+    const [facturas, ots, facturasMes] = await Promise.all([
+      prisma.factura.findMany({
+        where:   { esCotizacion: false, deletedAt: null, estado: 'Pagada', fechaEmision: { gte: inicioSemana } },
+        select:  { total: true, fechaEmision: true, lineas: { select: { itemCatalogo: { select: { tipoItem: true, nombre: true } } } } },
+      }),
+      prisma.ordenTrabajo.findMany({
+        where:   { deletedAt: null, estado: 'Cerrada', updatedAt: { gte: inicioSemana } },
+        select:  { id: true, noOT: true, tipoOT: true, updatedAt: true, tecnicoNombre: true },
+      }),
+      prisma.factura.findMany({
+        where:   { esCotizacion: false, deletedAt: null, estado: 'Pagada',
+                   fechaEmision: { gte: new Date(ahora.getFullYear(), ahora.getMonth(), 1) } },
+        select:  { total: true },
+      }),
+    ]);
+
+    const ingresosPorCategoria = {};
+    let totalSemana = 0;
+    for (const f of facturas) {
+      const monto = Number(f.total);
+      totalSemana += monto;
+      const tipos = [...new Set(f.lineas.map(l => l.itemCatalogo?.tipoItem).filter(Boolean))];
+      const cat = tipos.length > 0 ? tipos[0] : 'Otro';
+      ingresosPorCategoria[cat] = (ingresosPorCategoria[cat] ?? 0) + monto;
+    }
+
+    const ingresoPorDia = {};
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(inicioSemana);
+      d.setDate(d.getDate() + i);
+      ingresoPorDia[d.toISOString().slice(0, 10)] = 0;
+    }
+    for (const f of facturas) {
+      const key = new Date(f.fechaEmision).toISOString().slice(0, 10);
+      if (key in ingresoPorDia) ingresoPorDia[key] += Number(f.total);
+    }
+
+    res.json({
+      semana:     { inicio: inicioSemana, fin: ahora },
+      totalSemana,
+      totalMes:   facturasMes.reduce((s, f) => s + Number(f.total), 0),
+      ingresosPorCategoria,
+      ingresoPorDia,
+      otsCerradas: ots.length,
+      otsDetalle:  ots,
+    });
+  } catch (e) {
+    console.error('[REPORTE SEMANAL]', e.message);
+    res.status(500).json({ error: 'Error interno.' });
+  }
+});
+
+app.get('/api/reportes/comisiones', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const { mes, anio } = req.query;
+    const year  = parseInt(anio)  || new Date().getFullYear();
+    const month = parseInt(mes)   || new Date().getMonth() + 1;
+    const inicio = new Date(year, month - 1, 1);
+    const fin    = new Date(year, month,     1);
+
+    const ots = await prisma.ordenTrabajo.findMany({
+      where:   {
+        deletedAt:    null,
+        estado:       'Cerrada',
+        tecnicoNombre: { not: null },
+        tipoOT:       { in: ['Reparacion', 'Instalacion', 'CCTV'] },
+        updatedAt:    { gte: inicio, lt: fin },
+      },
+      select: {
+        id: true, noOT: true, tipoOT: true, tecnicoNombre: true, updatedAt: true,
+        factura: { select: { total: true, estado: true } },
+      },
+    });
+
+    const TASA = { Reparacion: 0.10, Instalacion: 0.08, CCTV: 0.10 };
+
+    const porTecnico = {};
+    for (const ot of ots) {
+      const total  = Number(ot.factura?.total ?? 0);
+      const tasa   = TASA[ot.tipoOT] ?? 0.08;
+      const comision = total * tasa;
+      const nombre = ot.tecnicoNombre;
+      if (!porTecnico[nombre]) porTecnico[nombre] = { nombre, ots: 0, totalFacturado: 0, comisionTotal: 0, detalle: [] };
+      porTecnico[nombre].ots++;
+      porTecnico[nombre].totalFacturado += total;
+      porTecnico[nombre].comisionTotal  += comision;
+      porTecnico[nombre].detalle.push({ noOT: ot.noOT, tipoOT: ot.tipoOT, total, tasa, comision, fecha: ot.updatedAt });
+    }
+
+    res.json({
+      periodo:   { mes: month, anio: year },
+      tecnicos:  Object.values(porTecnico).sort((a, b) => b.comisionTotal - a.comisionTotal),
+      totalComisiones: Object.values(porTecnico).reduce((s, t) => s + t.comisionTotal, 0),
+    });
+  } catch (e) {
+    console.error('[REPORTE COMISIONES]', e.message);
+    res.status(500).json({ error: 'Error interno.' });
+  }
+});
 
 // ─── Auth Routes ──────────────────────────────────────────────────────────────
 
@@ -1439,7 +1604,12 @@ app.post('/api/asistencia', verificarJWT, async (req, res) => {
       if (yaEntrada) return res.status(409).json({ error: 'Ya existe una Entrada registrada hoy para este empleado.' });
     }
     const registro = await prisma.asistencia.create({
-      data,
+      data: {
+        empleadoId: data.empleadoId,
+        tipo:       data.tipo,
+        ...(data.latitud  != null && { latitud:  data.latitud }),
+        ...(data.longitud != null && { longitud: data.longitud }),
+      },
       include: { empleado: { select: { id: true, nombre: true } } },
     });
     res.status(201).json(registro);
@@ -1666,15 +1836,41 @@ app.delete('/api/prospectos/:id', async (req, res) => {
   }
 });
 
-app.patch('/api/prospectos/:id/convertir', async (req, res) => {
+app.patch('/api/prospectos/:id/convertir', verificarJWT, async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const prospecto = await prisma.prospecto.findUnique({ where: { id: req.params.id } });
     if (!prospecto) return res.status(404).json({ error: 'Prospecto no encontrado.' });
     if (prospecto.estado === 'Convertido') return res.status(409).json({ error: 'Prospecto ya fue convertido.' });
-    const updated = await prisma.prospecto.update({ where: { id: req.params.id }, data: { estado: 'Convertido' } });
-    res.json({ prospecto: formatProspecto(updated) });
+
+    const count = await prisma.cliente.count({ where: { deletedAt: null } });
+    const noCliente = `CLI-${String(count + 1).padStart(4, '0')}`;
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      const cliente = await tx.cliente.create({
+        data: {
+          noCliente,
+          razonSocial:       prospecto.nombre,
+          telefonoPrincipal: prospecto.telefono,
+          latitud:           prospecto.latitud  ?? undefined,
+          longitud:          prospecto.longitud ?? undefined,
+          notas:             prospecto.notas    ?? undefined,
+          tipoCliente:       'Residencial',
+        },
+      });
+      const updated = await tx.prospecto.update({
+        where: { id: req.params.id },
+        data:  { estado: 'Convertido' },
+      });
+      return { cliente, prospecto: updated };
+    });
+
+    res.json({
+      cliente:   formatCliente(resultado.cliente),
+      prospecto: formatProspecto(resultado.prospecto),
+    });
   } catch (error) {
+    console.error('[CONVERTIR PROSPECTO]', error.message);
     res.status(500).json({ error: 'Error al convertir prospecto' });
   }
 });

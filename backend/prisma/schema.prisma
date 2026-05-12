@@ -127,6 +127,8 @@ model Asistencia {
   empleadoId Int
   fechaHora  DateTime       @default(now())
   tipo       TipoAsistencia
+  latitud    String?
+  longitud   String?
   empleado   Empleado       @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
 
   @@index([empleadoId])
@@ -249,6 +251,7 @@ model Cliente {
   ordenesTrabajo OrdenTrabajo[]
   facturas       Factura[]
   carritosTemp   CarritoTemp[]
+  usuariosPortal UsuarioPortal[]
   createdAt      DateTime   @default(now())
   updatedAt      DateTime   @updatedAt
 
@@ -263,6 +266,23 @@ model Cliente {
 }
 
 // ─── Portal ───────────────────────────────────────────────────────────────────
+
+model UsuarioPortal {
+  id           String    @id @default(uuid())
+  noUsuario    String    @unique
+  nombre       String
+  email        String    @unique
+  passwordHash String
+  telefono     String?
+  activo       Boolean   @default(true)
+  clienteId    String?
+  cliente      Cliente?  @relation(fields: [clienteId], references: [id], onDelete: SetNull)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([email])
+  @@index([clienteId])
+}
 
 model PortalSettings {
   id                Int      @id @default(1)

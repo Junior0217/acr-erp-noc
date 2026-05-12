@@ -213,7 +213,7 @@ async function main() {
   ])
   console.log('  ✓ Planes (5)')
 
-  // ─── 6. ItemCatalogo (16 items) ───────────────────────────────────────────
+  // ─── 6. ItemCatalogo (26 items) ─────────────────────────────────────────────
   async function upsertItem(nombre, tipo, categoria, precio, costo, tipoItem, stock) {
     const existing = await prisma.itemCatalogo.findFirst({ where: { nombre } })
     if (existing) return existing
@@ -221,24 +221,39 @@ async function main() {
   }
 
   await Promise.all([
-    upsertItem('Plan Fibra 10 Mbps',          TipoFacturacion.Recurrente, TipoServicio.WISP,           1500,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Plan Fibra 25 Mbps',          TipoFacturacion.Recurrente, TipoServicio.WISP,           2500,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Plan Fibra 50 Mbps',          TipoFacturacion.Recurrente, TipoServicio.WISP,           4000,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Plan Fibra 100 Mbps',         TipoFacturacion.Recurrente, TipoServicio.WISP,           6500,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Instalación CCTV 4CH',        TipoFacturacion.VentaUnica, TipoServicio.CCTV,           8000,  4000, TipoItem.SERVICIO, null),
-    upsertItem('Instalación CCTV 8CH',        TipoFacturacion.VentaUnica, TipoServicio.CCTV,          15000,  8000, TipoItem.SERVICIO, null),
-    upsertItem('Instalación Fibra Óptica',    TipoFacturacion.VentaUnica, TipoServicio.WISP,          12000,  5000, TipoItem.SERVICIO, null),
-    upsertItem('Soporte Técnico / Hora',      TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,  1200,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Configuración Router',        TipoFacturacion.Servicio,   TipoServicio.Redes,           2000,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Certificación Cableado',      TipoFacturacion.Servicio,   TipoServicio.Redes,           4500,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Mantenimiento Mensual',       TipoFacturacion.Recurrente, TipoServicio.SoporteTecnico,  3500,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Cerco Eléctrico Básico',      TipoFacturacion.VentaUnica, TipoServicio.CercoElectrico, 18000, 9000, TipoItem.SERVICIO, null),
-    upsertItem('Cerco Eléctrico Avanzado',    TipoFacturacion.VentaUnica, TipoServicio.CercoElectrico, 32000,15000, TipoItem.SERVICIO, null),
-    upsertItem('Rack 12U + Organización',     TipoFacturacion.VentaUnica, TipoServicio.Redes,           9500,  5000, TipoItem.SERVICIO, null),
-    upsertItem('Monitoreo Remoto 24/7',       TipoFacturacion.Recurrente, TipoServicio.CCTV,            4500,  0,    TipoItem.SERVICIO, null),
-    upsertItem('Instalación WISP Empresarial',TipoFacturacion.VentaUnica, TipoServicio.WISP,          22000, 10000, TipoItem.SERVICIO, null),
+    // ── Servicios CCTV
+    upsertItem('Instalación CCTV 4 Cámaras',     TipoFacturacion.VentaUnica, TipoServicio.CCTV,            8000,  4000, TipoItem.SERVICIO,  null),
+    upsertItem('Instalación CCTV 8 Cámaras',     TipoFacturacion.VentaUnica, TipoServicio.CCTV,           15000,  8000, TipoItem.SERVICIO,  null),
+    upsertItem('Instalación CCTV 16 Cámaras',    TipoFacturacion.VentaUnica, TipoServicio.CCTV,           28000, 14000, TipoItem.SERVICIO,  null),
+    upsertItem('Diagnóstico Sistema CCTV',        TipoFacturacion.Servicio,   TipoServicio.CCTV,            1500,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Config NVR / DVR',                TipoFacturacion.Servicio,   TipoServicio.CCTV,            2000,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Monitoreo Remoto 24/7',           TipoFacturacion.Recurrente, TipoServicio.CCTV,            4500,  0,    TipoItem.SERVICIO,  null),
+    // ── Taller / Reparaciones
+    upsertItem('Diagnóstico Equipo PC / Laptop',  TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,   600,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Reparación Motherboard',          TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,  3500,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Limpieza y Mantenimiento PC',     TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,  1200,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Instalación OS / Software',       TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,  1500,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Recuperación de Datos',           TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,  4500,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Soporte Remoto / Hora',           TipoFacturacion.Servicio,   TipoServicio.SoporteTecnico,  1200,  0,    TipoItem.SERVICIO,  null),
+    // ── Redes e Infraestructura
+    upsertItem('Instalación Cableado Estructurado',TipoFacturacion.VentaUnica,TipoServicio.Redes,          12000,  5000, TipoItem.SERVICIO,  null),
+    upsertItem('Certificación Cableado',          TipoFacturacion.Servicio,   TipoServicio.Redes,           4500,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Configuración Router / Switch',   TipoFacturacion.Servicio,   TipoServicio.Redes,           2000,  0,    TipoItem.SERVICIO,  null),
+    upsertItem('Rack 12U + Organización',         TipoFacturacion.VentaUnica, TipoServicio.Redes,           9500,  5000, TipoItem.SERVICIO,  null),
+    // ── Seguridad / Cerco
+    upsertItem('Cerco Eléctrico Básico',          TipoFacturacion.VentaUnica, TipoServicio.CercoElectrico, 18000,  9000, TipoItem.SERVICIO,  null),
+    upsertItem('Cerco Eléctrico Avanzado',        TipoFacturacion.VentaUnica, TipoServicio.CercoElectrico, 32000, 15000, TipoItem.SERVICIO,  null),
+    upsertItem('Mantenimiento Preventivo CCTV',   TipoFacturacion.Recurrente, TipoServicio.CCTV,            3500,  0,    TipoItem.SERVICIO,  null),
+    // ── Repuestos / Hardware (PRODUCTO)
+    upsertItem('Disco Duro HDD 1TB',              TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  3800,  2200, TipoItem.PRODUCTO,  15),
+    upsertItem('SSD 480GB SATA',                  TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  4500,  2800, TipoItem.PRODUCTO,  10),
+    upsertItem('Fuente Alimentación ATX 600W',    TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  2800,  1600, TipoItem.PRODUCTO,  8),
+    upsertItem('Memoria RAM 8GB DDR4',            TipoFacturacion.VentaUnica, TipoServicio.SoporteTecnico,  3200,  1900, TipoItem.PRODUCTO,  12),
+    upsertItem('Balun BNC Pasivo (par)',          TipoFacturacion.VentaUnica, TipoServicio.CCTV,             380,   180, TipoItem.PRODUCTO,  50),
+    upsertItem('Cable Coaxial RG59 (metro)',       TipoFacturacion.VentaUnica, TipoServicio.CCTV,              45,    20, TipoItem.PRODUCTO,  500),
+    upsertItem('Conector BNC Macho (×10)',        TipoFacturacion.VentaUnica, TipoServicio.CCTV,             250,   100, TipoItem.PRODUCTO,  200),
   ])
-  console.log('  ✓ ItemCatalogo (16)')
+  console.log('  ✓ ItemCatalogo (26)')
 
   // ─── 7. NCF config ────────────────────────────────────────────────────────
   await prisma.configuracionNCF.deleteMany({ where: { tipoNcf: 'Crédito Fiscal' } })
@@ -362,16 +377,21 @@ async function main() {
     console.log(`  ↷ Facturas ya existen (${factCount}) — saltando`)
   }
 
-  if (cotCount < 5) {
+  if (cotCount < 10) {
     const cotSeqStart = (await prisma.configuracionNCF.findFirst({ where: { tipoNcf: 'COT' } }))?.secuenciaActual ?? 1
     let cotSeq = cotSeqStart
 
     const cots = [
-      { clienteId: c02.id, sub: 28100, itbis: true,  lineas: [{ descripcion: 'Radio MikroTik SXTsq5 ×2', cantidad: 2, precioUnitario: 9800  }, { descripcion: 'Router hAP ac3', cantidad: 1, precioUnitario: 8500  }], fechaEmision: dAgo(30) },
-      { clienteId: c06.id, sub: 67000, itbis: true,  lineas: [{ descripcion: 'Sistema CCTV 16 cámaras',  cantidad: 1, precioUnitario: 67000 }], fechaEmision: dAgo(25) },
-      { clienteId: c07.id, sub: 42000, itbis: true,  lineas: [{ descripcion: 'CCTV Hotel fase 2',        cantidad: 1, precioUnitario: 42000 }], fechaEmision: dAgo(18) },
-      { clienteId: c10.id, sub: 36500, itbis: true,  lineas: [{ descripcion: 'Infraestructura red LAN',  cantidad: 1, precioUnitario: 36500 }], fechaEmision: dAgo(10) },
-      { clienteId: c04.id, sub: 1500,  itbis: false, lineas: [{ descripcion: 'Plan Fibra 10 Mbps',       cantidad: 1, precioUnitario: 1500  }], fechaEmision: dAgo(5)  },
+      { clienteId: c02.id, sub: 28000, itbis: true,  lineas: [{ descripcion: 'Instalación CCTV 8 Cámaras + mano obra', cantidad: 1, precioUnitario: 15000 }, { descripcion: 'Disco Duro NVR 2TB', cantidad: 1, precioUnitario: 5000 }, { descripcion: 'Cable Coaxial RG59 + conectores', cantidad: 1, precioUnitario: 8000 }], fechaEmision: dAgo(30) },
+      { clienteId: c06.id, sub: 67000, itbis: true,  lineas: [{ descripcion: 'Sistema CCTV 16 cámaras HD + NVR', cantidad: 1, precioUnitario: 67000 }], fechaEmision: dAgo(25) },
+      { clienteId: c07.id, sub: 42000, itbis: true,  lineas: [{ descripcion: 'CCTV Hotel fase 2 (8 cámaras PTZ)', cantidad: 1, precioUnitario: 42000 }], fechaEmision: dAgo(18) },
+      { clienteId: c10.id, sub: 36500, itbis: true,  lineas: [{ descripcion: 'Infraestructura red LAN + certificación', cantidad: 1, precioUnitario: 36500 }], fechaEmision: dAgo(10) },
+      { clienteId: c04.id, sub: 8500,  itbis: true,  lineas: [{ descripcion: 'Reparación Motherboard + reemplazo capacitores', cantidad: 1, precioUnitario: 3500 }, { descripcion: 'Memoria RAM 8GB DDR4', cantidad: 1, precioUnitario: 3200 }, { descripcion: 'Instalación OS + drivers', cantidad: 1, precioUnitario: 1800 }], fechaEmision: dAgo(5) },
+      { clienteId: c01.id, sub: 18000, itbis: true,  lineas: [{ descripcion: 'Cerco Eléctrico Básico 6 metros', cantidad: 1, precioUnitario: 18000 }], fechaEmision: dAgo(22) },
+      { clienteId: c03.id, sub: 9500,  itbis: true,  lineas: [{ descripcion: 'Rack 12U + patch panel + organización', cantidad: 1, precioUnitario: 9500 }], fechaEmision: dAgo(15) },
+      { clienteId: c05.id, sub: 5400,  itbis: true,  lineas: [{ descripcion: 'Recuperación de datos HDD dañado', cantidad: 1, precioUnitario: 4500 }, { descripcion: 'Diagnóstico equipo PC', cantidad: 1, precioUnitario: 600 }, { descripcion: 'Informe técnico', cantidad: 1, precioUnitario: 300 }], fechaEmision: dAgo(8) },
+      { clienteId: c08.id, sub: 12000, itbis: true,  lineas: [{ descripcion: 'Instalación cableado estructurado 20 puntos', cantidad: 1, precioUnitario: 12000 }], fechaEmision: dAgo(12) },
+      { clienteId: c09.id, sub: 3500,  itbis: false, lineas: [{ descripcion: 'Mantenimiento preventivo CCTV trimestral', cantidad: 1, precioUnitario: 3500 }], fechaEmision: dAgo(3) },
     ]
 
     for (const c of cots) {
@@ -393,7 +413,7 @@ async function main() {
       }
     }
     await prisma.$executeRaw`UPDATE "ConfiguracionNCF" SET "secuenciaActual" = ${cotSeq} WHERE "tipoNcf" = 'COT'`
-    console.log('  ✓ Cotizaciones (5)')
+    console.log('  ✓ Cotizaciones (10)')
   } else {
     console.log(`  ↷ Cotizaciones ya existen (${cotCount}) — saltando`)
   }
@@ -402,11 +422,11 @@ async function main() {
   const supCount = await prisma.suplidor.count()
   if (supCount < 5) {
     const supData = [
-      { noSuplidor: 'SUP-0001', razonSocial: 'Tech Distribuidores RD S.A.S.',  nombreComercial: 'TechDist',    rnc: '131111111', direccion: 'Av. Tiradentes 150',        sector: 'Naco',             provincia: 'Distrito Nacional', latitud: '18.4760', longitud: '-69.9350', nombreContacto: 'Héctor Abreu',     cargo: 'Gerente Ventas', telefonoPrincipal: '809-555-2001', email: 'habreu@techdist.do',   actividad: 'Distribución equipos de redes y telecomunicaciones', limiteCredito: 250000, diasCredito: 30, activo: true },
-      { noSuplidor: 'SUP-0002', razonSocial: 'Securit Solutions DR S.R.L.',    nombreComercial: 'SecuritDR',   rnc: '131222222', direccion: 'C/ 27 de Febrero 88',       sector: 'Zona Industrial',  provincia: 'Distrito Nacional', latitud: '18.4850', longitud: '-69.9200', nombreContacto: 'Patricia Lora',    cargo: 'Directora',      telefonoPrincipal: '809-555-2002', email: 'plora@securitdr.do',   actividad: 'Importadora de cámaras CCTV y sistemas de seguridad',  limiteCredito: 180000, diasCredito: 45, activo: true },
-      { noSuplidor: 'SUP-0003', razonSocial: 'Fibernet Dominicana S.A.',       nombreComercial: 'FibernetRD',  rnc: '131333333', direccion: 'Av. John F. Kennedy 245',    sector: 'Los Prados',       provincia: 'Distrito Nacional', latitud: '18.4950', longitud: '-69.9150', nombreContacto: 'Manuel Castillo',  cargo: 'Jefe Técnico',   telefonoPrincipal: '809-555-2003', email: 'mcastillo@fibernet.do', actividad: 'Proveedor de fibra óptica y soluciones WISP',           limiteCredito: 320000, diasCredito: 60, activo: true },
-      { noSuplidor: 'SUP-0004', razonSocial: 'Compuworld SRL',                 nombreComercial: 'Compuworld', rnc: '131444444', direccion: 'Av. Máximo Gómez 12',       sector: 'Cristo Rey',       provincia: 'Distrito Nacional', latitud: '18.4865', longitud: '-69.9605', nombreContacto: 'Sandra Méndez',   cargo: 'Compradora',     telefonoPrincipal: '809-555-2004', email: 'smendez@compuworld.do',actividad: 'Equipos de cómputo, UPS y accesorios tecnológicos',     limiteCredito: 150000, diasCredito: 30, activo: true },
-      { noSuplidor: 'SUP-0005', razonSocial: 'Distribuidora Nortec S.R.L.',    nombreComercial: 'Nortec',      rnc: '231111111', direccion: 'Calle del Sol 112',         sector: 'Centro',           provincia: 'Santiago',          latitud: '19.4520', longitud: '-70.6975', nombreContacto: 'Ramón Gutiérrez',  cargo: 'Gerente',        telefonoPrincipal: '809-555-2005', email: 'rgutierrez@nortec.do', actividad: 'Distribución equipos telecom región Norte',             limiteCredito: 100000, diasCredito: 30, activo: true },
+      { noSuplidor: 'SUP-0001', razonSocial: 'Securit Solutions DR S.R.L.',    nombreComercial: 'SecuritDR',   rnc: '131111111', direccion: 'C/ 27 de Febrero 88',       sector: 'Zona Industrial',  provincia: 'Distrito Nacional', latitud: '18.4850', longitud: '-69.9200', nombreContacto: 'Patricia Lora',    cargo: 'Directora',      telefonoPrincipal: '809-555-2001', email: 'plora@securitdr.do',    actividad: 'Importadora de cámaras CCTV, DVR/NVR y accesorios de seguridad', limiteCredito: 250000, diasCredito: 45, activo: true },
+      { noSuplidor: 'SUP-0002', razonSocial: 'Compuworld SRL',                  nombreComercial: 'Compuworld',  rnc: '131222222', direccion: 'Av. Máximo Gómez 12',       sector: 'Cristo Rey',       provincia: 'Distrito Nacional', latitud: '18.4865', longitud: '-69.9605', nombreContacto: 'Sandra Méndez',    cargo: 'Compradora',     telefonoPrincipal: '809-555-2002', email: 'smendez@compuworld.do',  actividad: 'Repuestos PC, discos duros, memorias, fuentes de poder y laptops', limiteCredito: 180000, diasCredito: 30, activo: true },
+      { noSuplidor: 'SUP-0003', razonSocial: 'Cable & Access RD S.A.S.',        nombreComercial: 'CableAccess', rnc: '131333333', direccion: 'Av. Tiradentes 150',        sector: 'Naco',             provincia: 'Distrito Nacional', latitud: '18.4760', longitud: '-69.9350', nombreContacto: 'Héctor Abreu',     cargo: 'Gerente Ventas', telefonoPrincipal: '809-555-2003', email: 'habreu@cableaccess.do',  actividad: 'Cable coaxial, baluns, conectores BNC y materiales de instalación', limiteCredito: 120000, diasCredito: 30, activo: true },
+      { noSuplidor: 'SUP-0004', razonSocial: 'Tech Redes y Seguridad S.R.L.',   nombreComercial: 'TechRedes',   rnc: '131444444', direccion: 'Av. John F. Kennedy 245',    sector: 'Los Prados',       provincia: 'Distrito Nacional', latitud: '18.4950', longitud: '-69.9150', nombreContacto: 'Manuel Castillo',  cargo: 'Jefe Técnico',   telefonoPrincipal: '809-555-2004', email: 'mcastillo@techredes.do', actividad: 'Equipos de redes, switches, access points y herramientas eléctricas', limiteCredito: 150000, diasCredito: 30, activo: true },
+      { noSuplidor: 'SUP-0005', razonSocial: 'Impactec Norte S.R.L.',           nombreComercial: 'ImpactecN',   rnc: '231111111', direccion: 'Calle del Sol 112',         sector: 'Centro',           provincia: 'Santiago',          latitud: '19.4520', longitud: '-70.6975', nombreContacto: 'Ramón Gutiérrez',  cargo: 'Gerente',        telefonoPrincipal: '809-555-2005', email: 'rgutierrez@impactec.do', actividad: 'Distribuidor regional de repuestos electrónicos y cámaras CCTV',   limiteCredito: 100000, diasCredito: 30, activo: true },
     ]
     for (const s of supData) {
       const existing = await prisma.suplidor.findFirst({ where: { noSuplidor: s.noSuplidor } })
@@ -421,11 +441,11 @@ async function main() {
   const proCount = await prisma.prospecto.count()
   if (proCount < 5) {
     const proData = [
-      { nombre: 'Rafael Herrera',       telefono: '829-444-0101', servicioInteresado: 'WISP 25 Mbps',         origen: 'WhatsApp',  estado: 'Interesado',  latitud: '18.4788', longitud: '-69.9400', notas: 'Quiere instalar en su casa en Piantini. Llama la próxima semana.' },
-      { nombre: 'Clínica Bella Vista',  telefono: '809-444-0202', servicioInteresado: 'CCTV 8 Cámaras',       origen: 'Referido',  estado: 'Negociación', latitud: '18.4678', longitud: '-69.9460', notas: 'Necesitan CCTV para salas de espera y parqueo. Presupuesto $50K.' },
-      { nombre: 'Farmacia La Esperanza',telefono: '809-444-0303', servicioInteresado: 'WISP Empresarial',      origen: 'Facebook',  estado: 'Contactado',  latitud: '18.4752', longitud: '-69.8843', notas: 'Dos sucursales en Zona Colonial. Interesan enlace punto a punto.' },
-      { nombre: 'Luis Victorino',       telefono: '849-444-0404', servicioInteresado: 'Cerco Eléctrico',       origen: 'Instagram', estado: 'Nuevo',       latitud: '18.4755', longitud: '-69.9358', notas: 'Propiedad en Naco. Quiere cerco eléctrico + CCTV.' },
-      { nombre: 'Escuela Politécnica',  telefono: '809-444-0505', servicioInteresado: 'Redes + WISP Campues',  origen: 'WhatsApp',  estado: 'Perdido',     latitud: '19.4515', longitud: '-70.6965', notas: 'Proyecto Santiago. No llegaron a acuerdo por presupuesto.' },
+      { nombre: 'Clínica Bella Vista',     telefono: '809-444-0202', servicioInteresado: 'CCTV 16 Cámaras',          origen: 'Referido',  estado: 'Negociación', latitud: '18.4678', longitud: '-69.9460', notas: 'CCTV para salas de espera, quirófanos y parqueo. Presupuesto aprobado ~$65K.' },
+      { nombre: 'Rafael Herrera',          telefono: '829-444-0101', servicioInteresado: 'Reparación Laptop',         origen: 'WhatsApp',  estado: 'Interesado',  latitud: '18.4788', longitud: '-69.9400', notas: 'Laptop no enciende luego de caída. Trae equipo esta semana.' },
+      { nombre: 'Luis Victorino',          telefono: '849-444-0404', servicioInteresado: 'Cerco Eléctrico + CCTV',   origen: 'Instagram', estado: 'Contactado',  latitud: '18.4755', longitud: '-69.9358', notas: 'Villa en Naco. Quiere cerco eléctrico perimetral y CCTV 8 cámaras.' },
+      { nombre: 'Colmado La Altagracia',   telefono: '809-444-0303', servicioInteresado: 'CCTV 4 Cámaras',           origen: 'Facebook',  estado: 'Nuevo',       latitud: '18.4752', longitud: '-69.8843', notas: 'Local pequeño en Zona Colonial. Busca sistema económico interior/exterior.' },
+      { nombre: 'Escuela San Judas',       telefono: '809-444-0505', servicioInteresado: 'CCTV + Redes LAN',         origen: 'WhatsApp',  estado: 'Perdido',     latitud: '19.4515', longitud: '-70.6965', notas: 'Proyecto Santiago. Presupuesto insuficiente en esta ronda.' },
     ]
     for (const p of proData) {
       await prisma.prospecto.create({ data: p })

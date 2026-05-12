@@ -3,7 +3,7 @@ import { useNavigate } from "react-router-dom";
 import {
   Users, Truck, UserPlus, Search, Plus, Eye, X,
   CheckCircle, XCircle, Loader2, ChevronLeft, ChevronRight, Download, ShieldOff,
-  ClipboardList,
+  ClipboardList, Globe, Link2, Link2Off,
 } from "lucide-react";
 import { exportCsv } from "../utils/exportCsv";
 import { apiFetch } from "../utils/api";
@@ -114,22 +114,32 @@ export default function CRM() {
   const [searchClientes,   setSearchClientes]   = useState("");
   const [searchSuplidores, setSearchSuplidores] = useState("");
   const [searchProspectos, setSearchProspectos] = useState("");
+  const [searchUsuarios,   setSearchUsuarios]   = useState("");
 
   const [pageClientes,   setPageClientes]   = useState(1);
   const [pageSuplidores, setPageSuplidores] = useState(1);
   const [pageProspectos, setPageProspectos] = useState(1);
+  const [pageUsuarios,   setPageUsuarios]   = useState(1);
 
   const [clientes,   setClientes]   = useState([]);
   const [suplidores, setSuplidores] = useState([]);
   const [prospectos, setProspectos] = useState([]);
+  const [usuarios,   setUsuarios]   = useState([]);
 
   const [metaClientes,   setMetaClientes]   = useState(EMPTY_META);
   const [metaSuplidores, setMetaSuplidores] = useState(EMPTY_META);
   const [metaProspectos, setMetaProspectos] = useState(EMPTY_META);
+  const [metaUsuarios,   setMetaUsuarios]   = useState(EMPTY_META);
 
   const [loadingClientes,   setLoadingClientes]   = useState(false);
   const [loadingSuplidores, setLoadingSuplidores] = useState(false);
   const [loadingProspectos, setLoadingProspectos] = useState(false);
+  const [loadingUsuarios,   setLoadingUsuarios]   = useState(false);
+
+  const [vincularTarget,   setVincularTarget]   = useState(null);
+  const [vincularSearch,   setVincularSearch]   = useState("");
+  const [vincularClientes, setVincularClientes] = useState([]);
+  const [vincularLoading,  setVincularLoading]  = useState(false);
 
   const [modalOpen,             setModalOpen]             = useState(false);
   const [registroEnEdicion,     setRegistroEnEdicion]     = useState(null);
@@ -175,10 +185,24 @@ export default function CRM() {
     finally  { setLoadingProspectos(false); }
   }, []);
 
+  const fetchUsuarios = useCallback(async (search, page) => {
+    setLoadingUsuarios(true);
+    try {
+      const params = new URLSearchParams({ page, limit: LIMIT });
+      if (search) params.set("search", search);
+      const res  = await apiFetch(`/api/usuarios-portal?${params}`);
+      const json = await res.json();
+      setUsuarios(Array.isArray(json.data) ? json.data : []);
+      setMetaUsuarios(json.meta || EMPTY_META);
+    } catch { setUsuarios([]); setMetaUsuarios(EMPTY_META); }
+    finally  { setLoadingUsuarios(false); }
+  }, []);
+
   // Reset page to 1 when search changes, then fetch
   const prevSearchC = useRef(searchClientes);
   const prevSearchS = useRef(searchSuplidores);
   const prevSearchP = useRef(searchProspectos);
+  const prevSearchU = useRef(searchUsuarios);
 
   useEffect(() => {
     if (tab !== "clientes") return;
@@ -213,11 +237,23 @@ export default function CRM() {
     return () => clearTimeout(t);
   }, [tab, searchProspectos, pageProspectos, fetchProspectos]);
 
+  useEffect(() => {
+    if (tab !== "usuarios") return;
+    const searchChanged = searchUsuarios !== prevSearchU.current;
+    prevSearchU.current = searchUsuarios;
+    const nextPage = searchChanged ? 1 : pageUsuarios;
+    if (searchChanged) setPageUsuarios(1);
+    const delay = searchUsuarios ? 300 : 0;
+    const t = setTimeout(() => fetchUsuarios(searchUsuarios, nextPage), delay);
+    return () => clearTimeout(t);
+  }, [tab, searchUsuarios, pageUsuarios, fetchUsuarios]);
+
   // Initial fetch when switching tabs
   useEffect(() => {
     if (tab === "clientes")   fetchClientes(searchClientes, pageClientes);
     if (tab === "suplidores") fetchSuplidores(searchSuplidores, pageSuplidores);
     if (tab === "prospectos") fetchProspectos(searchProspectos, pageProspectos);
+    if (tab === "usuarios")   fetchUsuarios(searchUsuarios, pageUsuarios);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab]);
 
@@ -243,6 +279,33 @@ export default function CRM() {
     closeModal(); fetchSuplidores(searchSuplidores, pageSuplidores);
   };
 
+  const handleVincular = async (clienteId) => {
+    if (!vincularTarget) return;
+    setVincularLoading(true);
+    try {
+      const r = await apiFetch(`/api/usuarios-portal/${vincularTarget.id}/vincular`, {
+        method: "POST", body: JSON.stringify({ clienteId }),
+      });
+      if (r.ok) {
+        setVincularTarget(null);
+        fetchUsuarios(searchUsuarios, pageUsuarios);
+      }
+    } catch {}
+    finally { setVincularLoading(false); }
+  };
+
+  useEffect(() => {
+    if (!vincularTarget) { setVincularClientes([]); setVincularSearch(""); return; }
+    const t = setTimeout(async () => {
+      const params = new URLSearchParams({ limit: 20 });
+      if (vincularSearch) params.set("search", vincularSearch);
+      const r = await apiFetch(`/api/clientes?${params}`);
+      const j = await r.json();
+      setVincularClientes(Array.isArray(j.data) ? j.data : []);
+    }, vincularSearch ? 300 : 0);
+    return () => clearTimeout(t);
+  }, [vincularTarget, vincularSearch]);
+
   const openConvertirComoCliente = (prospecto) => {
     setProspectoParaConvertir(prospecto);
     setRegistroEnEdicion(null);
@@ -266,9 +329,10 @@ export default function CRM() {
       {/* Tab switcher */}
       <div className="flex gap-1 bg-slate-800/60 border border-slate-700/50 rounded-xl p-1 w-fit">
         {[
-          { id: "clientes",   label: "Clientes",  Icon: Users    },
-          { id: "suplidores", label: "Suplidores", Icon: Truck    },
-          { id: "prospectos", label: "Prospectos", Icon: UserPlus },
+          { id: "clientes",   label: "Clientes",      Icon: Users    },
+          { id: "suplidores", label: "Suplidores",     Icon: Truck    },
+          { id: "prospectos", label: "Prospectos",     Icon: UserPlus },
+          { id: "usuarios",   label: "Usuarios Web",  Icon: Globe    },
         ].map(({ id, label, Icon }) => (
           <button
             key={id}
@@ -537,6 +601,128 @@ export default function CRM() {
               </table>
             </div>
             <Paginador meta={metaProspectos} onPage={setPageProspectos} loading={loadingProspectos} />
+          </div>
+        </div>
+      )}
+
+      {/* ── USUARIOS WEB ── */}
+      {tab === "usuarios" && (
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Usuarios Web</h1>
+              <p className="text-slate-400 text-sm mt-0.5">
+                {metaUsuarios.total} registro{metaUsuarios.total !== 1 ? "s" : ""}
+              </p>
+            </div>
+            <SearchInput value={searchUsuarios} onChange={setSearchUsuarios} placeholder="Buscar usuario..." />
+          </div>
+          <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-slate-700/70 bg-slate-800/60">
+                    <th className={TH}>No. Usuario</th>
+                    <th className={TH}>Nombre</th>
+                    <th className={TH}>Email</th>
+                    <th className={TH}>Cliente Vinculado</th>
+                    <th className={TH}>Estado</th>
+                    <th className={TH}>Registro</th>
+                    <th className="px-4 py-3" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800/80">
+                  {loadingUsuarios ? (
+                    <tr><td colSpan={7} className="text-center py-10"><Loader2 size={20} className="animate-spin text-blue-500 mx-auto" /></td></tr>
+                  ) : usuarios.length === 0 ? (
+                    <tr><td colSpan={7}><EmptyState icon={Globe} title="Sin usuarios web" description="Los clientes registrados en el portal aparecen aquí." /></td></tr>
+                  ) : usuarios.map((u) => (
+                    <tr key={u.id} className="hover:bg-slate-800/50 transition-colors">
+                      <td className="px-4 py-3 font-mono text-xs text-slate-400 whitespace-nowrap">{u.noUsuario}</td>
+                      <td className="px-4 py-3 font-medium text-slate-100 whitespace-nowrap">{u.nombre}</td>
+                      <td className="px-4 py-3 text-slate-300 text-xs whitespace-nowrap">{u.email}</td>
+                      <td className="px-4 py-3 whitespace-nowrap">
+                        {u.cliente ? (
+                          <span className="inline-flex items-center gap-1.5 text-xs">
+                            <span className="font-mono text-blue-400">{u.cliente.noCliente}</span>
+                            <span className="text-slate-300">{u.cliente.razonSocial}</span>
+                          </span>
+                        ) : (
+                          <span className="text-slate-600 text-xs italic">Sin vincular</span>
+                        )}
+                      </td>
+                      <td className="px-4 py-3"><Badge activo={u.activo} /></td>
+                      <td className="px-4 py-3 text-slate-500 text-xs whitespace-nowrap">
+                        {new Date(u.createdAt).toLocaleDateString("es-DO")}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {tienePermiso('crm:editar') && (
+                          <button
+                            onClick={() => setVincularTarget(u)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-700/60 hover:bg-blue-600/20 border border-slate-600/50 hover:border-blue-600/40 text-slate-300 hover:text-blue-300 text-xs font-medium transition-all whitespace-nowrap"
+                          >
+                            {u.clienteId ? <Link2Off size={13} /> : <Link2 size={13} />}
+                            {u.clienteId ? "Desvincular" : "Vincular"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <Paginador meta={metaUsuarios} onPage={setPageUsuarios} loading={loadingUsuarios} />
+          </div>
+        </div>
+      )}
+
+      {/* ── MODAL VINCULAR ── */}
+      {vincularTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="bg-slate-800 border border-slate-700 rounded-2xl w-full max-w-md shadow-2xl">
+            <div className="flex items-center justify-between p-5 border-b border-slate-700">
+              <div>
+                <h2 className="text-base font-bold text-slate-100">
+                  {vincularTarget.clienteId ? "Cambiar / Desvincular cliente" : "Vincular a cliente"}
+                </h2>
+                <p className="text-xs text-slate-400 mt-0.5">{vincularTarget.nombre} · {vincularTarget.email}</p>
+              </div>
+              <button onClick={() => setVincularTarget(null)} className="text-slate-500 hover:text-slate-200 p-1 rounded transition-colors">
+                <X size={18} />
+              </button>
+            </div>
+            <div className="p-5 space-y-3">
+              <SearchInput value={vincularSearch} onChange={setVincularSearch} placeholder="Buscar cliente ERP..." />
+              <div className="max-h-56 overflow-y-auto divide-y divide-slate-700/50 rounded-lg border border-slate-700">
+                {vincularTarget.clienteId && (
+                  <button
+                    onClick={() => handleVincular(null)}
+                    disabled={vincularLoading}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-red-600/10 text-left transition-colors"
+                  >
+                    <Link2Off size={14} className="text-red-400 shrink-0" />
+                    <span className="text-xs text-red-400 font-medium">Quitar vínculo actual</span>
+                  </button>
+                )}
+                {vincularClientes.length === 0 && (
+                  <p className="text-center text-xs text-slate-600 py-6">Sin resultados</p>
+                )}
+                {vincularClientes.map((c) => (
+                  <button
+                    key={c.id}
+                    onClick={() => handleVincular(c.id)}
+                    disabled={vincularLoading}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-blue-600/10 text-left transition-colors"
+                  >
+                    <Link2 size={14} className="text-blue-400 shrink-0" />
+                    <div>
+                      <div className="text-xs font-mono text-blue-400">{c.noCliente}</div>
+                      <div className="text-sm text-slate-200">{c.razonSocial}</div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
       )}
