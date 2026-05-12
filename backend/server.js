@@ -1,6 +1,8 @@
 require('dotenv').config();
 console.log('[RENDER SYNC] Backend API v2.1 started — Prisma Client regenerated');
 const util         = require('util');
+const fs           = require('fs');
+const path         = require('path');
 const express      = require('express');
 const cors         = require('cors');
 const rateLimit    = require('express-rate-limit');
@@ -2738,6 +2740,17 @@ app.post('/api/ordenes', verificarJWT, billingLimiter, requerirPermiso('ot:crear
   }
 })
 
+app.delete('/api/ordenes/:id', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  try {
+    const ot = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, estaFacturada: true, deletedAt: true } })
+    if (!ot || ot.deletedAt)          return res.status(404).json({ error: 'OT no encontrada.' })
+    if (ot.estaFacturada)             return res.status(409).json({ error: 'No se puede eliminar una OT ya facturada.' })
+    await prisma.ordenTrabajo.update({ where: { id: req.params.id }, data: { deletedAt: new Date() } })
+    auditReq('ot:eliminar', req, { otId: req.params.id })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
 // ─── Facturas ────────────────────────────────────────────────────────────────
 
 app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
@@ -3477,11 +3490,16 @@ async function buildFacturaPDFBuffer(factura) {
       const fmtDate  = d => d ? new Date(d).toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
       const W = 495
 
-      // Logo placeholder
-      doc.rect(50, 44, 62, 48).fillAndStroke('#1e3a5f', '#0e2744')
-      doc.fontSize(17).font('Helvetica-Bold').fillColor('#60a5fa').text('ACR', 52, 53, { width: 58, align: 'center' })
-      doc.fontSize(6.5).font('Helvetica').fillColor('#93c5fd').text('NETWORKS', 52, 73, { width: 58, align: 'center' })
-      doc.fontSize(5.5).font('Helvetica').fillColor('#64748b').text('& SOLUTIONS', 52, 82, { width: 58, align: 'center' })
+      // Logo: use PNG from assets/ if available, else text placeholder
+      const LOGO_PATH = path.join(__dirname, 'assets', 'logo-acr.png')
+      if (fs.existsSync(LOGO_PATH)) {
+        doc.image(LOGO_PATH, 50, 44, { width: 62, height: 48, fit: [62, 48] })
+      } else {
+        doc.rect(50, 44, 62, 48).fillAndStroke('#1e3a5f', '#0e2744')
+        doc.fontSize(17).font('Helvetica-Bold').fillColor('#60a5fa').text('ACR', 52, 53, { width: 58, align: 'center' })
+        doc.fontSize(6.5).font('Helvetica').fillColor('#93c5fd').text('NETWORKS', 52, 73, { width: 58, align: 'center' })
+        doc.fontSize(5.5).font('Helvetica').fillColor('#64748b').text('& SOLUTIONS', 52, 82, { width: 58, align: 'center' })
+      }
 
       // Header text
       doc.fontSize(18).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 124, 46)

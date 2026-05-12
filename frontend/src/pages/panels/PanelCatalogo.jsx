@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
-  Plus, Search, Pencil, Loader2, Save, X, CheckCircle, XCircle, RefreshCw,
+  Plus, Search, Pencil, Loader2, Save, X, CheckCircle, XCircle, RefreshCw, ShoppingBag,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import {
@@ -145,7 +145,7 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
 
 // ── PanelCatalogo ─────────────────────────────────────────────────────────────
 
-export default function PanelCatalogo({ canEdit, canSeeCosts }) {
+export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow }) {
   const [items,           setItems]           = useState([])
   const [loading,         setLoading]         = useState(false)
   const [search,          setSearch]          = useState('')
@@ -231,16 +231,16 @@ export default function PanelCatalogo({ canEdit, canSeeCosts }) {
                 {canSeeCosts && <th className={TH}>Margen</th>}
                 <th className={TH}>Stock</th>
                 <th className={TH}>Estado</th>
-                {canEdit && <th className="px-4 py-3" />}
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + (canEdit ? 1 : 0)} className="text-center py-12">
+                <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : items.length === 0 ? (
-                <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + (canEdit ? 1 : 0)} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay items en el catálogo.
                 </td></tr>
               ) : items.map(item => {
@@ -277,25 +277,33 @@ export default function PanelCatalogo({ canEdit, canSeeCosts }) {
                         : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-500/15 text-slate-500 border border-slate-500/30"><XCircle size={11} />Inactivo</span>
                       }
                     </td>
-                    {canEdit && (
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        <div className="flex items-center gap-1.5 justify-end">
-                          <button onClick={() => setModalItem(item)}
-                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-700/60 hover:bg-slate-600/60 border border-slate-600/50 text-slate-300 hover:text-white text-xs font-medium transition-all">
-                            <Pencil size={12} />Editar
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <div className="flex items-center gap-1.5 justify-end">
+                        {canPOS && onSellNow && item.activo && (
+                          <button onClick={() => onSellNow(item)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-orange-600/15 hover:bg-orange-600/25 border border-orange-600/30 hover:border-orange-600/50 text-orange-400 hover:text-orange-300 text-xs font-medium transition-all">
+                            <ShoppingBag size={12} />Vender
                           </button>
-                          <button onClick={() => toggleActivo(item)}
-                            className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${
-                              item.activo
-                                ? 'bg-slate-700/40 hover:bg-red-900/20 border-slate-600/40 hover:border-red-700/30 text-slate-500 hover:text-red-400'
-                                : 'bg-emerald-600/10 hover:bg-emerald-600/20 border-emerald-600/20 hover:border-emerald-600/40 text-emerald-600 hover:text-emerald-400'
-                            }`}>
-                            {item.activo ? <XCircle size={12} /> : <CheckCircle size={12} />}
-                            {item.activo ? 'Desactivar' : 'Activar'}
-                          </button>
-                        </div>
-                      </td>
-                    )}
+                        )}
+                        {canEdit && (
+                          <>
+                            <button onClick={() => setModalItem(item)}
+                              className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-700/60 hover:bg-slate-600/60 border border-slate-600/50 text-slate-300 hover:text-white text-xs font-medium transition-all">
+                              <Pencil size={12} />Editar
+                            </button>
+                            <button onClick={() => toggleActivo(item)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border text-xs font-medium transition-all ${
+                                item.activo
+                                  ? 'bg-slate-700/40 hover:bg-red-900/20 border-slate-600/40 hover:border-red-700/30 text-slate-500 hover:text-red-400'
+                                  : 'bg-emerald-600/10 hover:bg-emerald-600/20 border-emerald-600/20 hover:border-emerald-600/40 text-emerald-600 hover:text-emerald-400'
+                              }`}>
+                              {item.activo ? <XCircle size={12} /> : <CheckCircle size={12} />}
+                              {item.activo ? 'Desactivar' : 'Activar'}
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 )
               })}

@@ -459,6 +459,16 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
     finally { setBilling(null) }
   }
 
+  async function eliminarOT(ot) {
+    if (!window.confirm(`¿Eliminar la OT ${ot.noOT ?? ot.id}?\nEsta acción es reversible solo por un administrador.`)) return
+    try {
+      const r = await apiFetch(`/api/ordenes/${ot.id}`, { method: 'DELETE' })
+      if (!r.ok) { const j = await r.json(); toast.error(j.error ?? 'Error al eliminar.'); return }
+      toast.success(`OT ${ot.noOT ?? ''} eliminada.`)
+      fetchOrdenes()
+    } catch { toast.error('Error de conexión.') }
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 justify-between">
@@ -499,16 +509,16 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
                 <th className={TH}>Items</th>
                 <th className={TH}>Total</th>
                 <th className={TH}>Fecha</th>
-                {canBill && <th className="px-4 py-3" />}
+                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={8 + (canBill ? 1 : 0)} className="text-center py-12">
+                <tr><td colSpan={9} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : ordenes.length === 0 ? (
-                <tr><td colSpan={8 + (canBill ? 1 : 0)} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={9} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay órdenes de trabajo.
                 </td></tr>
               ) : ordenes.map(ot => {
@@ -540,23 +550,29 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
                     <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                       {formatDate(ot.createdAt)}
                     </td>
-                    {canBill && (
-                      <td className="px-4 py-3 text-right whitespace-nowrap">
-                        {['Pendiente', 'EnProceso'].includes(ot.estado) && (ot._count?.facturas ?? 0) === 0 ? (
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <div className="flex items-center gap-1.5 justify-end">
+                        {canBill && ['Pendiente', 'EnProceso'].includes(ot.estado) && (ot._count?.facturas ?? 0) === 0 && (
                           <button
                             onClick={() => facturarOT(ot)}
                             disabled={billing === ot.id}
                             className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-400 text-xs font-semibold transition-all disabled:opacity-40">
-                            {billing === ot.id
-                              ? <Loader2 size={12} className="animate-spin" />
-                              : <FileText size={12} />}
+                            {billing === ot.id ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />}
                             Facturar
                           </button>
-                        ) : (ot._count?.facturas ?? 0) > 0 ? (
+                        )}
+                        {canBill && (ot._count?.facturas ?? 0) > 0 && (
                           <span className="text-[10px] font-mono text-slate-600 px-2">Facturada</span>
-                        ) : null}
-                      </td>
-                    )}
+                        )}
+                        {canEdit && !ot.estaFacturada && (
+                          <button
+                            onClick={() => eliminarOT(ot)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-slate-700/40 hover:bg-red-900/20 border border-slate-600/40 hover:border-red-700/30 text-slate-500 hover:text-red-400 text-xs font-medium transition-all">
+                            <Trash2 size={12} />
+                          </button>
+                        )}
+                      </div>
+                    </td>
                   </tr>
                 )
               })}

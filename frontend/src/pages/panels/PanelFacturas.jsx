@@ -540,7 +540,7 @@ function ModalVistaPrevia({ factura, onClose }) {
 
 // ─── Panel Principal ──────────────────────────────────────────────────────────
 
-export default function PanelFacturas() {
+export default function PanelFacturas({ highlightId = null }) {
   const { tienePermiso }                          = useAuth()
   const canEdit                                   = tienePermiso('factura:editar')
   const canEmit                                   = tienePermiso('factura:emitir')
@@ -667,7 +667,8 @@ export default function PanelFacturas() {
                   </div>
                 </td></tr>
               ) : facturas.map(f => (
-                <tr key={f.id} onClick={() => !loadingPreview && abrirPreview(f)} className="hover:bg-slate-800/50 transition-colors cursor-pointer">
+                <tr key={f.id} onClick={() => !loadingPreview && abrirPreview(f)}
+                  className={`hover:bg-slate-800/50 transition-colors cursor-pointer ${f.id === highlightId ? 'ring-1 ring-inset ring-emerald-500/40 bg-emerald-900/10' : ''}`}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-300 whitespace-nowrap">{f.noFactura}</td>
                   <td className="px-4 py-3">
                     {f.ncf

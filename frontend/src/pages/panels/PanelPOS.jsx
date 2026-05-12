@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback } from 'react'
-import { Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User } from 'lucide-react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import { toast } from 'sonner'
@@ -202,7 +202,7 @@ function CartLine({ linea, onChange, onRemove }) {
 }
 
 // ── PanelPOS ──────────────────────────────────────────────────────────────────
-export default function PanelPOS() {
+export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaCreada }) {
   const { tienePermiso } = useAuth()
   const [cart, setCart]             = useState([])
   const [cliente, setCliente]       = useState(null)
@@ -212,6 +212,17 @@ export default function PanelPOS() {
   const [descGlobalMonto, setDescGlobalMonto] = useState(0)
   const [tipoNcf, setTipoNcf]       = useState('Auto')
   const [submitting, setSubmitting] = useState(false)
+  const [lastFacturaId, setLastFacturaId] = useState(null)
+
+  const prevPreload = useRef([])
+  useEffect(() => {
+    if (!preloadItems.length) return
+    if (preloadItems === prevPreload.current) return
+    prevPreload.current = preloadItems
+    preloadItems.forEach(item => addItem(item))
+    onClearPreload?.()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preloadItems])
 
   const canCotizar  = tienePermiso('pos:cotizar')  || tienePermiso('sistema:owner')
   const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
@@ -272,6 +283,7 @@ export default function PanelPOS() {
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error.'); return }
       toast.success(esCotizacion ? `Cotización ${j.noFactura} guardada.` : `Factura ${j.noFactura} emitida.`)
+      if (!esCotizacion) setLastFacturaId(j.id)
       setCart([])
       setCliente(null)
       setNombreWalkin('')
@@ -366,6 +378,12 @@ export default function PanelPOS() {
 
         {/* Actions */}
         <div className="flex flex-col gap-2">
+          {lastFacturaId && !cart.length && onFacturaCreada && (
+            <button onClick={() => onFacturaCreada(lastFacturaId)}
+              className="w-full py-2.5 rounded-xl bg-emerald-700/30 hover:bg-emerald-700/50 border border-emerald-600/40 text-emerald-400 text-sm font-semibold transition-all flex items-center justify-center gap-2">
+              <ExternalLink size={14} />Ver factura generada
+            </button>
+          )}
           {canCotizar && (
             <button onClick={() => submit(true)} disabled={submitting || !cart.length}
               className="w-full py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-100 text-sm font-semibold transition-all disabled:opacity-40 flex items-center justify-center gap-2">

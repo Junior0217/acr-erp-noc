@@ -21,6 +21,20 @@ export default function Ventas() {
 
   const [tab, setTab] = useState(clienteIdInit ? 'ordenes' : 'catalogo')
 
+  // Contextual nav state
+  const [posPreload,      setPosPreload]      = useState([])  // items to pre-add to POS cart
+  const [facturaHighlight, setFacturaHighlight] = useState(null) // facturaId to highlight after POS
+
+  function sellNow(item) {
+    setPosPreload([item])
+    setTab('pos')
+  }
+
+  function onFacturaCreada(facturaId) {
+    setFacturaHighlight(facturaId)
+    setTab('facturas')
+  }
+
   const TABS = [
     { key: 'catalogo',      label: 'Catálogo',       Icon: Package,       show: true       },
     { key: 'ordenes',       label: 'Órdenes',         Icon: ClipboardList,  show: true       },
@@ -51,11 +65,11 @@ export default function Ventas() {
       </div>
 
       <div>
-        {tab === 'catalogo'     && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} />}
+        {tab === 'catalogo'     && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} canPOS={canPOS} onSellNow={sellNow} />}
         {tab === 'ordenes'      && <PanelOrdenes  canEdit={canEdit} clienteIdInit={clienteIdInit} clienteNombreInit={clienteNombreInit} />}
-        {tab === 'facturas'     && <PanelFacturas />}
+        {tab === 'facturas'     && <PanelFacturas highlightId={facturaHighlight} />}
         {tab === 'cotizaciones' && <PanelCotizaciones />}
-        {tab === 'pos'          && <PanelPOS />}
+        {tab === 'pos'          && <PanelPOS preloadItems={posPreload} onClearPreload={() => setPosPreload([])} onFacturaCreada={onFacturaCreada} />}
         {tab === 'ncf'          && <PanelNCF />}
       </div>
     </div>
