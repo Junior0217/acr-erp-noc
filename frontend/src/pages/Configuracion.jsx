@@ -1232,14 +1232,7 @@ export default function Configuracion() {
             <Store size={14} />Portal B2C
           </button>
         )}
-        {isAdmin && (
-          <button onClick={() => setActiveTab('empresa')}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
-              activeTab === 'empresa' ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'
-            }`}>
-            <Building2Icon size={14} />Mi Empresa
-          </button>
-        )}
+        {/* "Mi Empresa" se movió a /empresa (página principal en sidebar bajo Sistema) */}
         {isOwner && (
           <button onClick={() => setActiveTab('sesiones')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -1268,7 +1261,7 @@ export default function Configuracion() {
 
       {activeTab === 'api'         && isOwner && <PanelApiEstado />}
       {activeTab === 'incidencias' && isOwner && <PanelIncidencias />}
-      {activeTab === 'empresa'     && isAdmin && <PanelMiEmpresa />}
+      {/* empresa tab eliminado — ahora es /empresa página principal */}
 
       {/* ── Tab: Mi Perfil ──────────────────────────────────────────────────── */}
       {activeTab === 'mi-perfil' && (

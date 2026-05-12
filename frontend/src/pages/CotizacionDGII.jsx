@@ -241,10 +241,28 @@ export default function CotizacionDGII() {
               <div className="border-t border-slate-400 w-full mt-6" />
               <p className="mt-1 text-center text-[9.5px]">Firma y sello</p>
             </div>
-            <div className="text-center">
+            <div className="text-center relative">
+              {/* Firma escaneada del Gerente (si está cargada en assets.firmaGerente) */}
+              {empresa.assets?.firmaGerente && (
+                <img
+                  src={empresa.assets.firmaGerente}
+                  alt="Firma"
+                  className="h-12 w-auto mx-auto -mb-2 opacity-90"
+                  onError={e => e.currentTarget.style.display = 'none'}
+                />
+              )}
               <div className="border-t-2 border-slate-700 w-56 mt-6" />
               <p className="mt-1 text-[12px] font-bold text-slate-900 whitespace-nowrap">{representanteFull || "—"}</p>
               <p className="text-[10px] text-slate-600">{empresa.representanteCargo ?? "Gerente"} · {empresa.razonSocial}</p>
+              {/* Sello físico opcional en esquina inferior derecha */}
+              {empresa.assets?.selloFisico && (
+                <img
+                  src={empresa.assets.selloFisico}
+                  alt="Sello"
+                  className="absolute -top-2 -right-2 h-16 w-16 object-contain opacity-70 rotate-[-8deg] pointer-events-none"
+                  onError={e => e.currentTarget.style.display = 'none'}
+                />
+              )}
             </div>
           </section>
 

@@ -31,6 +31,7 @@ const PortalTracking  = lazy(() => import('./pages/PortalTracking'))
 const TrackTicket     = lazy(() => import('./pages/TrackTicket'))
 const Tienda          = lazy(() => import('./pages/Tienda'))
 const CotizacionDGII  = lazy(() => import('./pages/CotizacionDGII'))
+const MiEmpresa       = lazy(() => import('./pages/MiEmpresa'))
 
 function PageLoader() {
   return (
@@ -94,6 +95,7 @@ function AppRoutes() {
           <Route path="crm"       element={<Suspense fallback={<PageLoader />}><CRM /></Suspense>} />
           <Route path="mapa"      element={<Suspense fallback={<PageLoader />}><MapaNOC /></Suspense>} />
           <Route path="reportes"  element={<Suspense fallback={<PageLoader />}><Reportes /></Suspense>} />
+          <Route path="empresa"   element={<Suspense fallback={<PageLoader />}><MiEmpresa /></Suspense>} />
           <Route path="configuracion" element={<Suspense fallback={<PageLoader />}><Configuracion /></Suspense>} />
         </Route>
         <Route path="*" element={<Navigate to="/" replace />} />

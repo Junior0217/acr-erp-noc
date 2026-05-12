@@ -666,7 +666,7 @@ model EmpresaPerfil {
   fax                   String?
   email                 String?
   website               String?
-  logoUrl               String?
+  assets                Json      @default("{}")
   eslogan               String?
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt

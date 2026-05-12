@@ -89,6 +89,10 @@ module.exports = [
   // ── Mapa NOC ──────────────────────────────────────────────────────────────────
   { key: 'mapa:ver',                   module: 'Mapa NOC',      label: 'Ver Mapa',              desc: 'Mapa de infraestructura',                        color: 'teal'    },
 
+  // ── Empresa (perfil singleton) ────────────────────────────────────────────────
+  { key: 'empresa:ver',                module: 'Empresa',       label: 'Ver',                   desc: 'Consultar datos legales y de contacto de la empresa', color: 'violet' },
+  { key: 'empresa:editar',             module: 'Empresa',       label: 'Editar',                desc: 'Modificar perfil legal, datos del representante, logos y firmas', color: 'violet' },
+
   // ── Bóveda PAM (alta sensibilidad — requiere 2FA + cooldown) ──────────────────
   { key: 'vault:ver',                  module: 'Bóveda PAM',    label: 'Ver Bóveda',            desc: 'Listar credenciales sin descifrar',              color: 'red'     },
   { key: 'vault:editar',               module: 'Bóveda PAM',    label: 'Crear/Eliminar',        desc: 'Crear y eliminar credenciales cifradas',         color: 'red'     },

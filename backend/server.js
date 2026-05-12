@@ -2456,7 +2456,7 @@ app.post('/api/usuarios-portal/:id/bloquear', verificarJWT, requerirNivel(NIVEL_
 
 // ─── EmpresaPerfil (Singleton ID=1) ──────────────────────────────────────────
 
-// GET público — solo campos del membrete (sin PII del representante)
+// GET semi-público — campos de membrete + logos. Sin PII del representante.
 const empresaPublicLimiter = rateLimit({ windowMs: 60_000, max: 60, standardHeaders: true, legacyHeaders: false })
 app.get('/api/configuracion/empresa/publico', empresaPublicLimiter, async (req, res) => {
   try {
@@ -2465,16 +2465,21 @@ app.get('/api/configuracion/empresa/publico', empresaPublicLimiter, async (req, 
       select: {
         rnc: true, razonSocial: true, nombreComercial: true, registroMercantil: true,
         direccion: true, sector: true, provincia: true, pais: true,
-        telefono: true, email: true, website: true, logoUrl: true, eslogan: true,
+        telefono: true, email: true, website: true, assets: true, eslogan: true,
       },
     })
     if (!e) return res.status(404).json({ error: 'Perfil no inicializado.' })
-    res.json(e)
+    // Limpia el JSON de assets — sólo expone públicamente lo necesario para membrete:
+    const safeAssets = {
+      logoClaro:  e.assets?.logoClaro  ?? null,
+      logoOscuro: e.assets?.logoOscuro ?? null,
+    }
+    res.json({ ...e, assets: safeAssets })
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-// GET full — autenticado, incluye PII representante
-app.get('/api/configuracion/empresa', verificarJWT, async (req, res) => {
+// GET autenticado — completo (incluye selloFisico, firmaGerente, PII representante)
+app.get('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:ver'), async (req, res) => {
   try {
     const e = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
     if (!e) return res.status(404).json({ error: 'Perfil no inicializado.' })
@@ -2482,7 +2487,8 @@ app.get('/api/configuracion/empresa', verificarJWT, async (req, res) => {
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-// PATCH — SOLO Propietario Absoluto (nivel >= 100). REGLA DE ORO.
+// PATCH — permiso granular empresa:editar (puede asignarse a Owner o Admin desde UI roles).
+// Telefono permite formato múltiple "X / Y" (ACR usa 2 líneas).
 const empresaPatchSchema = z.object({
   rnc:                   z.string().min(9).max(20).optional(),
   razonSocial:           z.string().min(2).max(200).optional(),
@@ -2501,17 +2507,27 @@ const empresaPatchSchema = z.object({
   pais:                  z.string().max(80).optional(),
   tipoEmpresa:           z.string().max(40).optional().nullable(),
   fechaInicio:           z.coerce.date().optional().nullable(),
-  telefono:              z.string().max(40).optional().nullable(),
+  telefono:              z.string().max(80).optional().nullable(),
   fax:                   z.string().max(40).optional().nullable(),
   email:                 z.string().email().max(150).optional().nullable().or(z.literal('').transform(() => null)),
   website:               z.string().max(200).optional().nullable().or(z.literal('').transform(() => null)),
-  logoUrl:               z.string().max(500).optional().nullable().or(z.literal('').transform(() => null)),
+  assets:                z.object({
+    logoClaro:    z.string().max(500).optional().nullable(),
+    logoOscuro:   z.string().max(500).optional().nullable(),
+    selloFisico:  z.string().max(500).optional().nullable(),
+    firmaGerente: z.string().max(500).optional().nullable(),
+  }).partial().optional(),
   eslogan:               z.string().max(200).optional().nullable(),
 })
 
-app.patch('/api/configuracion/empresa', verificarJWT, requerirNivel(NIVEL_PROPIETARIO_ABSOLUTO), async (req, res) => {
+app.patch('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:editar'), async (req, res) => {
   try {
     const data = empresaPatchSchema.parse(req.body)
+    // Merge assets en el JSON existente (no sobreescribir si el cliente omite alguna URL)
+    if (data.assets) {
+      const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } })
+      data.assets = { ...(current?.assets ?? {}), ...data.assets }
+    }
     const e = await prisma.empresaPerfil.upsert({
       where:  { id: 1 },
       update: data,

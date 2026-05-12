@@ -6,18 +6,23 @@ const EmpresaContext = createContext(null)
 // Defaults usados antes de que /api/configuracion/empresa/publico responda.
 // Garantizan que la app nunca renderiza "undefined" si el endpoint cae.
 const DEFAULT_EMPRESA = {
-  rnc:             '133-69267-8',
-  razonSocial:     'ACR Networks & Solutions, S.R.L.',
+  rnc:             '133692678',
+  razonSocial:     'ACR NETWORKS & SOLUTIONS, S.R.L.',
   nombreComercial: 'ACR Networks',
-  registroMercantil:'161830SD',
-  direccion:       'Calle Feliz Evaristo Mejía No. 406',
+  registroMercantil:'220982SD',
+  direccion:       'Calle Feliz Evaristo Mejía, No. 406',
   sector:          'Cristo Rey',
-  provincia:       'Distrito Nacional',
+  provincia:       'Santo Domingo, Distrito Nacional',
   pais:            'República Dominicana',
-  telefono:        '849-458-9955',
+  telefono:        '849-458-9955 / 809-670-9956',
   email:           'ranetworkssolutions@gmail.com',
-  website:         'https://acrnetworks.do',
-  logoUrl:         '/logo-acr.png',
+  website:         '',
+  assets: {
+    logoClaro:    '/logo-acr.png',
+    logoOscuro:   '/logo-acr.png',
+    selloFisico:  '',
+    firmaGerente: '',
+  },
   eslogan:         'Soluciones en Seguridad Electrónica, Redes y Soporte IT Corporativo',
   representanteNombre:   null,
   representanteApellido: null,
@@ -40,14 +45,14 @@ export function EmpresaProvider({ children }) {
         : null
       if (r?.ok) {
         const j = await r.json()
-        setEmpresa({ ...DEFAULT_EMPRESA, ...j })
+        setEmpresa({ ...DEFAULT_EMPRESA, ...j, assets: { ...DEFAULT_EMPRESA.assets, ...(j.assets ?? {}) } })
         setHasFull(true)
         return
       }
       r = await fetch(`${API}/api/configuracion/empresa/publico`)
       if (r.ok) {
         const j = await r.json()
-        setEmpresa({ ...DEFAULT_EMPRESA, ...j })
+        setEmpresa({ ...DEFAULT_EMPRESA, ...j, assets: { ...DEFAULT_EMPRESA.assets, ...(j.assets ?? {}) } })
         setHasFull(false)
       }
     } catch {
