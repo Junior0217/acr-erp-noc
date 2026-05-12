@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import {
   ShieldCheck, Lock, Ban, CheckCircle, LogOut, Loader2, Eye, EyeOff,
   RefreshCw, KeyRound, Crown, Users, Shield, Plus, Trash2, Save, Sparkles,
-  QrCode, Smartphone, User, Monitor, Trash, Globe, MapPin,
+  QrCode, Smartphone, User, Monitor, Trash, Globe, MapPin, Store,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
@@ -926,6 +926,114 @@ function PanelSesionesGlobales() {
   )
 }
 
+// ─── Panel Portal B2C ─────────────────────────────────────────────────────────
+
+const PORTAL_TOGGLES = [
+  { key: 'mostrarServicios',  label: 'Mostrar Servicios',          desc: 'Lista de servicios WISP, CCTV y Redes en el portal público.',         color: 'blue'    },
+  { key: 'mostrarCotizador',  label: 'Mostrar Cotizador Inbound',  desc: 'Widget "Arma tu Plan" con calculadora de precios en tiempo real.',    color: 'indigo'  },
+  { key: 'mostrarMapa',       label: 'Mostrar Mapa de Cobertura',  desc: 'Mapa Leaflet con polígono de cobertura WISP en Cristo Rey, SD.',      color: 'emerald' },
+  { key: 'mostrarEquipos',    label: 'Mostrar Equipos en Venta',   desc: 'Catálogo de equipos disponibles para compra directa.',               color: 'amber'   },
+  { key: 'permitirPagos',     label: 'Habilitar Botón de Pagos',   desc: 'Muestra botón "Pagar" en facturas vencidas del dashboard del cliente.', color: 'red'   },
+]
+
+function PanelPortalB2C() {
+  const { tienePermiso } = useAuth()
+  const canEdit = tienePermiso('sistema:config')
+  const [settings, setSettings] = useState(null)
+  const [loading,  setLoading]  = useState(true)
+  const [saving,   setSaving]   = useState(false)
+  const [dirty,    setDirty]    = useState(false)
+
+  useEffect(() => {
+    apiFetch('/api/portal/settings')
+      .then(r => r.ok ? r.json() : null)
+      .then(data => { if (data) setSettings(data) })
+      .catch(() => {})
+      .finally(() => setLoading(false))
+  }, [])
+
+  function toggle(key) {
+    if (!canEdit) return
+    setSettings(prev => ({ ...prev, [key]: !prev[key] }))
+    setDirty(true)
+  }
+
+  async function guardar() {
+    setSaving(true)
+    try {
+      const r = await apiFetch('/api/portal/settings', {
+        method: 'PUT',
+        body: JSON.stringify({
+          mostrarEquipos:   !!settings.mostrarEquipos,
+          permitirPagos:    !!settings.permitirPagos,
+          mostrarMapa:      !!settings.mostrarMapa,
+          mostrarCotizador: !!settings.mostrarCotizador,
+          mostrarServicios: !!settings.mostrarServicios,
+        }),
+      })
+      if (r.ok) {
+        const data = await r.json()
+        setSettings(data)
+        setDirty(false)
+        toast.success('Configuración del portal actualizada.')
+      } else {
+        const err = await r.json().catch(() => ({}))
+        toast.error(err.error ?? 'Error al guardar.')
+      }
+    } catch { toast.error('Error de conexión.') }
+    finally { setSaving(false) }
+  }
+
+  if (loading) return <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-blue-500" /></div>
+  if (!settings) return <p className="text-sm text-slate-600 text-center py-8">No se pudo cargar la configuración del portal.</p>
+
+  return (
+    <div className="space-y-6 max-w-xl">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-base font-bold text-slate-100">Portal B2C — Visibilidad de Secciones</h2>
+          <p className="text-xs text-slate-500 mt-0.5">Controla qué secciones se muestran en el portal público de clientes.</p>
+        </div>
+        {canEdit && dirty && (
+          <button onClick={guardar} disabled={saving}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-semibold transition-colors disabled:opacity-50">
+            {saving ? <Loader2 size={13} className="animate-spin" /> : <Save size={13} />}
+            Guardar
+          </button>
+        )}
+      </div>
+
+      <div className="space-y-2.5">
+        {PORTAL_TOGGLES.map(({ key, label, desc, color }) => {
+          const c  = COLOR_MAP[color] ?? COLOR_MAP.blue
+          const on = !!settings[key]
+          return (
+            <div key={key} className={`flex items-center justify-between p-4 rounded-xl border transition-all ${
+              on ? `${c.bg} ${c.border}` : 'bg-slate-800/30 border-slate-700/30'
+            }`}>
+              <div className="flex-1 min-w-0 mr-4">
+                <p className={`text-sm font-semibold ${on ? c.text : 'text-slate-400'}`}>{label}</p>
+                <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">{desc}</p>
+              </div>
+              <Toggle on={on} onChange={() => toggle(key)} disabled={!canEdit} />
+            </div>
+          )
+        })}
+      </div>
+
+      {!canEdit && (
+        <p className="text-xs text-slate-600 text-center py-1">
+          Requiere permiso <code className="font-mono text-slate-500">sistema:config</code>
+        </p>
+      )}
+
+      <div className="pt-2 border-t border-slate-800">
+        <p className="text-[10px] text-slate-700 font-mono">URL del portal: <span className="text-slate-500">/portal</span></p>
+      </div>
+    </div>
+  )
+}
+
 export default function Configuracion() {
   const { tienePermiso } = useAuth()
   const isAdmin = tienePermiso('sistema:admin')
@@ -999,6 +1107,14 @@ export default function Configuracion() {
             <Icon size={14} />{label}
           </button>
         ))}
+        {isAdmin && (
+          <button onClick={() => setActiveTab('portal')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+              activeTab === 'portal' ? 'bg-emerald-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'
+            }`}>
+            <Store size={14} />Portal B2C
+          </button>
+        )}
         {isOwner && (
           <button onClick={() => setActiveTab('sesiones')}
             className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${
@@ -1052,6 +1168,13 @@ export default function Configuracion() {
               : <p className="text-sm text-slate-600 text-center py-8">Selecciona un usuario</p>
             }
           </div>
+        </div>
+      )}
+
+      {/* ── Tab: Portal B2C ─────────────────────────────────────────────────── */}
+      {activeTab === 'portal' && isAdmin && (
+        <div className="bg-slate-900 border border-slate-700/50 rounded-xl p-5">
+          <PanelPortalB2C />
         </div>
       )}
 
