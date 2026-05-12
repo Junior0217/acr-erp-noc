@@ -258,7 +258,7 @@ const CSRF_SKIP = new Set([
   '/api/auth/login', '/api/auth/challenge', '/api/auth/2fa/verify', '/api/auth/logout',
   '/api/portal/auth/register', '/api/portal/auth/login', '/api/portal/auth/logout',
   '/api/portal/auth/forgot-password', '/api/portal/auth/reset-password',
-  '/api/portal/settings', '/api/portal/cotizacion', '/api/portal/sos',
+  '/api/portal/settings', '/api/portal/catalog', '/api/portal/cotizacion', '/api/portal/sos',
 ])
 function csrfMiddleware(req, res, next) {
   const mutating = req.method === 'POST' || req.method === 'PUT' || req.method === 'PATCH' || req.method === 'DELETE'
@@ -621,6 +621,22 @@ async function getOrCreatePortalSettings() {
     create: { id: 1 },
   })
 }
+
+app.get('/api/portal/catalog', async (req, res) => {
+  try {
+    const { categoria, tipo, search } = req.query
+    const where = { activo: true }
+    if (categoria) where.categoria = categoria
+    if (tipo) where.tipo = tipo
+    if (search) where.nombre = { contains: search, mode: 'insensitive' }
+    const items = await prisma.itemCatalogo.findMany({
+      where,
+      orderBy: [{ categoria: 'asc' }, { nombre: 'asc' }],
+      select: { id: true, nombre: true, descripcion: true, tipo: true, categoria: true, precio: true, tipoItem: true },
+    })
+    res.json({ data: items, total: items.length })
+  } catch (e) { console.error('[GET /api/portal/catalog]', e.message); res.status(500).json({ error: 'Error interno.' }) }
+})
 
 app.get('/api/portal/settings', async (req, res) => {
   try {
@@ -2763,8 +2779,8 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
         where:   { id: ordenId },
         include: { cliente: true, lineas: true, facturas: { select: { id: true } } },
       })
-      if (!ot)                      throw Object.assign(new Error('Orden no encontrada.'),        { status: 404 })
-      if (ot.facturas.length > 0)   throw Object.assign(new Error('Esta orden ya tiene factura.'), { status: 409 })
+      if (!ot || ot.deletedAt)       throw Object.assign(new Error('Orden no encontrada.'),        { status: 404 })
+      if (ot.facturas.length > 0)    throw Object.assign(new Error('Esta orden ya tiene factura.'), { status: 409 })
       if (ot.estado === 'Cancelada') throw Object.assign(new Error('No se puede facturar una OT cancelada.'), { status: 422 })
 
       // 2. Tipo NCF del cliente

@@ -93,6 +93,27 @@ export function formatDate(d) {
   return new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: 'short', year: 'numeric' })
 }
 
+// ── Inventory category color map (Prisma Categoria.nombre) ───────────────────
+
+export const INV_CAT_COLORS = {
+  'WISP':                { text: 'text-cyan-400',    bg: 'bg-cyan-500/15',    border: 'border-cyan-500/30'    },
+  'CCTV':                { text: 'text-violet-400',  bg: 'bg-violet-500/15',  border: 'border-violet-500/30'  },
+  'Redes':               { text: 'text-sky-400',     bg: 'bg-sky-500/15',     border: 'border-sky-500/30'     },
+  'Fibra Óptica':        { text: 'text-blue-400',    bg: 'bg-blue-500/15',    border: 'border-blue-500/30'    },
+  'Equipos de Cómputo':  { text: 'text-slate-300',   bg: 'bg-slate-500/15',   border: 'border-slate-500/30'   },
+  'Videovigilancia (CCTV)': { text: 'text-violet-400', bg: 'bg-violet-500/15', border: 'border-violet-500/30' },
+  'Redes y Switching':   { text: 'text-sky-400',     bg: 'bg-sky-500/15',     border: 'border-sky-500/30'     },
+}
+
+export function InvCatBadge({ nombre }) {
+  const c = INV_CAT_COLORS[nombre] ?? { text: 'text-slate-400', bg: 'bg-slate-500/15', border: 'border-slate-500/30' }
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold border ${c.text} ${c.bg} ${c.border}`}>
+      {nombre ?? '—'}
+    </span>
+  )
+}
+
 // ── Catalog badges ────────────────────────────────────────────────────────────
 
 export function TipoBadge({ tipo }) {

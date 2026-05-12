@@ -12,6 +12,7 @@ import { exportCsv }       from '../utils/exportCsv'
 import { apiFetch }        from '../utils/api'
 import { useAuth }         from '../contexts/AuthContext'
 import { useCart }         from '../contexts/CartContext'
+import { InvCatBadge }     from './panels/_shared'
 
 const LOW_STOCK = 5
 const fmt       = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
@@ -241,9 +242,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
                 <td className={TD + ' font-mono text-xs text-slate-400'}>{p.sku}</td>
                 <td className={TD + ' font-medium text-slate-200'}>{p.nombre}</td>
                 <td className={TD}>
-                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs bg-slate-700/50 text-slate-400 border border-slate-600/30">
-                    <Tag size={9} />{p.categoria?.nombre ?? '—'}
-                  </span>
+                  <InvCatBadge nombre={p.categoria?.nombre} />
                 </td>
                 <td className={TD + ' text-right tabular-nums'}>RD$ {fmt(p.precio)}</td>
                 {!esServicio && (

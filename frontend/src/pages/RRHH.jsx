@@ -271,6 +271,7 @@ function TabEmpleados() {
         <table className="w-full min-w-[500px]">
           <thead className="sticky top-0 z-10 bg-slate-800/90 backdrop-blur-sm">
             <tr>
+              <th className={TH}>Código</th>
               <th className={TH}>Nombre</th>
               <th className={TH}>Roles / Cargo</th>
               <th className={TH}>Email</th>
@@ -280,10 +281,10 @@ function TabEmpleados() {
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading && rows.length === 0 && (
-              <tr><td colSpan={canEdit ? 5 : 4} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
+              <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={canEdit ? 5 : 4} className="px-4 py-8 text-center text-sm text-slate-600">Sin técnicos registrados.</td></tr>
+              <tr><td colSpan={canEdit ? 6 : 5} className="px-4 py-8 text-center text-sm text-slate-600">Sin técnicos registrados.</td></tr>
             )}
             {rows.map(e => {
               const roleLabel = e.roles?.length
@@ -291,6 +292,11 @@ function TabEmpleados() {
                 : e.cargo
               return (
                 <tr key={e.id} className="hover:bg-slate-800/40 transition-colors">
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <span className="text-xs font-mono font-bold text-indigo-400 bg-indigo-600/10 border border-indigo-600/20 px-2 py-0.5 rounded">
+                      EMP-{String(e.id).padStart(3, '0')}
+                    </span>
+                  </td>
                   <td className={TD + ' font-medium text-slate-200'}>{e.nombre}</td>
                   <td className={TD}>
                     {e.roles?.length
