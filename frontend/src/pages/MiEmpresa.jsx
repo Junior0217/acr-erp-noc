@@ -1,12 +1,14 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   Building2, FileText, Phone, MapPin, User, Save, Loader2, ShieldCheck,
-  Image as ImageIcon, AlertTriangle, ShieldOff, Stamp, PenTool, Lock,
+  Image as ImageIcon, AlertTriangle, ShieldOff, Stamp, PenTool, Lock, Upload, X, Trash2,
 } from 'lucide-react'
 import { apiFetch } from '../utils/api'
 import { useEmpresa } from '../contexts/EmpresaContext'
 import { useAuth } from '../contexts/AuthContext'
+
+const API = import.meta.env.VITE_API_URL || ''
 
 const INPUT    = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500'
 const LABEL    = 'block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1'
@@ -114,27 +116,20 @@ export default function MiEmpresa() {
   }
 
   function renderAsset(asset) {
-    const Icon = asset.Icon
-    const url = form.assets?.[asset.key] ?? ''
     return (
-      <div key={asset.key} className="bg-slate-800/40 border border-slate-700/50 rounded-lg p-4">
-        <div className="flex items-start gap-3 mb-3">
-          <Icon size={16} className="text-blue-400 flex-shrink-0 mt-0.5" />
-          <div className="flex-1 min-w-0">
-            <p className="text-xs font-bold text-slate-200">{asset.label}</p>
-            <p className="text-[10px] text-slate-500 leading-snug mt-0.5">{asset.desc}</p>
-          </div>
-          {url && <img src={url} alt="" className="w-12 h-12 object-contain bg-slate-900 rounded border border-slate-700" onError={e => e.currentTarget.style.display = 'none'} />}
-        </div>
-        {canEdit ? (
-          <input
-            type="url" placeholder="https://supabase.co/storage/v1/object/public/.../archivo.png"
-            value={url} onChange={setAsset(asset.key)} className={INPUT}
-          />
-        ) : (
-          <div className={READONLY}>{url || <span className="text-slate-700 italic">Sin asignar</span>}</div>
-        )}
-      </div>
+      <AssetUploader
+        key={asset.key}
+        kind={asset.key}
+        label={asset.label}
+        desc={asset.desc}
+        Icon={asset.Icon}
+        url={form.assets?.[asset.key] ?? ''}
+        canEdit={canEdit}
+        onUpdated={(url) => {
+          setForm(f => ({ ...f, assets: { ...(f.assets ?? {}), [asset.key]: url } }))
+          refresh(true)
+        }}
+      />
     )
   }
 
@@ -188,7 +183,7 @@ export default function MiEmpresa() {
           <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
             <ImageIcon size={15} className="text-violet-400" />
             <h3 className="text-xs font-bold text-violet-400 uppercase tracking-widest">Multimedia (Assets JSON)</h3>
-            <span className="ml-auto text-[10px] text-slate-500">Sube primero a Supabase Storage / S3 y pega la URL pública</span>
+            <span className="ml-auto text-[10px] text-slate-500">Sube directo · PNG/JPG/SVG · max 2MB</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{ASSETS.map(renderAsset)}</div>
         </section>
@@ -197,6 +192,147 @@ export default function MiEmpresa() {
           Singleton ID=1 · cualquier cambio afecta facturas, cotizaciones y portal B2C en tiempo real
         </div>
       </form>
+    </div>
+  )
+}
+
+function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
+  const inputRef = useRef(null)
+  const [busy, setBusy]       = useState(false)
+  const [preview, setPreview] = useState(null)
+  const [error, setError]     = useState(null)
+
+  async function handleFile(file) {
+    if (!file) return
+    if (file.size > 2 * 1024 * 1024) {
+      toast.error('Archivo excede 2MB.')
+      return
+    }
+    const validMimes = ['image/png','image/jpeg','image/svg+xml','image/gif','image/webp']
+    if (!validMimes.includes(file.type) && file.type !== '') {
+      toast.error(`Tipo no soportado: ${file.type}. Usa PNG, JPG o SVG.`)
+      return
+    }
+    // Preview local inmediato (data URL)
+    const reader = new FileReader()
+    reader.onload = e => setPreview(e.target.result)
+    reader.readAsDataURL(file)
+
+    setBusy(true); setError(null)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      fd.append('kind', kind)
+      // apiFetch sets Content-Type: application/json por default — para multipart hay que dejar al browser definirlo.
+      // Pero apiFetch siempre añade CSRF header. Construimos fetch directo respetando CSRF.
+      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/)
+      const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : null
+      const r = await fetch(`${API}/api/configuracion/empresa/upload`, {
+        method: 'POST',
+        credentials: 'include',
+        headers: csrf ? { 'X-CSRF-Token': csrf } : {},
+        body: fd,
+      })
+      const j = await r.json().catch(() => ({}))
+      if (r.ok && j.url) {
+        toast.success(`${label} actualizado`)
+        onUpdated?.(j.url)
+        setPreview(null)
+      } else {
+        const msg = j.error ?? 'Error al subir.'
+        setError(msg)
+        toast.error(msg)
+        setPreview(null)
+      }
+    } catch (e) {
+      setError('Error de red.')
+      toast.error('Error de red.')
+      setPreview(null)
+    } finally {
+      setBusy(false)
+      if (inputRef.current) inputRef.current.value = ''
+    }
+  }
+
+  async function quitar() {
+    if (!canEdit) return
+    setBusy(true)
+    try {
+      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/)
+      const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : null
+      const r = await fetch(`${API}/api/configuracion/empresa`, {
+        method: 'PATCH',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
+        body: JSON.stringify({ assets: { [kind]: null } }),
+      })
+      if (r.ok) { toast.success(`${label} eliminado`); onUpdated?.(null) }
+      else { toast.error('Error al eliminar.') }
+    } catch { toast.error('Error de red.') }
+    finally { setBusy(false) }
+  }
+
+  const displayUrl = preview ?? url
+
+  return (
+    <div className="bg-slate-800/40 border border-slate-700/50 rounded-lg p-4">
+      <div className="flex items-start gap-3 mb-3">
+        <Icon size={16} className="text-blue-400 flex-shrink-0 mt-0.5" />
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-bold text-slate-200">{label}</p>
+          <p className="text-[10px] text-slate-500 leading-snug mt-0.5">{desc}</p>
+        </div>
+        {displayUrl && (
+          <img
+            src={displayUrl}
+            alt=""
+            className="w-14 h-14 object-contain bg-white rounded border border-slate-700 p-1"
+            onError={e => { e.currentTarget.style.display = 'none' }}
+          />
+        )}
+      </div>
+
+      {!canEdit ? (
+        <div className="text-[10px] text-slate-600 italic px-2 py-1.5 bg-slate-900/50 rounded border border-slate-800">
+          {url ? 'Asset configurado' : 'Sin asignar'} · Solo lectura
+        </div>
+      ) : (
+        <div className="space-y-2">
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/svg+xml,image/gif,image/webp"
+            onChange={e => handleFile(e.target.files?.[0])}
+            disabled={busy}
+            className="hidden"
+          />
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={busy}
+              className="flex-1 flex items-center justify-center gap-2 px-3 py-2 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 border border-blue-600/30 text-blue-300 text-xs font-semibold disabled:opacity-50"
+            >
+              {busy ? <Loader2 size={13} className="animate-spin" /> : <Upload size={13} />}
+              {busy ? 'Subiendo...' : (url ? 'Reemplazar' : 'Subir archivo')}
+            </button>
+            {url && !busy && (
+              <button
+                type="button"
+                onClick={quitar}
+                className="px-3 py-2 rounded-lg bg-red-600/15 hover:bg-red-600/25 border border-red-600/30 text-red-300 text-xs"
+                title="Quitar este asset"
+              >
+                <Trash2 size={13} />
+              </button>
+            )}
+          </div>
+          {error && <p className="text-[10px] text-red-400">{error}</p>}
+          {url && (
+            <p className="text-[9.5px] text-slate-600 font-mono truncate" title={url}>{url}</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

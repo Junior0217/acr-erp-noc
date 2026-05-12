@@ -18,6 +18,8 @@ const QRCode       = require('qrcode');
 const cron         = require('node-cron');
 const PDFDocument  = require('pdfkit');
 const nodemailer   = require('nodemailer');
+const multer       = require('multer');
+const { createClient: createSupabaseClient } = require('@supabase/supabase-js');
 const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
 const { syncMikrotik } = require('./services/mikrotik');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
@@ -2454,6 +2456,124 @@ app.post('/api/usuarios-portal/:id/bloquear', verificarJWT, requerirNivel(NIVEL_
   }
 })
 
+// ─── Supabase Storage + Validación URL whitelist (anti tracking-pixel) ──────
+
+const SUPABASE_URL    = process.env.SUPABASE_URL || ''
+const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
+const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'empresa-assets'
+const supabase        = (SUPABASE_URL && SUPABASE_KEY)
+  ? createSupabaseClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
+  : null
+
+/**
+ * Whitelist estricta: URLs en assets DEBEN pertenecer al Supabase configurado
+ * o a paths locales (/logo-acr.png para defaults). Bloquea inyección de
+ * tracking-pixels externos via URLs como https://attacker.com/x.png.
+ */
+function esAssetUrlSegura(url) {
+  if (!url || typeof url !== 'string') return true               // null/'' permitido
+  if (url.startsWith('/'))             return true               // path relativo del propio frontend
+  if (url.startsWith('data:image/'))   return true               // data URI inline (preview)
+  if (!SUPABASE_URL)                   return false              // sin Supabase config = todo URL externo rechazado
+  // Acepta URLs que empiecen con SUPABASE_URL/storage/v1/object/...
+  const allowed = SUPABASE_URL.replace(/\/$/, '') + '/storage/v1/object/'
+  return url.startsWith(allowed)
+}
+
+// Mime detection real (no confiar en header del cliente)
+function detectMimeFromBuffer(buf) {
+  if (!buf || buf.length < 4) return null
+  // PNG: 89 50 4E 47
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png'
+  // JPEG: FF D8 FF
+  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg'
+  // SVG: '<svg' o '<?xml' al inicio (con o sin BOM)
+  const head = buf.slice(0, 100).toString('utf8').trim()
+  if (head.startsWith('<svg') || head.startsWith('<?xml')) return 'image/svg+xml'
+  // GIF: GIF87a / GIF89a
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif'
+  // WebP: RIFF....WEBP
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp'
+  return null
+}
+
+// SVG sanitize: rechaza si contiene scripts o event handlers
+function svgSeguro(buf) {
+  const txt = buf.toString('utf8').toLowerCase()
+  const peligrosos = ['<script', '<foreignobject', 'onload=', 'onerror=', 'onclick=', 'onmouseover=', 'javascript:', 'data:text/html']
+  return !peligrosos.some(p => txt.includes(p))
+}
+
+const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/svg+xml': 'svg', 'image/gif': 'gif', 'image/webp': 'webp' }
+const KINDS_VALIDOS = ['logoClaro', 'logoOscuro', 'selloFisico', 'firmaGerente']
+
+const uploadMulter = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 2 * 1024 * 1024 },     // 2MB
+})
+
+const uploadLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false })
+
+app.post(
+  '/api/configuracion/empresa/upload',
+  uploadLimiter,
+  verificarJWT,
+  requerirPermiso('empresa:editar'),
+  uploadMulter.single('file'),
+  async (req, res) => {
+    try {
+      if (!supabase) return res.status(503).json({ error: 'Storage no configurado. Falta SUPABASE_SERVICE_ROLE_KEY.', code: 'STORAGE_DISABLED' })
+      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
+      const kind = String(req.body.kind || req.query.kind || '')
+      if (!KINDS_VALIDOS.includes(kind)) {
+        return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_VALIDOS.join(', ')}.` })
+      }
+      // Validación mime REAL desde el header del archivo (no el del cliente)
+      const detected = detectMimeFromBuffer(req.file.buffer)
+      if (!detected) return res.status(415).json({ error: 'Tipo de archivo no reconocido o corrupto.', code: 'INVALID_MIME' })
+      if (!MIME_EXT[detected]) return res.status(415).json({ error: `Mime ${detected} no permitido.` })
+      // SVG: sanitizar contra XSS
+      if (detected === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
+        auditReq('empresa:upload_svg_malicioso', req, { kind, size: req.file.size })
+        return res.status(422).json({ error: 'SVG contiene contenido peligroso (script, eventos, foreignObject).', code: 'SVG_UNSAFE' })
+      }
+
+      const ext      = MIME_EXT[detected]
+      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
+      const path     = `acr/${filename}`
+
+      const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, req.file.buffer, {
+        contentType: detected,
+        cacheControl: '3600',
+        upsert: false,
+      })
+      if (upErr) {
+        console.error('[UPLOAD ERROR]', upErr.message)
+        return res.status(502).json({ error: `Error al subir: ${upErr.message}`, code: 'STORAGE_UPLOAD_FAIL' })
+      }
+
+      const { data: pub } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path)
+      const publicUrl = pub?.publicUrl
+      if (!publicUrl || !esAssetUrlSegura(publicUrl)) {
+        return res.status(500).json({ error: 'URL pública generada inválida.', code: 'URL_INVALID' })
+      }
+
+      // Update singleton: merge en assets sin tocar otras keys
+      const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } })
+      const nextAssets = { ...(current?.assets ?? {}), [kind]: publicUrl }
+      await prisma.empresaPerfil.update({ where: { id: 1 }, data: { assets: nextAssets } })
+
+      auditReq('empresa:upload', req, { kind, mime: detected, size: req.file.size, url: publicUrl })
+      res.status(201).json({ kind, url: publicUrl, mime: detected, size: req.file.size })
+    } catch (e) {
+      if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
+      console.error('[EMPRESA UPLOAD]', e.message)
+      res.status(500).json({ error: 'Error interno al procesar el archivo.' })
+    }
+  }
+)
+
 // ─── EmpresaPerfil (Singleton ID=1) ──────────────────────────────────────────
 
 // GET semi-público — campos de membrete + logos. Sin PII del representante.
@@ -2511,11 +2631,12 @@ const empresaPatchSchema = z.object({
   fax:                   z.string().max(40).optional().nullable(),
   email:                 z.string().email().max(150).optional().nullable().or(z.literal('').transform(() => null)),
   website:               z.string().max(200).optional().nullable().or(z.literal('').transform(() => null)),
+  // URLs deben pasar whitelist: Supabase Storage del proyecto o path local. Bloquea tracking-pixels externos.
   assets:                z.object({
-    logoClaro:    z.string().max(500).optional().nullable(),
-    logoOscuro:   z.string().max(500).optional().nullable(),
-    selloFisico:  z.string().max(500).optional().nullable(),
-    firmaGerente: z.string().max(500).optional().nullable(),
+    logoClaro:    z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
+    logoOscuro:   z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
+    selloFisico:  z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
+    firmaGerente: z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
   }).partial().optional(),
   eslogan:               z.string().max(200).optional().nullable(),
 })
