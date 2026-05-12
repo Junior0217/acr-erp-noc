@@ -21,6 +21,8 @@ const nodemailer   = require('nodemailer');
 const multer       = require('multer');
 const sharp        = require('sharp');
 const { createClient: createSupabaseClient } = require('@supabase/supabase-js');
+const { generarPdfDocumento } = require('./services/pdf-generator');
+const { renderDocumento: renderPdfDoc } = require('./services/pdf-templates');
 const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
 const { syncMikrotik } = require('./services/mikrotik');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
@@ -220,8 +222,8 @@ const NAMESPACE_REWRITES = {
   // Inventario
   '/api/inventario/productos':   '/api/productos',
   '/api/inventario/categorias':  '/api/categorias',
-  '/api/inventario/kardex':      '/api/kardex',
-  '/api/inventario/movimientos': '/api/kardex',
+  '/api/inventario/kardex':      '/api/movimientos',
+  '/api/inventario/movimientos': '/api/movimientos',
   '/api/inventario/prestamos':   '/api/prestamos',
   // Taller
   '/api/taller/tickets':       '/api/taller',
@@ -2650,6 +2652,130 @@ app.post(
     }
   }
 )
+
+// ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
+
+async function buildPdfData(facturaOrCotizacion) {
+  // Carga empresa singleton + estructura datos comunes
+  const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
+  const f = facturaOrCotizacion
+  return {
+    empresa: empresa ?? { razonSocial: 'Empresa', rnc: '', assets: {} },
+    cliente: f.cliente ?? {},
+    items: (f.lineas ?? []).map(l => ({
+      descripcion:     l.descripcion,
+      detalle:         l.itemCatalogo?.descripcion ?? null,
+      sku:             l.itemCatalogo?.id ? l.itemCatalogo.nombre : (l.producto?.sku ?? null),
+      cantidad:        l.cantidad,
+      precioUnitario:  Number(l.precioUnitario),
+    })),
+    subtotal:     Number(f.subtotal),
+    itbis:        Number(f.itbis ?? 0),
+    total:        Number(f.total),
+    fechaEmision: f.fechaEmision,
+    fechaVence:   f.fechaVence,
+    estado:       f.estado,
+    notas:        f.notas,
+  }
+}
+
+app.get('/api/ventas/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_cotizaciones'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const cot = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      include: {
+        cliente: true,
+        lineas:  { include: { itemCatalogo: { select: { nombre: true, descripcion: true } }, producto: { select: { sku: true, nombre: true } } } },
+      },
+    })
+    if (!cot || cot.deletedAt) return res.status(404).json({ error: 'Cotización no encontrada.' })
+    if (!cot.esCotizacion)     return res.status(400).json({ error: 'Este documento es una factura, usa /facturas/:id/pdf.' })
+
+    const data = await buildPdfData(cot)
+    const html = renderPdfDoc({
+      tipo:        'cotizacion',
+      numero:      cot.noFactura,
+      ...data,
+      condiciones: {
+        validez:  '15 días calendario desde la emisión.',
+        pago:     '50% al iniciar trabajos · 50% contra entrega.',
+        entrega:  '5 a 10 días laborables tras anticipo.',
+        garantia: '1 año sobre instalación · 6 meses sobre red.',
+      },
+    })
+    const pdfBuf = await generarPdfDocumento(html)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="cotizacion-${cot.noFactura}.pdf"`)
+    res.setHeader('Content-Length', pdfBuf.length)
+    auditReq('pdf:cotizacion', req, { id: cot.id, noFactura: cot.noFactura })
+    res.end(pdfBuf)
+  } catch (e) {
+    console.error('[PDF COTIZACION]', e.message, e.stack)
+    res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
+  }
+})
+
+app.get('/api/ventas/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const fact = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      include: {
+        cliente: true,
+        lineas:  { include: { itemCatalogo: { select: { nombre: true, descripcion: true } }, producto: { select: { sku: true, nombre: true } } } },
+      },
+    })
+    if (!fact || fact.deletedAt) return res.status(404).json({ error: 'Factura no encontrada.' })
+    if (fact.esCotizacion)       return res.status(400).json({ error: 'Este documento es cotización, usa /cotizaciones/:id/pdf.' })
+
+    const data = await buildPdfData(fact)
+    const numero = fact.ncf ? `${fact.ncf} · ${fact.noFactura}` : fact.noFactura
+    const html = renderPdfDoc({
+      tipo:        'factura',
+      numero,
+      ...data,
+      condiciones: {
+        validez:  `Vence: ${fact.fechaVence ? new Date(fact.fechaVence).toLocaleDateString('es-DO') : '—'}`,
+        pago:     fact.estado === 'Pagada' ? 'PAGADA ✓' : 'Transferencia / Tarjeta',
+        garantia: '1 año sobre instalación.',
+      },
+    })
+    const pdfBuf = await generarPdfDocumento(html)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="factura-${fact.noFactura}.pdf"`)
+    res.setHeader('Content-Length', pdfBuf.length)
+    auditReq('pdf:factura', req, { id: fact.id, noFactura: fact.noFactura, ncf: fact.ncf })
+    res.end(pdfBuf)
+  } catch (e) {
+    console.error('[PDF FACTURA]', e.message, e.stack)
+    res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
+  }
+})
+
+// Endpoint público para portal B2C (descarga su propia factura)
+app.get('/api/portal/facturas/:id/pdf-v2', verificarPortalJWT, async (req, res) => {
+  try {
+    const fact = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      include: { cliente: true, lineas: { include: { itemCatalogo: { select: { nombre: true, descripcion: true } } } } },
+    })
+    if (!fact || fact.clienteId !== req.portalUser.clienteId) return res.status(404).json({ error: 'No encontrada.' })
+    const data = await buildPdfData(fact)
+    const html = renderPdfDoc({
+      tipo:        fact.esCotizacion ? 'cotizacion' : 'factura',
+      numero:      fact.ncf ? `${fact.ncf} · ${fact.noFactura}` : fact.noFactura,
+      ...data,
+    })
+    const pdfBuf = await generarPdfDocumento(html)
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${fact.noFactura}.pdf"`)
+    res.end(pdfBuf)
+  } catch (e) {
+    console.error('[PDF PORTAL]', e.message)
+    res.status(500).json({ error: 'Error generando PDF.' })
+  }
+})
 
 // ─── EmpresaPerfil (Singleton ID=1) ──────────────────────────────────────────
 

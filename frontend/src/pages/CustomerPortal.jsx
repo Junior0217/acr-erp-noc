@@ -584,7 +584,7 @@ function Dashboard({ cliente, onLogout, navigate }) {
                       'bg-blue-600/15 text-blue-300 border-blue-600/30'
                     }`}>{f.estado}</span>
                     <span className="text-sm font-bold text-slate-100">RD$ {fmt(Number(f.total))}</span>
-                    <a href={`${API}/api/portal/facturas/${f.id}/pdf`} target="_blank" rel="noreferrer"
+                    <a href={`${API}/api/portal/facturas/${f.id}/pdf-v2`} target="_blank" rel="noreferrer"
                       className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors">
                       <Download size={11} />PDF
                     </a>
