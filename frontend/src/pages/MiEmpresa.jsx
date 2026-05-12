@@ -223,16 +223,8 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
       const fd = new FormData()
       fd.append('file', file)
       fd.append('kind', kind)
-      // apiFetch sets Content-Type: application/json por default — para multipart hay que dejar al browser definirlo.
-      // Pero apiFetch siempre añade CSRF header. Construimos fetch directo respetando CSRF.
-      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/)
-      const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : null
-      const r = await fetch(`${API}/api/configuracion/empresa/upload`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: csrf ? { 'X-CSRF-Token': csrf } : {},
-        body: fd,
-      })
+      // apiFetch detecta FormData → omite Content-Type pero conserva X-CSRF-Token + cookie credentials
+      const r = await apiFetch('/api/configuracion/empresa/upload', { method: 'POST', body: fd })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.url) {
         toast.success(`${label} actualizado`)
@@ -258,12 +250,8 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
     if (!canEdit) return
     setBusy(true)
     try {
-      const csrfMatch = document.cookie.match(/(?:^|;\s*)csrf=([^;]+)/)
-      const csrf = csrfMatch ? decodeURIComponent(csrfMatch[1]) : null
-      const r = await fetch(`${API}/api/configuracion/empresa`, {
+      const r = await apiFetch('/api/configuracion/empresa', {
         method: 'PATCH',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json', ...(csrf ? { 'X-CSRF-Token': csrf } : {}) },
         body: JSON.stringify({ assets: { [kind]: null } }),
       })
       if (r.ok) { toast.success(`${label} eliminado`); onUpdated?.(null) }
@@ -286,7 +274,7 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
           <img
             src={displayUrl}
             alt=""
-            className="w-14 h-14 object-contain bg-white rounded border border-slate-700 p-1"
+            className="h-14 w-auto max-w-[80px] object-contain bg-white rounded border border-slate-700 p-1"
             onError={e => { e.currentTarget.style.display = 'none' }}
           />
         )}

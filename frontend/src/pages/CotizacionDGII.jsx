@@ -259,7 +259,7 @@ export default function CotizacionDGII() {
                 <img
                   src={empresa.assets.selloFisico}
                   alt="Sello"
-                  className="absolute -top-2 -right-2 h-16 w-16 object-contain opacity-70 rotate-[-8deg] pointer-events-none"
+                  className="absolute -top-2 -right-2 h-16 w-auto max-w-[64px] object-contain opacity-70 rotate-[-8deg] pointer-events-none"
                   onError={e => e.currentTarget.style.display = 'none'}
                 />
               )}

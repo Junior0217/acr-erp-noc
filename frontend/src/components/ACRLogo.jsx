@@ -23,10 +23,13 @@ function ACRSvg({ size, className, label }) {
   )
 }
 
-export default function ACRLogo({ className = '', size = 32, usePng = true }) {
+export default function ACRLogo({ className = '', size = 32, usePng = true, variant = 'claro' }) {
   const { empresa } = useEmpresa()
   const label = empresa.nombreComercial ?? empresa.razonSocial ?? 'Logo'
-  const src   = empresa.logoUrl && empresa.logoUrl.length > 4 ? empresa.logoUrl : PNG_FALLBACK
+  // Lee del nuevo assets JSON (logoClaro/logoOscuro) con fallback al PNG estático
+  const src = empresa.assets?.[variant === 'oscuro' ? 'logoOscuro' : 'logoClaro']
+    || empresa.assets?.logoClaro
+    || PNG_FALLBACK
 
   if (!usePng) return <ACRSvg size={size} className={className} label={label} />
 
@@ -37,7 +40,7 @@ export default function ACRLogo({ className = '', size = 32, usePng = true }) {
       width={size}
       height={size}
       className={className}
-      style={{ objectFit: 'contain' }}
+      style={{ objectFit: 'contain', imageRendering: 'auto' }}
       onError={e => {
         e.currentTarget.style.display = 'none'
         const svg = document.createElement('div')

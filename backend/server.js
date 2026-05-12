@@ -2525,18 +2525,20 @@ function pathFromSupabaseUrl(url) {
   return url.slice(idx + marker.length).split('?')[0]
 }
 
-// Comprime con sharp: resize a max 800x800 fit:inside (preserva aspect ratio), convierte a WebP.
+// Comprime con sharp: resize 800x800 fit:inside (preserva aspect ratio), convierte a PNG.
+// PNG es lossless + universalmente compatible con pdfkit, Chromium print-to-PDF y editores.
+// WebP fue descartado: rompe pdfkit y editores legacy.
 // SVG pasa intacto (vector, no necesita compresión raster).
 async function comprimirImagen(buf, mime) {
   if (mime === 'image/svg+xml') {
     return { buffer: buf, mime: 'image/svg+xml', ext: 'svg' }
   }
   const out = await sharp(buf, { failOn: 'error' })
-    .rotate()                                // respeta EXIF orientation (no-op si no hay)
+    .rotate()                                // respeta EXIF orientation
     .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
-    .webp({ quality: 85, effort: 4 })
+    .png({ compressionLevel: 8, quality: 100, adaptiveFiltering: true, palette: false })
     .toBuffer()
-  return { buffer: out, mime: 'image/webp', ext: 'webp' }
+  return { buffer: out, mime: 'image/png', ext: 'png' }
 }
 
 const uploadMulter = multer({
