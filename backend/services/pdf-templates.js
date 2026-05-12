@@ -1,21 +1,36 @@
 /**
- * Plantillas HTML ultra-profesionales para PDFs de ACR.
- * Todo CSS inline (Puppeteer no carga assets externos sin networkidle).
+ * Plantillas HTML corporativas para Facturas y Cotizaciones.
+ *
+ * Cero hardcode: todos los datos de empresa salen de `EmpresaPerfil` (singleton id=1).
+ * Diseño: encabezado tipo banco con banda corporativa, tabla densa con header oscuro,
+ * totales contables, firma con superposición elegante de sello + firma escaneada.
+ *
+ * Paleta:
+ *   Corporate dark   #0f172a   (slate-900)
+ *   Corporate accent #1e40af   (blue-800)
+ *   Slate            #475569 / #64748b / #94a3b8
+ *   Border           #e2e8f0
+ *   Bg-zebra         #f8fafc
  *
  * Convenciones:
- *   - Tipografía: Inter (system fallback)
- *   - Paleta: violeta corporativo #4f46e5 + slate-700 #334155 + accents
- *   - Densidad: una sola página Letter (Carta) hasta ~20 líneas de items
+ *   - Letter (8.5×11"), márgenes manejados internamente (Puppeteer margin: 0)
+ *   - Una sola página hasta ~18 líneas; tabla rompe limpio si excede
+ *   - Sin emojis, sin texto decorativo: estilo banco corporativo
  */
 
-function fmt(n) {
+function fmtMoney(n) {
   return new Intl.NumberFormat('es-DO', {
-    style: 'currency', currency: 'DOP',
     minimumFractionDigits: 2, maximumFractionDigits: 2,
-  }).format(Number(n) || 0).replace('DOP', 'RD$')
+  }).format(Number(n) || 0)
+}
+
+function fechaCorta(d) {
+  if (!d) return '—'
+  return new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 }
 
 function fechaLarga(d) {
+  if (!d) return '—'
   return new Date(d).toLocaleDateString('es-DO', { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
@@ -26,123 +41,292 @@ function escape(s) {
     .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
-const BASE_CSS = `
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  @page { size: Letter; margin: 0; }
-  html, body { font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
-    color: #1e293b; font-size: 10.5px; line-height: 1.35; -webkit-font-smoothing: antialiased; }
-  .page { width: 100%; min-height: 100vh; padding: 0; background: white; position: relative; }
-  .mono { font-family: ui-monospace, 'SF Mono', Menlo, 'Roboto Mono', monospace; }
-  .text-emerald { color: #047857; } .text-violet { color: #4f46e5; }
-  .text-slate-500 { color: #64748b; } .text-slate-700 { color: #334155; }
-  .text-slate-900 { color: #0f172a; }
+function buildDireccion(parts) {
+  return parts.filter(Boolean).map(p => String(p).trim()).filter(Boolean).join(', ')
+}
 
-  /* Header con gradient corporativo */
-  .header { background: linear-gradient(135deg, #4f46e5 0%, #6366f1 50%, #818cf8 100%);
-    color: white; padding: 22px 32px 18px; position: relative; overflow: hidden; }
-  .header::before { content: ''; position: absolute; top: -50%; right: -10%; width: 200px; height: 200%;
-    background: radial-gradient(circle, rgba(255,255,255,0.12), transparent 60%); }
-  .header-grid { display: grid; grid-template-columns: 1fr auto; gap: 20px; align-items: start; position: relative; z-index: 1; }
-  .brand { display: flex; align-items: center; gap: 14px; }
-  .logo-wrap { background: white; border-radius: 12px; padding: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
-    width: 64px; height: 64px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-  .logo-wrap img { max-width: 100%; max-height: 100%; object-fit: contain; }
-  .brand-text h1 { font-size: 16.5px; font-weight: 800; letter-spacing: -0.01em; line-height: 1.15;
-    text-transform: uppercase; text-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-  .brand-text .slogan { font-size: 9.5px; opacity: 0.92; margin-top: 2px; line-height: 1.3; max-width: 320px; }
-  .brand-text .meta { font-size: 9px; opacity: 0.85; margin-top: 6px; line-height: 1.5; }
-  .doc-id { text-align: right; }
-  .doc-id .label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.18em; opacity: 0.85; }
-  .doc-id .number { font-size: 22px; font-weight: 800; letter-spacing: 0.02em; margin-top: 2px; text-shadow: 0 1px 2px rgba(0,0,0,0.1); }
-  .doc-id .dates { font-size: 9px; margin-top: 8px; opacity: 0.9; line-height: 1.5; }
+const CSS = `
+* { box-sizing: border-box; margin: 0; padding: 0; }
+@page { size: Letter; margin: 0; }
+html, body {
+  font-family: 'Inter', 'Helvetica Neue', 'Segoe UI', Arial, sans-serif;
+  color: #0f172a; font-size: 10px; line-height: 1.4;
+  -webkit-font-smoothing: antialiased; -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  background: white;
+}
+.mono { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+.tabular { font-variant-numeric: tabular-nums; }
 
-  /* Contenido */
-  .body { padding: 18px 32px 12px; }
-  .section-title { display: flex; align-items: center; gap: 7px; font-size: 9px;
-    text-transform: uppercase; letter-spacing: 0.16em; color: #64748b; font-weight: 700; margin-bottom: 6px; }
-  .section-title::before { content: ''; width: 3px; height: 13px; background: #4f46e5; border-radius: 2px; }
-  .card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px 14px; }
-  .row-3 { display: grid; grid-template-columns: 1.4fr 0.9fr 1.6fr; gap: 14px; }
-  .field-label { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; font-weight: 600; }
-  .field-value { font-size: 11.5px; color: #0f172a; font-weight: 600; margin-top: 1px; }
-  .razon-social { font-size: 13.5px; font-weight: 700; color: #0f172a; }
+/* ───── Page wrapper ───── */
+.sheet {
+  width: 8.5in; min-height: 11in;
+  padding: 0; position: relative; overflow: hidden;
+}
 
-  /* Tabla items */
-  table.items { width: 100%; border-collapse: separate; border-spacing: 0; margin-top: 4px; }
-  table.items thead th { background: #4f46e5; color: white; text-align: left;
-    padding: 9px 10px; font-size: 9.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
-  table.items thead th:first-child { border-radius: 6px 0 0 0; }
-  table.items thead th:last-child  { border-radius: 0 6px 0 0; text-align: right; }
-  table.items thead th.qty   { text-align: center; width: 48px; }
-  table.items thead th.price { text-align: right; width: 90px; }
-  table.items thead th.num   { text-align: center; width: 32px; }
-  table.items tbody td { padding: 9px 10px; font-size: 10.5px; border-bottom: 1px solid #f1f5f9; vertical-align: top; }
-  table.items tbody tr:nth-child(even) td { background: #fafbfc; }
-  table.items tbody td.num    { text-align: center; color: #94a3b8; }
-  table.items tbody td.qty    { text-align: center; }
-  table.items tbody td.price  { text-align: right; font-weight: 500; }
-  table.items tbody td.amount { text-align: right; font-weight: 700; color: #0f172a; }
-  .item-name  { font-weight: 600; color: #0f172a; }
-  .item-detail{ font-size: 9.5px; color: #64748b; margin-top: 2px; line-height: 1.35; }
-  .item-sku   { font-size: 8.5px; color: #94a3b8; margin-top: 2px; }
+/* ───── Top corporate band ───── */
+.band {
+  height: 6px; width: 100%;
+  background: linear-gradient(90deg, #0f172a 0%, #1e40af 55%, #3b82f6 100%);
+}
 
-  /* Totales */
-  .totals { display: flex; justify-content: flex-end; margin-top: 12px; }
-  .totals-box { width: 280px; }
-  .tot-row { display: flex; justify-content: space-between; padding: 6px 12px; font-size: 10.5px;
-    color: #475569; border-bottom: 1px solid #e2e8f0; }
-  .tot-row.total { background: linear-gradient(135deg, #4f46e5, #6366f1); color: white;
-    border: none; border-radius: 6px; padding: 10px 14px; margin-top: 4px; font-weight: 700; }
-  .tot-row.total .num { font-size: 18px; font-weight: 800; }
-  .tot-row.total .lbl { font-size: 10px; text-transform: uppercase; letter-spacing: 0.16em; }
+/* ───── Header ───── */
+.header {
+  display: grid; grid-template-columns: 1fr 1fr;
+  padding: 22px 36px 18px;
+  border-bottom: 1px solid #e2e8f0;
+  gap: 24px;
+  align-items: center;
+}
+.brand { display: flex; align-items: center; gap: 14px; }
+.logo {
+  width: 86px; height: 86px;
+  display: flex; align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.logo img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.brand-info .razon { font-size: 14.5px; font-weight: 800; color: #0f172a; letter-spacing: -0.005em; line-height: 1.15; }
+.brand-info .nombre-comercial { font-size: 10px; color: #1e40af; font-weight: 600; margin-top: 2px; letter-spacing: 0.02em; text-transform: uppercase; }
+.brand-info .eslogan { font-size: 9px; color: #64748b; margin-top: 3px; font-style: italic; max-width: 260px; }
 
-  /* Condiciones */
-  .conditions { margin-top: 14px; display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
-  .cond-card { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 10px; }
-  .cond-card .lbl { font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.1em; color: #64748b; font-weight: 600; }
-  .cond-card .val { font-size: 10px; color: #0f172a; font-weight: 600; margin-top: 2px; line-height: 1.4; }
+.corp-meta { text-align: right; font-size: 9.5px; color: #475569; line-height: 1.55; }
+.corp-meta .row { display: flex; justify-content: flex-end; align-items: baseline; gap: 6px; }
+.corp-meta .lbl { color: #94a3b8; font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; min-width: 56px; text-align: right; }
+.corp-meta .val { color: #0f172a; font-weight: 600; }
 
-  /* Firma */
-  .signatures { display: flex; justify-content: space-between; align-items: flex-end;
-    margin-top: 28px; padding: 0 12px; }
-  .sig-block { flex: 1; max-width: 240px; text-align: center; }
-  .sig-block.right { position: relative; }
-  .sig-line { border-top: 1.5px solid #334155; margin-top: 36px; }
-  .sig-line.long { margin-top: 14px; }
-  .sig-name { font-size: 10.5px; font-weight: 700; color: #0f172a; margin-top: 4px;
-    text-transform: uppercase; letter-spacing: 0.02em; white-space: nowrap; }
-  .sig-cargo { font-size: 9px; color: #64748b; margin-top: 1px; }
-  .firma-img { display: block; height: 38px; width: auto; max-width: 180px;
-    margin: 0 auto -10px; object-fit: contain; opacity: 0.92; }
-  .sello-img { position: absolute; top: -10px; right: -14px; height: 64px; width: auto; max-width: 80px;
-    object-fit: contain; opacity: 0.65; transform: rotate(-8deg); pointer-events: none; }
+/* ───── Document title bar ───── */
+.title-bar {
+  background: #0f172a;
+  color: white;
+  padding: 14px 36px;
+  display: grid; grid-template-columns: 1fr auto; align-items: center;
+  gap: 20px;
+}
+.doc-type {
+  font-size: 19px; font-weight: 800; letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+.doc-type .sub { font-size: 9px; font-weight: 500; opacity: 0.65; letter-spacing: 0.16em; display: block; margin-top: 2px; }
+.doc-meta { text-align: right; font-size: 10px; line-height: 1.55; }
+.doc-meta .num {
+  font-size: 14px; font-weight: 800; letter-spacing: 0.04em;
+  background: rgba(255,255,255,0.10); padding: 4px 10px; border-radius: 4px;
+  display: inline-block;
+}
+.doc-meta .ncf {
+  font-size: 10.5px; margin-top: 4px; font-weight: 700;
+  color: #93c5fd; letter-spacing: 0.05em;
+}
+.doc-meta .tipo-ncf { font-size: 8px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.12em; }
 
-  /* Footer */
-  .footer { margin-top: 18px; padding: 10px 32px 14px; border-top: 1px solid #e2e8f0;
-    display: flex; justify-content: space-between; font-size: 8.5px; color: #94a3b8; }
-  .footer .left { display: flex; align-items: center; gap: 6px; }
-  .footer .logo-mini { width: 14px; height: 14px; object-fit: contain; opacity: 0.6; }
+.estado-stamp {
+  display: inline-block; margin-top: 6px;
+  padding: 3px 10px; border-radius: 3px;
+  font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em;
+}
+.estado-Pagada   { background: #064e3b; color: #6ee7b7; }
+.estado-Emitida  { background: #1e3a8a; color: #93c5fd; }
+.estado-Vencida  { background: #7f1d1d; color: #fca5a5; }
+.estado-Borrador { background: #334155; color: #cbd5e1; }
+.estado-Anulada  { background: #450a0a; color: #fecaca; }
 
-  /* Watermark cancelado */
-  .watermark { position: absolute; top: 35%; left: 50%; transform: translate(-50%, -50%) rotate(-22deg);
-    font-size: 90px; font-weight: 900; color: #ef4444; opacity: 0.08; letter-spacing: 0.1em;
-    text-transform: uppercase; pointer-events: none; z-index: 0; }
+/* ───── Sections ───── */
+.body { padding: 18px 36px 12px; }
+.section-label {
+  font-size: 8.5px; font-weight: 800; color: #1e40af;
+  text-transform: uppercase; letter-spacing: 0.18em;
+  margin-bottom: 6px;
+  display: flex; align-items: center; gap: 8px;
+}
+.section-label::after {
+  content: ''; flex: 1; height: 1px; background: #e2e8f0;
+}
 
-  .estado-badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 9px;
-    font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
-  .estado-pagada   { background: #d1fae5; color: #047857; }
-  .estado-emitida  { background: #dbeafe; color: #1e40af; }
-  .estado-vencida  { background: #fee2e2; color: #b91c1c; }
-  .estado-borrador { background: #f1f5f9; color: #475569; }
-  .estado-anulada  { background: #fecaca; color: #991b1b; }
+/* ───── Client block ───── */
+.client-grid {
+  display: grid; grid-template-columns: 1.6fr 1fr 1fr;
+  gap: 0;
+  border: 1px solid #e2e8f0; border-radius: 4px;
+  overflow: hidden;
+}
+.client-cell {
+  padding: 9px 13px;
+  border-right: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+.client-cell:last-child { border-right: none; }
+.client-cell .lbl {
+  font-size: 7.5px; color: #64748b; text-transform: uppercase;
+  letter-spacing: 0.14em; font-weight: 700; margin-bottom: 3px;
+}
+.client-cell .val {
+  font-size: 11px; color: #0f172a; font-weight: 700; line-height: 1.3;
+}
+.client-cell .val.normal { font-weight: 500; font-size: 10px; line-height: 1.4; }
+
+/* ───── Items table ───── */
+.items {
+  width: 100%; margin-top: 16px;
+  border-collapse: separate; border-spacing: 0;
+  border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden;
+}
+.items thead th {
+  background: #0f172a; color: white;
+  padding: 9px 10px;
+  font-size: 9px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.1em;
+  text-align: left;
+  border-bottom: 2px solid #1e40af;
+}
+.items thead th.center { text-align: center; }
+.items thead th.right  { text-align: right; }
+.items thead th.col-num  { width: 30px; text-align: center; }
+.items thead th.col-cant { width: 56px; text-align: center; }
+.items thead th.col-pu   { width: 90px; text-align: right; }
+.items thead th.col-amt  { width: 100px; text-align: right; }
+.items tbody td {
+  padding: 8px 10px;
+  font-size: 10px;
+  border-bottom: 1px solid #f1f5f9;
+  vertical-align: top;
+}
+.items tbody tr:last-child td { border-bottom: none; }
+.items tbody tr:nth-child(even) td { background: #f8fafc; }
+.items tbody td.center { text-align: center; }
+.items tbody td.right  { text-align: right; }
+.items tbody td.num    { color: #94a3b8; font-size: 9px; }
+.items .desc-main { color: #0f172a; font-weight: 600; line-height: 1.35; }
+.items .desc-sub  { color: #64748b; font-size: 8.5px; margin-top: 2px; line-height: 1.4; }
+.items .sku       { color: #94a3b8; font-size: 8px; margin-top: 2px; letter-spacing: 0.04em; }
+
+/* ───── Totals ───── */
+.totals-wrap {
+  display: grid; grid-template-columns: 1fr 280px;
+  gap: 20px; margin-top: 14px;
+}
+.legal-note {
+  font-size: 8.5px; color: #64748b; line-height: 1.55;
+  padding: 10px 12px; background: #f8fafc;
+  border: 1px solid #e2e8f0; border-radius: 4px;
+}
+.legal-note .ttl { font-size: 9px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4px; }
+.totals {
+  border: 1px solid #e2e8f0; border-radius: 4px; overflow: hidden;
+}
+.tot-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 14px;
+  font-size: 10px;
+  border-bottom: 1px solid #f1f5f9;
+}
+.tot-row:last-child { border-bottom: none; }
+.tot-row .lbl { color: #475569; font-weight: 600; text-transform: uppercase; font-size: 9px; letter-spacing: 0.08em; }
+.tot-row .val { color: #0f172a; font-weight: 700; }
+.tot-row.grand {
+  background: #0f172a; color: white;
+  padding: 11px 14px;
+}
+.tot-row.grand .lbl { color: white; font-size: 10px; font-weight: 800; letter-spacing: 0.12em; }
+.tot-row.grand .val { color: white; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; }
+
+/* ───── Conditions ───── */
+.cond-grid {
+  display: grid; grid-template-columns: repeat(4, 1fr);
+  gap: 6px; margin-top: 14px;
+}
+.cond-cell {
+  border: 1px solid #e2e8f0; border-left: 3px solid #1e40af;
+  padding: 7px 10px;
+  background: #f8fafc;
+  border-radius: 3px;
+}
+.cond-cell .lbl { font-size: 7.5px; color: #64748b; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; }
+.cond-cell .val { font-size: 9.5px; color: #0f172a; font-weight: 600; margin-top: 2px; line-height: 1.4; }
+
+.notes {
+  margin-top: 12px;
+  padding: 10px 14px;
+  background: #fffbeb; border-left: 3px solid #d97706;
+  border-radius: 3px;
+  font-size: 9.5px; color: #78350f; line-height: 1.5;
+}
+.notes .ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; font-size: 8.5px; margin-bottom: 2px; color: #92400e; }
+
+/* ───── Signatures ───── */
+.sigs {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 80px;
+  margin-top: 36px;
+  padding: 0 12px;
+}
+.sig-block { position: relative; text-align: center; }
+.sig-stack { position: relative; min-height: 64px; }
+.sig-firma {
+  position: absolute; left: 50%; bottom: 2px;
+  transform: translateX(-50%);
+  max-height: 56px; max-width: 200px;
+  opacity: 0.92;
+  z-index: 2;
+}
+.sig-sello {
+  position: absolute; right: 0; bottom: -8px;
+  width: 92px; height: 92px;
+  object-fit: contain;
+  opacity: 0.58;
+  transform: rotate(-9deg);
+  mix-blend-mode: multiply;
+  z-index: 1;
+  pointer-events: none;
+}
+.sig-line {
+  border-top: 1.2px solid #0f172a;
+  margin-top: 4px;
+}
+.sig-name {
+  margin-top: 5px;
+  font-size: 10px; font-weight: 800; color: #0f172a;
+  text-transform: uppercase; letter-spacing: 0.04em;
+}
+.sig-role {
+  font-size: 8.5px; color: #64748b; margin-top: 1px;
+  letter-spacing: 0.04em;
+}
+
+/* ───── Footer ───── */
+.footer {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 10px 36px 14px;
+  border-top: 1px solid #e2e8f0;
+  display: grid; grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  font-size: 7.5px; color: #94a3b8;
+  background: white;
+}
+.footer .left  { text-align: left; }
+.footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
+.footer .right { text-align: right; }
+
+/* ───── Watermark ANULADA ───── */
+.watermark {
+  position: absolute;
+  top: 42%; left: 50%; transform: translate(-50%, -50%) rotate(-20deg);
+  font-size: 130px; font-weight: 900;
+  color: #ef4444; opacity: 0.07;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  pointer-events: none; z-index: 5;
+}
+.watermark.cotizacion {
+  color: #1e40af; opacity: 0.045; font-size: 110px;
+}
 `
 
 function renderDocumento(opts) {
   const {
     tipo,            // 'cotizacion' | 'factura'
-    numero,          // string ej. 'COT-2026-0512-001' o 'B0100000123'
-    empresa,         // EmpresaPerfil row
-    cliente,         // { razonSocial, rnc, direccion, etc. }
+    numero,          // string ej. 'COT-2026-0512-001'
+    ncf,             // factura NCF (opt)
+    tipoNcf,         // 'B01' / 'B02' / etc.
+    empresa,         // EmpresaPerfil row (NO defaults: si falta algo, oculta esa sección)
+    cliente,         // { razonSocial, rnc, direccion, sector, provincia, telefono, email }
     items,           // [{ descripcion, sku?, detalle?, cantidad, precioUnitario }]
     subtotal,
     itbis,
@@ -156,138 +340,183 @@ function renderDocumento(opts) {
 
   const isFactura = tipo === 'factura'
   const tipoLabel = isFactura ? 'Factura' : 'Cotización'
-  const repFull = [empresa.representanteNombre, empresa.representanteApellido].filter(Boolean).join(' ').toUpperCase()
-  const direccionEmp = [empresa.direccion, empresa.sector, empresa.provincia].filter(Boolean).join(', ')
-  const direccionCli = [cliente.direccion, cliente.sector, cliente.provincia].filter(Boolean).join(', ')
-  const estadoClass = `estado-${(estado || 'borrador').toLowerCase()}`
-  const showWatermark = estado === 'Anulada'
 
-  const itemsRows = items.map((it, idx) => {
+  const emp = empresa ?? {}
+  const assets = emp.assets ?? {}
+  const repFull = [emp.representanteNombre, emp.representanteApellido].filter(Boolean).join(' ').trim()
+  const direccionEmp = buildDireccion([emp.direccion, emp.sector, emp.provincia])
+  const direccionCli = buildDireccion([cliente?.direccion, cliente?.sector, cliente?.provincia])
+
+  const watermark = estado === 'Anulada'
+    ? '<div class="watermark">Anulada</div>'
+    : (!isFactura ? '<div class="watermark cotizacion">Cotización</div>' : '')
+
+  const itemsRows = (items ?? []).map((it, idx) => {
     const importe = Number(it.cantidad) * Number(it.precioUnitario)
-    return `
-      <tr>
-        <td class="num">${String(idx + 1).padStart(2, '0')}</td>
-        <td>
-          <div class="item-name">${escape(it.descripcion)}</div>
-          ${it.detalle ? `<div class="item-detail">${escape(it.detalle)}</div>` : ''}
-          ${it.sku     ? `<div class="item-sku mono">SKU: ${escape(it.sku)}</div>` : ''}
-        </td>
-        <td class="qty mono">${it.cantidad}</td>
-        <td class="price mono">${fmt(it.precioUnitario)}</td>
-        <td class="amount mono">${fmt(importe)}</td>
-      </tr>
-    `
+    return `<tr>
+      <td class="num center">${String(idx + 1).padStart(2, '0')}</td>
+      <td>
+        <div class="desc-main">${escape(it.descripcion)}</div>
+        ${it.detalle ? `<div class="desc-sub">${escape(it.detalle)}</div>` : ''}
+        ${it.sku     ? `<div class="sku mono">SKU · ${escape(it.sku)}</div>` : ''}
+      </td>
+      <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
+      <td class="right mono">${fmtMoney(it.precioUnitario)}</td>
+      <td class="right mono"><strong>${fmtMoney(importe)}</strong></td>
+    </tr>`
   }).join('')
 
-  const condCards = condiciones ? `
-    <div class="conditions">
-      ${condiciones.validez  ? `<div class="cond-card"><div class="lbl">Validez</div><div class="val">${escape(condiciones.validez)}</div></div>`  : ''}
-      ${condiciones.pago     ? `<div class="cond-card"><div class="lbl">Forma de Pago</div><div class="val">${escape(condiciones.pago)}</div></div>` : ''}
-      ${condiciones.entrega  ? `<div class="cond-card"><div class="lbl">Entrega</div><div class="val">${escape(condiciones.entrega)}</div></div>` : ''}
-      ${condiciones.garantia ? `<div class="cond-card"><div class="lbl">Garantía</div><div class="val">${escape(condiciones.garantia)}</div></div>` : ''}
-    </div>
-  ` : ''
+  const cond = condiciones ?? {}
+  const condCards = (cond.validez || cond.pago || cond.entrega || cond.garantia) ? `
+    <div class="cond-grid">
+      ${cond.validez  ? `<div class="cond-cell"><div class="lbl">Validez</div><div class="val">${escape(cond.validez)}</div></div>`  : ''}
+      ${cond.pago     ? `<div class="cond-cell"><div class="lbl">Forma de Pago</div><div class="val">${escape(cond.pago)}</div></div>` : ''}
+      ${cond.entrega  ? `<div class="cond-cell"><div class="lbl">Entrega</div><div class="val">${escape(cond.entrega)}</div></div>` : ''}
+      ${cond.garantia ? `<div class="cond-cell"><div class="lbl">Garantía</div><div class="val">${escape(cond.garantia)}</div></div>` : ''}
+    </div>` : ''
+
+  const corpRows = [
+    emp.rnc                ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${escape(emp.rnc)}</span></div>` : '',
+    emp.registroMercantil  ? `<div class="row"><span class="lbl">RM</span><span class="val mono">${escape(emp.registroMercantil)}</span></div>` : '',
+    direccionEmp           ? `<div class="row"><span class="lbl">Dirección</span><span class="val">${escape(direccionEmp)}</span></div>` : '',
+    emp.telefono           ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${escape(emp.telefono)}</span></div>` : '',
+    emp.email              ? `<div class="row"><span class="lbl">Email</span><span class="val">${escape(emp.email)}</span></div>` : '',
+    emp.website            ? `<div class="row"><span class="lbl">Web</span><span class="val">${escape(emp.website)}</span></div>` : '',
+  ].filter(Boolean).join('')
+
+  const legalNote = isFactura
+    ? `<div class="legal-note">
+        <div class="ttl">Información Fiscal</div>
+        Esta factura cumple con el reglamento del Decreto 254-06 y la Norma General 06-2018 de la DGII.
+        Verifica el NCF en <strong>dgii.gov.do/consultas</strong>.
+        ${ncf ? `Comprobante: <strong class="mono">${escape(ncf)}</strong>${tipoNcf ? ` (${escape(tipoNcf)})` : ''}.` : ''}
+      </div>`
+    : `<div class="legal-note">
+        <div class="ttl">Condiciones Generales</div>
+        Esta cotización tiene carácter informativo y no constituye documento fiscal.
+        Los precios pueden estar sujetos a cambio sin previo aviso fuera del período de validez.
+        Para emisión de factura formal con NCF se requiere confirmación por escrito.
+      </div>`
+
+  const numeroPrincipal = isFactura ? (ncf || numero) : numero
+  const numeroSecundario = isFactura && ncf ? numero : null
 
   return `<!DOCTYPE html>
 <html lang="es"><head>
   <meta charset="UTF-8"><title>${escape(tipoLabel)} ${escape(numero)}</title>
-  <style>${BASE_CSS}</style>
+  <style>${CSS}</style>
 </head><body>
-<div class="page">
+<div class="sheet">
 
-  ${showWatermark ? '<div class="watermark">ANULADA</div>' : ''}
+  <div class="band"></div>
+  ${watermark}
 
   <header class="header">
-    <div class="header-grid">
-      <div class="brand">
-        ${empresa.assets?.logoClaro ? `<div class="logo-wrap"><img src="${escape(empresa.assets.logoClaro)}" alt=""/></div>` : ''}
-        <div class="brand-text">
-          <h1>${escape(empresa.razonSocial)}</h1>
-          ${empresa.eslogan ? `<div class="slogan">${escape(empresa.eslogan)}</div>` : ''}
-          <div class="meta">
-            <strong>RNC:</strong> <span class="mono">${escape(empresa.rnc)}</span>
-            ${empresa.registroMercantil ? ` &nbsp;·&nbsp; <strong>RM:</strong> <span class="mono">${escape(empresa.registroMercantil)}</span>` : ''}
-            <br/>
-            ${direccionEmp ? escape(direccionEmp) : ''}
-            <br/>
-            ${empresa.telefono ? `📞 <span class="mono">${escape(empresa.telefono)}</span>` : ''}
-            ${empresa.email    ? ` &nbsp;·&nbsp; ✉️ ${escape(empresa.email)}` : ''}
-          </div>
-        </div>
-      </div>
-      <div class="doc-id">
-        <div class="label">${escape(tipoLabel)}</div>
-        <div class="number mono">${escape(numero)}</div>
-        <div class="dates">
-          ${fechaEmision ? `Emisión: ${fechaLarga(fechaEmision)}<br/>` : ''}
-          ${fechaVence   ? `${isFactura ? 'Vence' : 'Válida hasta'}: ${fechaLarga(fechaVence)}` : ''}
-          ${estado ? `<br/><span class="estado-badge ${estadoClass}">${escape(estado)}</span>` : ''}
-        </div>
+    <div class="brand">
+      ${assets.logoClaro ? `<div class="logo"><img src="${escape(assets.logoClaro)}" alt=""/></div>` : ''}
+      <div class="brand-info">
+        <div class="razon">${escape(emp.razonSocial ?? '—')}</div>
+        ${emp.nombreComercial ? `<div class="nombre-comercial">${escape(emp.nombreComercial)}</div>` : ''}
+        ${emp.eslogan ? `<div class="eslogan">${escape(emp.eslogan)}</div>` : ''}
       </div>
     </div>
+    <div class="corp-meta">${corpRows}</div>
   </header>
+
+  <div class="title-bar">
+    <div class="doc-type">
+      ${escape(tipoLabel)}
+      <span class="sub">${isFactura ? 'Comprobante Fiscal · República Dominicana' : 'Propuesta Comercial'}</span>
+    </div>
+    <div class="doc-meta">
+      <div class="num mono">${escape(numeroPrincipal)}</div>
+      ${isFactura && ncf ? `<div class="tipo-ncf">NCF${tipoNcf ? ` · ${escape(tipoNcf)}` : ''}</div>` : ''}
+      ${numeroSecundario ? `<div class="ncf mono" style="opacity:0.7;">${escape(numeroSecundario)}</div>` : ''}
+      <div style="margin-top:6px; font-size:9px; opacity:0.85;">
+        Emisión: <strong>${fechaCorta(fechaEmision)}</strong>
+        ${fechaVence ? ` · ${isFactura ? 'Vence' : 'Válida hasta'}: <strong>${fechaCorta(fechaVence)}</strong>` : ''}
+      </div>
+      ${estado ? `<span class="estado-stamp estado-${escape(estado)}">${escape(estado)}</span>` : ''}
+    </div>
+  </div>
 
   <main class="body">
 
-    <div class="section-title">Cliente</div>
-    <div class="card">
-      <div class="row-3">
-        <div>
-          <div class="field-label">Razón Social</div>
-          <div class="razon-social">${escape(cliente.razonSocial)}</div>
-        </div>
-        <div>
-          <div class="field-label">RNC / Cédula</div>
-          <div class="field-value mono">${escape(cliente.rnc ?? cliente.cedula ?? '—')}</div>
-        </div>
-        <div>
-          <div class="field-label">Dirección</div>
-          <div class="field-value">${escape(direccionCli || '—')}</div>
-        </div>
+    <div class="section-label">${isFactura ? 'Facturar a' : 'Cliente'}</div>
+    <div class="client-grid">
+      <div class="client-cell">
+        <div class="lbl">Razón Social</div>
+        <div class="val">${escape(cliente?.razonSocial ?? 'Consumidor Final')}</div>
+        ${cliente?.noCliente ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">${escape(cliente.noCliente)}</div>` : ''}
+      </div>
+      <div class="client-cell">
+        <div class="lbl">${cliente?.rnc ? 'RNC' : 'Cédula'}</div>
+        <div class="val mono">${escape(cliente?.rnc ?? cliente?.cedula ?? '—')}</div>
+        ${cliente?.telefono ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">Tel. ${escape(cliente.telefono)}</div>` : ''}
+      </div>
+      <div class="client-cell">
+        <div class="lbl">Dirección</div>
+        <div class="val normal">${escape(direccionCli || '—')}</div>
+        ${cliente?.email ? `<div class="val normal" style="margin-top:3px; color:#475569;">${escape(cliente.email)}</div>` : ''}
       </div>
     </div>
 
-    <div class="section-title" style="margin-top:14px">Detalle de productos y servicios</div>
+    <div style="margin-top:16px;" class="section-label">Detalle de productos y servicios</div>
     <table class="items">
       <thead>
         <tr>
-          <th class="num">#</th>
+          <th class="col-num">#</th>
           <th>Descripción</th>
-          <th class="qty">Cant.</th>
-          <th class="price">P. Unit.</th>
-          <th class="price">Importe</th>
+          <th class="col-cant center">Cant.</th>
+          <th class="col-pu right">Precio Unit.</th>
+          <th class="col-amt right">Importe</th>
         </tr>
       </thead>
-      <tbody>${itemsRows}</tbody>
+      <tbody>${itemsRows || `<tr><td colspan="5" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
     </table>
 
-    <div class="totals">
-      <div class="totals-box">
-        <div class="tot-row"><span>Subtotal</span><span class="mono">${fmt(subtotal)}</span></div>
-        <div class="tot-row"><span>ITBIS (18%)</span><span class="mono">${fmt(itbis)}</span></div>
-        <div class="tot-row total">
+    <div class="totals-wrap">
+      ${legalNote}
+      <div class="totals">
+        <div class="tot-row">
+          <span class="lbl">Subtotal</span>
+          <span class="val mono">RD$ ${fmtMoney(subtotal)}</span>
+        </div>
+        ${Number(itbis) > 0 ? `
+        <div class="tot-row">
+          <span class="lbl">ITBIS (18%)</span>
+          <span class="val mono">RD$ ${fmtMoney(itbis)}</span>
+        </div>` : `
+        <div class="tot-row">
+          <span class="lbl">ITBIS</span>
+          <span class="val mono" style="color:#94a3b8;">Exento</span>
+        </div>`}
+        <div class="tot-row grand">
           <span class="lbl">Total</span>
-          <span class="num mono">${fmt(total)}</span>
+          <span class="val mono">RD$ ${fmtMoney(total)}</span>
         </div>
       </div>
     </div>
 
     ${condCards}
 
-    ${notas ? `<div style="margin-top:12px; padding:10px 14px; background:#fef3c7; border-left:3px solid #f59e0b; border-radius:4px; font-size:9.5px; color:#78350f;"><strong>Notas:</strong> ${escape(notas)}</div>` : ''}
+    ${notas ? `<div class="notes"><div class="ttl">Notas</div>${escape(notas)}</div>` : ''}
 
-    <div class="signatures">
+    <div class="sigs">
       <div class="sig-block">
+        <div class="sig-stack"></div>
         <div class="sig-line"></div>
         <div class="sig-name">Aceptación del Cliente</div>
-        <div class="sig-cargo">Firma y sello</div>
+        <div class="sig-role">Firma · Sello · Fecha</div>
       </div>
-      <div class="sig-block right">
-        ${empresa.assets?.firmaGerente ? `<img src="${escape(empresa.assets.firmaGerente)}" alt="" class="firma-img"/>` : ''}
-        <div class="sig-line long"></div>
-        <div class="sig-name">${escape(repFull || '—')}</div>
-        <div class="sig-cargo">${escape(empresa.representanteCargo ?? 'Gerente')} · ${escape(empresa.razonSocial)}</div>
-        ${empresa.assets?.selloFisico ? `<img src="${escape(empresa.assets.selloFisico)}" alt="" class="sello-img"/>` : ''}
+      <div class="sig-block">
+        <div class="sig-stack">
+          ${assets.firmaGerente ? `<img class="sig-firma" src="${escape(assets.firmaGerente)}" alt=""/>` : ''}
+          ${assets.selloFisico  ? `<img class="sig-sello" src="${escape(assets.selloFisico)}" alt=""/>` : ''}
+        </div>
+        <div class="sig-line"></div>
+        <div class="sig-name">${escape(repFull || emp.razonSocial || 'Autorizado')}</div>
+        <div class="sig-role">${escape(emp.representanteCargo ?? 'Representante')}${emp.razonSocial ? ` · ${escape(emp.razonSocial)}` : ''}</div>
       </div>
     </div>
 
@@ -295,14 +524,14 @@ function renderDocumento(opts) {
 
   <footer class="footer">
     <div class="left">
-      ${empresa.assets?.logoClaro ? `<img src="${escape(empresa.assets.logoClaro)}" class="logo-mini" alt=""/>` : ''}
-      <span>${escape(empresa.razonSocial)} · RNC <span class="mono">${escape(empresa.rnc)}</span>${empresa.sector ? ` · ${escape(empresa.sector)}, ${escape(empresa.provincia ?? '')}` : ''}</span>
+      ${escape(emp.razonSocial ?? '')}${emp.rnc ? ` · RNC <span class="mono">${escape(emp.rnc)}</span>` : ''}
     </div>
-    <div class="mono">Generado: ${fechaLarga(new Date())}</div>
+    <div class="ctr">Documento Electrónico Verificable</div>
+    <div class="right mono">${fechaLarga(new Date())}</div>
   </footer>
 
 </div>
 </body></html>`
 }
 
-module.exports = { renderDocumento, fmt, fechaLarga }
+module.exports = { renderDocumento, fmtMoney, fechaLarga, fechaCorta }

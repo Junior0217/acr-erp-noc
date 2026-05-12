@@ -2656,19 +2656,32 @@ app.post(
 // ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
 
 async function buildPdfData(facturaOrCotizacion) {
-  // Carga empresa singleton + estructura datos comunes
+  // Carga empresa singleton (zero-hardcode) + estructura datos comunes
   const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
   const f = facturaOrCotizacion
+  const c = f.cliente ?? {}
   return {
-    empresa: empresa ?? { razonSocial: 'Empresa', rnc: '', assets: {} },
-    cliente: f.cliente ?? {},
+    empresa: empresa ?? { razonSocial: '', rnc: '', assets: {} },
+    cliente: {
+      razonSocial: c.razonSocial,
+      noCliente:   c.noCliente,
+      rnc:         c.rnc,
+      cedula:      c.cedula,
+      direccion:   c.direccion,
+      sector:      c.sector,
+      provincia:   c.provincia,
+      telefono:    c.telefono,
+      email:       c.email,
+    },
     items: (f.lineas ?? []).map(l => ({
       descripcion:     l.descripcion,
       detalle:         l.itemCatalogo?.descripcion ?? null,
-      sku:             l.itemCatalogo?.id ? l.itemCatalogo.nombre : (l.producto?.sku ?? null),
+      sku:             l.producto?.sku ?? (l.itemCatalogo?.nombre && l.itemCatalogo.nombre !== l.descripcion ? l.itemCatalogo.nombre : null),
       cantidad:        l.cantidad,
       precioUnitario:  Number(l.precioUnitario),
     })),
+    ncf:          f.ncf ?? null,
+    tipoNcf:      f.tipoNcf ?? null,
     subtotal:     Number(f.subtotal),
     itbis:        Number(f.itbis ?? 0),
     total:        Number(f.total),
@@ -2730,10 +2743,9 @@ app.get('/api/ventas/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:v
     if (fact.esCotizacion)       return res.status(400).json({ error: 'Este documento es cotización, usa /cotizaciones/:id/pdf.' })
 
     const data = await buildPdfData(fact)
-    const numero = fact.ncf ? `${fact.ncf} · ${fact.noFactura}` : fact.noFactura
     const html = renderPdfDoc({
       tipo:        'factura',
-      numero,
+      numero:      fact.noFactura,
       ...data,
       condiciones: {
         validez:  `Vence: ${fact.fechaVence ? new Date(fact.fechaVence).toLocaleDateString('es-DO') : '—'}`,
@@ -2764,7 +2776,7 @@ app.get('/api/portal/facturas/:id/pdf-v2', verificarPortalJWT, async (req, res) 
     const data = await buildPdfData(fact)
     const html = renderPdfDoc({
       tipo:        fact.esCotizacion ? 'cotizacion' : 'factura',
-      numero:      fact.ncf ? `${fact.ncf} · ${fact.noFactura}` : fact.noFactura,
+      numero:      fact.noFactura,
       ...data,
     })
     const pdfBuf = await generarPdfDocumento(html)

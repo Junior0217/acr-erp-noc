@@ -3,8 +3,14 @@ services:
     name: acr-erp-backend
     runtime: node
     rootDir: backend
+    # @sparticuz/chromium se descarga como dep normal (npm install) — no requiere
+    # `npx puppeteer browsers install` ni caché especial. Esto resuelve el bug
+    # `The browser folder exists but the executable is missing` que rompía deploys.
     buildCommand: npm install && npx prisma generate
     startCommand: node server.js
     envVars:
       - key: NODE_ENV
         value: production
+      # Si en el futuro se monta Chrome propio en el contenedor, descomentar:
+      # - key: PUPPETEER_EXECUTABLE_PATH
+      #   value: /usr/bin/google-chrome-stable
