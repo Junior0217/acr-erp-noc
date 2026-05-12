@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { toast } from 'sonner'
 import {
   Plus, Search, Pencil, Loader2, Save, X, CheckCircle, XCircle, RefreshCw, ShoppingBag,
+  Wrench, Package, Layers,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import {
@@ -145,11 +146,18 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
 
 // ── PanelCatalogo ─────────────────────────────────────────────────────────────
 
+// 'all' | 'servicios' (tipo=Servicio) | 'articulos' (tipo=Recurrente|VentaUnica)
+const TABS = [
+  { id: 'all',        label: 'Todos',     icon: Layers,  match: () => true },
+  { id: 'articulos',  label: 'Artículos', icon: Package, match: t => t === 'Recurrente' || t === 'VentaUnica' },
+  { id: 'servicios',  label: 'Servicios', icon: Wrench,  match: t => t === 'Servicio' },
+]
+
 export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow }) {
   const [items,           setItems]           = useState([])
   const [loading,         setLoading]         = useState(false)
   const [search,          setSearch]          = useState('')
-  const [filtroTipo,      setFiltroTipo]      = useState('')
+  const [tab,             setTab]             = useState('all')
   const [filtroCategoria, setFiltroCategoria] = useState('')
   const [filtroActivo,    setFiltroActivo]    = useState('true')
   const [modalItem,       setModalItem]       = useState(null)
@@ -158,7 +166,6 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
     setLoading(true)
     try {
       const p = new URLSearchParams()
-      if (filtroTipo)      p.set('tipo',      filtroTipo)
       if (filtroCategoria) p.set('categoria', filtroCategoria)
       if (filtroActivo)    p.set('activo',    filtroActivo)
       if (search)          p.set('search',    search)
@@ -166,9 +173,24 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
       if (r.ok) { const j = await r.json(); setItems(j.data ?? []) }
     } catch {}
     finally { setLoading(false) }
-  }, [filtroTipo, filtroCategoria, filtroActivo, search])
+  }, [filtroCategoria, filtroActivo, search])
 
   useEffect(() => { fetchCatalogo() }, [fetchCatalogo])
+
+  const tabMatcher = TABS.find(t => t.id === tab)?.match ?? (() => true)
+  const itemsFiltrados = useMemo(() => items.filter(it => tabMatcher(it.tipo)), [items, tabMatcher])
+
+  const categoriasDisponibles = useMemo(() => {
+    const set = new Set()
+    items.filter(it => tabMatcher(it.tipo)).forEach(it => it.categoria && set.add(it.categoria))
+    return CATEGORIAS.filter(c => set.has(c))
+  }, [items, tabMatcher])
+
+  const counts = useMemo(() => ({
+    all:       items.length,
+    articulos: items.filter(it => it.tipo === 'Recurrente' || it.tipo === 'VentaUnica').length,
+    servicios: items.filter(it => it.tipo === 'Servicio').length,
+  }), [items])
 
   async function toggleActivo(item) {
     try {
@@ -183,32 +205,25 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-wrap items-center gap-3 justify-between">
-        <div className="flex flex-wrap gap-2">
-          <div className="relative">
-            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
-            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar..."
-              className="pl-8 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-40 transition-colors" />
-          </div>
-          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
-            <option value="">Todos los tipos</option>
-            {TIPOS.map(t => <option key={t} value={t}>{t === 'VentaUnica' ? 'Venta Única' : t}</option>)}
-          </select>
-          <select value={filtroCategoria} onChange={e => setFiltroCategoria(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
-            <option value="">Todas las categorías</option>
-            {CATEGORIAS.map(c => <option key={c} value={c}>{c}</option>)}
-          </select>
-          <select value={filtroActivo} onChange={e => setFiltroActivo(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
-            <option value="">Todos</option>
-            <option value="true">Activos</option>
-            <option value="false">Inactivos</option>
-          </select>
-          <button onClick={fetchCatalogo} className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-          </button>
+      <div className="flex flex-wrap items-center gap-2 justify-between">
+        <div className="inline-flex bg-slate-900/60 border border-slate-700/60 rounded-xl p-1 gap-1">
+          {TABS.map(t => {
+            const Icon = t.icon
+            const active = tab === t.id
+            const count = counts[t.id]
+            return (
+              <button key={t.id}
+                onClick={() => { setTab(t.id); setFiltroCategoria('') }}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                  active
+                    ? 'bg-blue-600/20 text-blue-300 border border-blue-600/40 shadow-inner'
+                    : 'text-slate-400 hover:text-slate-100 hover:bg-slate-800/50 border border-transparent'
+                }`}>
+                <Icon size={13} />{t.label}
+                <span className={`ml-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono ${active ? 'bg-blue-600/30 text-blue-200' : 'bg-slate-800/80 text-slate-500'}`}>{count}</span>
+              </button>
+            )
+          })}
         </div>
         {canEdit && (
           <button onClick={() => setModalItem(false)}
@@ -217,6 +232,46 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
           </button>
         )}
       </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+          <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Buscar nombre…"
+            className="pl-8 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500 w-52 transition-colors" />
+        </div>
+        <select value={filtroActivo} onChange={e => setFiltroActivo(e.target.value)}
+          className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
+          <option value="">Todos los estados</option>
+          <option value="true">Activos</option>
+          <option value="false">Inactivos</option>
+        </select>
+        <button onClick={fetchCatalogo} className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+        </button>
+      </div>
+
+      {categoriasDisponibles.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          <button onClick={() => setFiltroCategoria('')}
+            className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+              filtroCategoria === ''
+                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                : 'bg-slate-800/40 border-slate-700/50 text-slate-500 hover:text-slate-200 hover:border-slate-600'
+            }`}>
+            Todas
+          </button>
+          {categoriasDisponibles.map(cat => (
+            <button key={cat} onClick={() => setFiltroCategoria(cat === filtroCategoria ? '' : cat)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold border transition-all ${
+                filtroCategoria === cat
+                  ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                  : 'bg-slate-800/40 border-slate-700/50 text-slate-400 hover:text-slate-100 hover:border-slate-600'
+              }`}>
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
 
       <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl overflow-hidden">
         <div className="overflow-x-auto">
@@ -239,11 +294,11 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
                 <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
-              ) : items.length === 0 ? (
+              ) : itemsFiltrados.length === 0 ? (
                 <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay items en el catálogo.
                 </td></tr>
-              ) : items.map(item => {
+              ) : itemsFiltrados.map(item => {
                 const precio = Number(item.precio)
                 const costo  = Number(item.costo)
                 const margen = precio > 0 ? Math.round(((precio - costo) / precio) * 100) : 0
@@ -311,7 +366,7 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
           </table>
         </div>
         <div className="px-4 py-2.5 border-t border-slate-700/50 flex items-center justify-between">
-          <p className="text-xs text-slate-600 font-mono">{items.length} item{items.length !== 1 ? 's' : ''}</p>
+          <p className="text-xs text-slate-600 font-mono">{itemsFiltrados.length} item{itemsFiltrados.length !== 1 ? 's' : ''}</p>
           {canSeeCosts && <p className="text-[10px] text-slate-700 font-mono">Margen: verde ≥30% · ámbar ≥10% · rojo &lt;10%</p>}
         </div>
       </div>

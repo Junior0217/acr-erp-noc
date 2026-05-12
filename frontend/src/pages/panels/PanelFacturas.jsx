@@ -14,6 +14,8 @@ import {
   OtTipoBadge, FacturaEstadoBadge,
 } from './_shared'
 
+const FACTURA_ESTADOS_REALES = FACTURA_ESTADOS.filter(e => e !== 'Borrador')
+
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
 
@@ -548,6 +550,11 @@ export default function PanelFacturas({ highlightId = null }) {
   const [loading,       setLoading]               = useState(false)
   const [updating,      setUpdating]              = useState(null)
   const [filtroEstado,  setFiltroEstado]          = useState('')
+  const [filtroNumero,  setFiltroNumero]          = useState('')
+  const [filtroCliente, setFiltroCliente]         = useState('')
+  const [filtroCodigo,  setFiltroCodigo]          = useState('')
+  const [filtroDesde,   setFiltroDesde]           = useState('')
+  const [filtroHasta,   setFiltroHasta]           = useState('')
   const [page,          setPage]                  = useState(0)
   const [total,         setTotal]                 = useState(0)
   const [showManual,    setShowManual]             = useState(false)
@@ -558,16 +565,30 @@ export default function PanelFacturas({ highlightId = null }) {
     setLoading(true)
     try {
       const p = new URLSearchParams()
-      if (filtroEstado) p.set('estado', filtroEstado)
+      if (filtroEstado)  p.set('estado',        filtroEstado)
+      if (filtroNumero)  p.set('search',        filtroNumero.trim())
+      if (filtroCliente) p.set('clienteNombre', filtroCliente.trim())
+      if (filtroCodigo)  p.set('clienteCodigo', filtroCodigo.trim())
+      if (filtroDesde)   p.set('desde',         filtroDesde)
+      if (filtroHasta)   p.set('hasta',         filtroHasta)
       p.set('limit',  String(PAGE_SIZE))
       p.set('offset', String(page * PAGE_SIZE))
       const r = await apiFetch(`/api/ventas/facturas?${p}`)
       if (r.ok) { const j = await r.json(); setFacturas(j.data ?? []); setTotal(j.total ?? 0) }
     } catch {} finally { setLoading(false) }
-  }, [filtroEstado, page])
+  }, [filtroEstado, filtroNumero, filtroCliente, filtroCodigo, filtroDesde, filtroHasta, page])
 
-  useEffect(() => { setPage(0) }, [filtroEstado])
-  useEffect(() => { fetchFacturas() }, [fetchFacturas])
+  useEffect(() => { setPage(0) }, [filtroEstado, filtroNumero, filtroCliente, filtroCodigo, filtroDesde, filtroHasta])
+  useEffect(() => {
+    const t = setTimeout(() => fetchFacturas(), 250)
+    return () => clearTimeout(t)
+  }, [fetchFacturas])
+
+  function limpiarFiltros() {
+    setFiltroEstado(''); setFiltroNumero(''); setFiltroCliente('')
+    setFiltroCodigo(''); setFiltroDesde(''); setFiltroHasta('')
+  }
+  const hayFiltros = !!(filtroEstado || filtroNumero || filtroCliente || filtroCodigo || filtroDesde || filtroHasta)
 
   async function actualizarEstado(f, nuevoEstado) {
     if (nuevoEstado === 'Anulada') {
@@ -604,30 +625,69 @@ export default function PanelFacturas({ highlightId = null }) {
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 justify-between">
-        <div className="flex gap-2 flex-wrap items-center">
-          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
-            <option value="">Todos los estados</option>
-            {FACTURA_ESTADOS.map(e => <option key={e} value={e}>{e === 'Borrador' ? 'Cotizaciones' : e}</option>)}
-          </select>
-          <button onClick={fetchFacturas}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-          </button>
+        <div className="flex items-center gap-2">
+          <Receipt size={16} className="text-blue-400" />
+          <h2 className="text-sm font-bold text-slate-100 uppercase tracking-wider">Facturas Emitidas</h2>
+        </div>
+        <div className="flex items-center gap-2">
+          {facturas.length > 0 && (
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/10 border border-emerald-600/20">
+              <DollarSign size={13} className="text-emerald-500" />
+              <span className="text-sm font-mono font-bold text-emerald-400">{formatCurrency(totalEmitidas)}</span>
+              <span className="text-[10px] text-slate-600">emitido / cobrado</span>
+            </div>
+          )}
           {canEmit && (
             <button onClick={() => setShowManual(true)}
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors">
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors shadow-lg shadow-blue-600/20">
               <Plus size={14} /> Nueva Factura / POS
             </button>
           )}
         </div>
-        {facturas.length > 0 && (
-          <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/10 border border-emerald-600/20">
-            <DollarSign size={13} className="text-emerald-500" />
-            <span className="text-sm font-mono font-bold text-emerald-400">{formatCurrency(totalEmitidas)}</span>
-            <span className="text-[10px] text-slate-600">emitido / cobrado</span>
+      </div>
+
+      <div className="bg-slate-800/30 border border-slate-700/40 rounded-xl p-3">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-2">
+          <div className="lg:col-span-2 relative">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <input value={filtroNumero} onChange={e => setFiltroNumero(e.target.value)}
+              placeholder="No. Factura / NCF…"
+              className="w-full pl-8 pr-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors" />
           </div>
-        )}
+          <input value={filtroCliente} onChange={e => setFiltroCliente(e.target.value)}
+            placeholder="Cliente (nombre / razón social)…"
+            className="lg:col-span-2 px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors" />
+          <input value={filtroCodigo} onChange={e => setFiltroCodigo(e.target.value)}
+            placeholder="Código cliente…"
+            className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors" />
+          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}
+            className="px-3 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
+            <option value="">Todos los estados</option>
+            {FACTURA_ESTADOS_REALES.map(e => <option key={e} value={e}>{e}</option>)}
+          </select>
+        </div>
+        <div className="flex flex-wrap items-end gap-2 mt-2">
+          <div>
+            <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Emisión desde</label>
+            <input type="date" value={filtroDesde} onChange={e => setFiltroDesde(e.target.value)}
+              className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Hasta</label>
+            <input type="date" value={filtroHasta} onChange={e => setFiltroHasta(e.target.value)}
+              className="px-3 py-1.5 bg-slate-900 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500 transition-colors" />
+          </div>
+          {hayFiltros && (
+            <button onClick={limpiarFiltros}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/60 border border-slate-700 text-slate-400 hover:text-red-300 hover:border-red-700/40 transition-all">
+              <X size={11} /> Limpiar filtros
+            </button>
+          )}
+          <button onClick={fetchFacturas}
+            className="ml-auto p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl overflow-hidden">

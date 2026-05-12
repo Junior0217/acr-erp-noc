@@ -5341,9 +5341,22 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
 
 app.get('/api/cotizaciones', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   try {
-    const { clienteId, limit = '20', offset = '0' } = req.query
-    const where = { esCotizacion: true }
-    if (clienteId) where.clienteId = clienteId
+    const { clienteId, search, clienteCodigo, clienteNombre, desde, hasta, limit = '20', offset = '0' } = req.query
+    const where = { esCotizacion: true, deletedAt: null }
+    if (clienteId)     where.clienteId = clienteId
+    if (search)        where.noFactura = { contains: search, mode: 'insensitive' }
+
+    const clienteAnd = []
+    if (clienteCodigo) clienteAnd.push({ noCliente:   { contains: clienteCodigo, mode: 'insensitive' } })
+    if (clienteNombre) clienteAnd.push({ razonSocial: { contains: clienteNombre, mode: 'insensitive' } })
+    if (clienteAnd.length > 0) where.cliente = { AND: clienteAnd }
+
+    if (desde || hasta) {
+      where.fechaEmision = {}
+      if (desde) where.fechaEmision.gte = new Date(desde)
+      if (hasta) { const h = new Date(hasta); h.setHours(23, 59, 59, 999); where.fechaEmision.lte = h }
+    }
+
     const [total, data] = await prisma.$transaction([
       prisma.factura.count({ where }),
       prisma.factura.findMany({
@@ -5355,7 +5368,7 @@ app.get('/api/cotizaciones', verificarJWT, requerirPermiso('factura:ver'), async
       }),
     ])
     res.json({ data, total })
-  } catch { res.status(500).json({ error: 'Error interno.' }) }
+  } catch (e) { console.error('[GET /api/cotizaciones]', e.message); res.status(500).json({ error: 'Error interno.' }) }
 })
 
 app.post('/api/cotizaciones/:id/revivir', verificarJWT, requerirPermiso('factura:emitir'), async (req, res) => {
@@ -5462,10 +5475,27 @@ app.get('/api/facturas/:id', verificarJWT, requerirPermiso('factura:ver'), async
 
 app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   try {
-    const { estado, clienteId, limit = '50', offset = '0' } = req.query
+    const { estado, clienteId, search, clienteCodigo, clienteNombre, desde, hasta, incluirCotizaciones, limit = '50', offset = '0' } = req.query
     const where = { deletedAt: null }
+    if (incluirCotizaciones !== 'true') where.esCotizacion = false
     if (estado)    where.estado    = estado
     if (clienteId) where.clienteId = clienteId
+    if (search)    where.OR = [
+      { noFactura: { contains: search, mode: 'insensitive' } },
+      { ncf:       { contains: search, mode: 'insensitive' } },
+    ]
+
+    const clienteAnd = []
+    if (clienteCodigo) clienteAnd.push({ noCliente:   { contains: clienteCodigo, mode: 'insensitive' } })
+    if (clienteNombre) clienteAnd.push({ razonSocial: { contains: clienteNombre, mode: 'insensitive' } })
+    if (clienteAnd.length > 0) where.cliente = { AND: clienteAnd }
+
+    if (desde || hasta) {
+      where.fechaEmision = {}
+      if (desde) where.fechaEmision.gte = new Date(desde)
+      if (hasta) { const h = new Date(hasta); h.setHours(23, 59, 59, 999); where.fechaEmision.lte = h }
+    }
+
     const [total, facturas] = await prisma.$transaction([
       prisma.factura.count({ where }),
       prisma.factura.findMany({
@@ -5480,7 +5510,7 @@ app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (re
       }),
     ])
     res.json({ data: facturas, total })
-  } catch { res.status(500).json({ error: 'Error interno.' }) }
+  } catch (e) { console.error('[GET /api/facturas]', e.message); res.status(500).json({ error: 'Error interno.' }) }
 })
 
 app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPermiso('factura:editar'), async (req, res) => {

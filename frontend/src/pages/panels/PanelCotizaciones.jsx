@@ -7,7 +7,6 @@ import {
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useCart } from '../../contexts/CartContext'
-import { useDebounce } from '../../hooks/useDebounce'
 
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 const fmtDate = d => new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
@@ -223,19 +222,27 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
 }
 
 export default function PanelCotizaciones() {
-  const [rows, setRows]     = useState([])
-  const [total, setTotal]   = useState(0)
-  const [offset, setOffset] = useState(0)
-  const [search, setSearch] = useState('')
-  const [loading, setLoading] = useState(false)
+  const [rows, setRows]       = useState([])
+  const [total, setTotal]     = useState(0)
+  const [offset, setOffset]   = useState(0)
+  const [filtroNumero,  setFiltroNumero]  = useState('')
+  const [filtroCliente, setFiltroCliente] = useState('')
+  const [filtroCodigo,  setFiltroCodigo]  = useState('')
+  const [filtroDesde,   setFiltroDesde]   = useState('')
+  const [filtroHasta,   setFiltroHasta]   = useState('')
+  const [loading, setLoading]   = useState(false)
   const [modalCot, setModalCot] = useState(null)
-  const dq = useDebounce(search, 400)
   const LIMIT = 20
 
   const fetch_ = useCallback(async (off) => {
     setLoading(true)
     try {
       const params = new URLSearchParams({ limit: LIMIT, offset: off })
+      if (filtroNumero)  params.set('search',        filtroNumero.trim())
+      if (filtroCliente) params.set('clienteNombre', filtroCliente.trim())
+      if (filtroCodigo)  params.set('clienteCodigo', filtroCodigo.trim())
+      if (filtroDesde)   params.set('desde',         filtroDesde)
+      if (filtroHasta)   params.set('hasta',         filtroHasta)
       const r = await apiFetch(`/api/ventas/cotizaciones?${params}`)
       if (!r.ok) throw new Error()
       const j = await r.json()
@@ -243,33 +250,61 @@ export default function PanelCotizaciones() {
       setTotal(j.total ?? 0)
     } catch { toast.error('Error al cargar cotizaciones.') }
     finally { setLoading(false) }
-  }, [])
+  }, [filtroNumero, filtroCliente, filtroCodigo, filtroDesde, filtroHasta])
 
-  useEffect(() => { setOffset(0); fetch_(0) }, [fetch_, dq])
+  useEffect(() => {
+    const t = setTimeout(() => { setOffset(0); fetch_(0) }, 250)
+    return () => clearTimeout(t)
+  }, [fetch_])
+
+  function limpiarFiltros() {
+    setFiltroNumero(''); setFiltroCliente(''); setFiltroCodigo('')
+    setFiltroDesde(''); setFiltroHasta('')
+  }
+  const hayFiltros = !!(filtroNumero || filtroCliente || filtroCodigo || filtroDesde || filtroHasta)
 
   const totalPages = Math.max(Math.ceil(total / LIMIT), 1)
   const page = Math.floor(offset / LIMIT) + 1
 
-  const filtered = dq
-    ? rows.filter(r => r.noFactura?.toLowerCase().includes(dq.toLowerCase()) || r.cliente?.razonSocial?.toLowerCase().includes(dq.toLowerCase()))
-    : rows
-
   return (
     <div>
-      <div className="flex flex-col sm:flex-row gap-3 p-4 border-b border-slate-800">
-        <div className="relative flex-1">
-          <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
-            placeholder="Buscar por No. o cliente..."
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-          />
-          {search && <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"><X size={14} /></button>}
+      <div className="p-4 border-b border-slate-800 space-y-2">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2">
+          <div className="lg:col-span-2 relative">
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+            <input value={filtroNumero} onChange={e => setFiltroNumero(e.target.value)}
+              placeholder="No. Cotización…"
+              className="w-full pl-8 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors" />
+          </div>
+          <input value={filtroCliente} onChange={e => setFiltroCliente(e.target.value)}
+            placeholder="Cliente (nombre / razón social)…"
+            className="lg:col-span-2 px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors" />
+          <input value={filtroCodigo} onChange={e => setFiltroCodigo(e.target.value)}
+            placeholder="Código cliente…"
+            className="px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors" />
         </div>
-        <button onClick={() => fetch_(offset)} className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
-          <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
-        </button>
+        <div className="flex flex-wrap items-end gap-2">
+          <div>
+            <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Emisión desde</label>
+            <input type="date" value={filtroDesde} onChange={e => setFiltroDesde(e.target.value)}
+              className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500 transition-colors" />
+          </div>
+          <div>
+            <label className="block text-[10px] font-bold text-slate-600 uppercase tracking-wider mb-1">Hasta</label>
+            <input type="date" value={filtroHasta} onChange={e => setFiltroHasta(e.target.value)}
+              className="px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-200 focus:outline-none focus:border-blue-500 transition-colors" />
+          </div>
+          {hayFiltros && (
+            <button onClick={limpiarFiltros}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800/60 border border-slate-700 text-slate-400 hover:text-red-300 hover:border-red-700/40 transition-all">
+              <X size={11} /> Limpiar
+            </button>
+          )}
+          <button onClick={() => fetch_(offset)}
+            className="ml-auto p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+          </button>
+        </div>
       </div>
 
       <div className="overflow-x-auto">
@@ -284,13 +319,13 @@ export default function PanelCotizaciones() {
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
-            {loading && filtered.length === 0 && (
+            {loading && rows.length === 0 && (
               <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
-            {!loading && filtered.length === 0 && (
+            {!loading && rows.length === 0 && (
               <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-600">Sin cotizaciones.</td></tr>
             )}
-            {filtered.map(c => (
+            {rows.map(c => (
               <tr key={c.id} onClick={() => setModalCot(c)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
                 <td className={TD + ' font-mono font-medium text-slate-200'}>{c.noFactura}</td>
                 <td className={TD}>

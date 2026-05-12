@@ -1,10 +1,26 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink } from 'lucide-react'
+import {
+  Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink,
+  Wifi, Camera, Wrench, Zap, Package, Network, Boxes,
+} from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import { toast } from 'sonner'
 
 const fmt = v => Number(v ?? 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+const CAT_ICON = {
+  WISP:           { icon: Wifi,    color: 'text-cyan-400',    bg: 'bg-cyan-500/10',    border: 'border-cyan-500/30'    },
+  CCTV:           { icon: Camera,  color: 'text-violet-400',  bg: 'bg-violet-500/10',  border: 'border-violet-500/30'  },
+  ProyectoCCTV:   { icon: Camera,  color: 'text-purple-400',  bg: 'bg-purple-500/10',  border: 'border-purple-500/30'  },
+  Redes:          { icon: Network, color: 'text-sky-400',     bg: 'bg-sky-500/10',     border: 'border-sky-500/30'     },
+  CercoElectrico: { icon: Zap,     color: 'text-orange-400',  bg: 'bg-orange-500/10',  border: 'border-orange-500/30'  },
+  VentaDirecta:   { icon: Boxes,   color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/30' },
+  SoporteTecnico: { icon: Wrench,  color: 'text-blue-400',    bg: 'bg-blue-500/10',    border: 'border-blue-500/30'    },
+  Reparacion:     { icon: Wrench,  color: 'text-red-400',     bg: 'bg-red-500/10',     border: 'border-red-500/30'     },
+  Mixto:          { icon: Package, color: 'text-slate-300',   bg: 'bg-slate-500/10',   border: 'border-slate-500/30'   },
+}
+const catMeta = cat => CAT_ICON[cat] ?? { icon: Package, color: 'text-slate-400', bg: 'bg-slate-500/10', border: 'border-slate-500/30' }
 
 // ── ClienteSearch ─────────────────────────────────────────────────────────────
 function ClienteSearch({ clienteId, onChange }) {
@@ -80,75 +96,256 @@ function ClienteSearch({ clienteId, onChange }) {
   )
 }
 
+// ── ItemDetailModal ──────────────────────────────────────────────────────────
+function ItemDetailModal({ item, onClose, onConfirm }) {
+  const [qty, setQty] = useState(1)
+  const meta = catMeta(item.categoria)
+  const Icon = meta.icon
+  const sinStock = item.tipo === 'VentaUnica' && (item.stock == null || item.stock <= 0)
+  const stockBajo = item.tipo === 'VentaUnica' && item.stock != null && item.stock > 0 && qty > item.stock
+
+  function confirmar() {
+    if (sinStock) { toast.error('Sin stock disponible.'); return }
+    if (stockBajo) { toast.error(`Solo ${item.stock} disponibles.`); return }
+    onConfirm(item, qty)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full sm:max-w-md bg-slate-900 border border-slate-700 rounded-t-2xl sm:rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+
+        {/* Header */}
+        <div className="flex items-start justify-between px-5 py-4 border-b border-slate-800">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className={`px-2 py-0.5 rounded-md text-[10px] font-bold uppercase tracking-wider border ${meta.color} ${meta.bg} ${meta.border}`}>
+              {item.categoria}
+            </span>
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">
+              {item.tipo === 'VentaUnica' ? 'Artículo' : item.tipo === 'Servicio' ? 'Servicio' : 'Recurrente'}
+            </span>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors flex-shrink-0">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="overflow-y-auto">
+          {/* Hero / Image placeholder */}
+          <div className={`mx-5 mt-5 h-48 rounded-xl flex items-center justify-center border ${meta.border} ${meta.bg}`}>
+            <Icon size={72} className={`${meta.color} opacity-60`} strokeWidth={1.25} />
+          </div>
+
+          {/* Info */}
+          <div className="px-5 py-4 space-y-3">
+            <div>
+              <h3 className="text-lg font-bold text-slate-100 leading-tight">{item.nombre}</h3>
+              {item.descripcion && <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{item.descripcion}</p>}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="bg-slate-800/60 border border-slate-700/50 rounded-lg p-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Precio Unit.</p>
+                <p className="text-xl font-bold font-mono text-emerald-400">RD$ {fmt(item.precio)}</p>
+              </div>
+              <div className="bg-slate-800/60 border border-slate-700/50 rounded-lg p-3">
+                <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Disponibilidad</p>
+                {item.tipo === 'VentaUnica' ? (
+                  <p className={`text-xl font-bold font-mono ${sinStock ? 'text-red-400' : item.stock <= 5 ? 'text-amber-400' : 'text-slate-100'}`}>
+                    {item.stock ?? 0} <span className="text-xs text-slate-500 font-normal">und.</span>
+                  </p>
+                ) : (
+                  <p className="text-xl font-bold font-mono text-blue-300">∞</p>
+                )}
+              </div>
+            </div>
+
+            {sinStock && (
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-red-900/20 border border-red-700/30 text-xs text-red-400">
+                <span className="w-1.5 h-1.5 rounded-full bg-red-400" /> Sin stock disponible. No se puede vender.
+              </div>
+            )}
+
+            {/* Qty selector */}
+            <div>
+              <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Cantidad</p>
+              <div className="flex items-center gap-2">
+                <button onClick={() => setQty(q => Math.max(1, q - 1))} disabled={sinStock}
+                  className="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 transition-colors flex items-center justify-center disabled:opacity-40">
+                  <Minus size={14} />
+                </button>
+                <input type="number" min="1" value={qty}
+                  onChange={e => setQty(Math.max(1, parseInt(e.target.value) || 1))}
+                  disabled={sinStock}
+                  className="w-20 h-10 bg-slate-800 border border-slate-700 rounded-lg text-center text-sm font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40" />
+                <button onClick={() => setQty(q => q + 1)} disabled={sinStock}
+                  className="w-10 h-10 rounded-lg bg-slate-800 border border-slate-700 text-slate-300 hover:bg-slate-700 transition-colors flex items-center justify-center disabled:opacity-40">
+                  <Plus size={14} />
+                </button>
+                <div className="ml-auto text-right">
+                  <p className="text-[10px] text-slate-600 uppercase font-bold">Subtotal</p>
+                  <p className="text-base font-bold font-mono text-emerald-400">RD$ {fmt(item.precio * qty)}</p>
+                </div>
+              </div>
+              {stockBajo && (
+                <p className="mt-1.5 text-xs text-amber-400 font-mono">⚠ Stock insuficiente. Máx: {item.stock}</p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Actions */}
+        <div className="flex gap-2 p-4 border-t border-slate-800">
+          <button onClick={onClose}
+            className="flex-1 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 text-sm font-semibold transition-colors">
+            Cancelar
+          </button>
+          <button onClick={confirmar} disabled={sinStock || stockBajo}
+            className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 border border-blue-500 text-white text-sm font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed shadow-lg shadow-blue-600/20">
+            <ShoppingBag size={14} /> Agregar al Carrito
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── CatalogSearch ─────────────────────────────────────────────────────────────
 function CatalogSearch({ onAdd }) {
-  const [q, setQ]       = useState('')
-  const [items, setItems] = useState([])
-  const [loading, setLoading] = useState(false)
-  const [tipoFiltro, setTipoFiltro] = useState('')
+  const [q, setQ]                 = useState('')
+  const [items, setItems]         = useState([])
+  const [loading, setLoading]     = useState(false)
+  const [tab, setTab]             = useState('all') // all | articulos | servicios
+  const [filtroCat, setFiltroCat] = useState('')
+  const [detailItem, setDetailItem] = useState(null)
 
-  const cargar = useCallback(async (query, tipo) => {
+  const cargar = useCallback(async (query) => {
     setLoading(true)
     try {
       const p = new URLSearchParams({ activo: 'true' })
       if (query) p.set('search', query)
-      if (tipo)  p.set('tipoItem', tipo)
       const r = await apiFetch(`/api/catalogo?${p}`)
       const j = await r.json()
       setItems(j.data ?? [])
     } finally { setLoading(false) }
   }, [])
 
-  useEffect(() => { cargar(q, tipoFiltro) }, [q, tipoFiltro, cargar])
+  useEffect(() => {
+    const t = setTimeout(() => cargar(q), 250)
+    return () => clearTimeout(t)
+  }, [q, cargar])
 
-  const TIPO_COLORS = {
-    ARTICULO: 'text-amber-400 bg-amber-600/10 border-amber-600/20',
-    SERVICIO: 'text-blue-400 bg-blue-600/10 border-blue-600/20',
+  const matchTab = it => tab === 'articulos' ? (it.tipo === 'Recurrente' || it.tipo === 'VentaUnica')
+                       : tab === 'servicios' ? it.tipo === 'Servicio'
+                       : true
+  const filtered = items.filter(it => matchTab(it) && (!filtroCat || it.categoria === filtroCat))
+  const categoriasDisponibles = Array.from(new Set(items.filter(matchTab).map(it => it.categoria).filter(Boolean)))
+
+  function handleConfirm(item, qty) {
+    onAdd(item, qty)
+    setDetailItem(null)
   }
 
   return (
-    <div className="flex flex-col gap-3 h-full">
-      <div className="flex gap-2">
-        <div className="relative flex-1">
-          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
-          <input
-            value={q}
-            onChange={e => setQ(e.target.value)}
-            placeholder="Buscar en catálogo…"
-            className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-          />
-        </div>
-        <select value={tipoFiltro} onChange={e => setTipoFiltro(e.target.value)}
-          className="bg-slate-800 border border-slate-700 rounded-lg px-2 py-2 text-xs text-slate-300 focus:outline-none focus:border-blue-500">
-          <option value="">Todo</option>
-          <option value="ARTICULO">Artículos</option>
-          <option value="SERVICIO">Servicios</option>
-        </select>
-      </div>
-      <div className="flex-1 overflow-y-auto space-y-1 min-h-0">
-        {loading ? (
-          <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-blue-400" /></div>
-        ) : items.length === 0 ? (
-          <p className="text-center text-xs text-slate-500 py-8 font-mono">Sin resultados.</p>
-        ) : items.map(item => (
-          <div key={item.id}
-            className="flex items-center justify-between px-3 py-2.5 bg-slate-800/40 hover:bg-slate-700/40 border border-slate-700/40 rounded-lg cursor-pointer transition-colors group"
-            onClick={() => onAdd(item)}>
-            <div className="min-w-0">
-              <p className="text-sm text-slate-100 font-medium leading-tight truncate">{item.nombre}</p>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border ${TIPO_COLORS[item.tipoItem] ?? 'text-slate-400 bg-slate-700 border-slate-600'}`}>
-                  {item.tipoItem}
-                </span>
-                <span className="text-xs text-slate-500 font-mono">RD$ {fmt(item.precio)}</span>
-              </div>
-            </div>
-            <div className="flex-shrink-0 w-7 h-7 rounded-lg bg-blue-600/0 group-hover:bg-blue-600/20 border border-transparent group-hover:border-blue-600/30 flex items-center justify-center transition-all">
-              <Plus size={14} className="text-blue-400" />
-            </div>
-          </div>
+    <div className="flex flex-col gap-2.5 h-full">
+      {/* Tabs */}
+      <div className="inline-flex bg-slate-900/60 border border-slate-700/60 rounded-xl p-1 gap-1 self-start">
+        {[
+          { id: 'all',       label: 'Todo'      },
+          { id: 'articulos', label: 'Artículos' },
+          { id: 'servicios', label: 'Servicios' },
+        ].map(t => (
+          <button key={t.id}
+            onClick={() => { setTab(t.id); setFiltroCat('') }}
+            className={`px-3 py-1 rounded-lg text-xs font-semibold transition-all ${
+              tab === t.id
+                ? 'bg-blue-600/20 text-blue-300 border border-blue-600/40'
+                : 'text-slate-400 hover:text-slate-100 border border-transparent'
+            }`}>
+            {t.label}
+          </button>
         ))}
       </div>
+
+      {/* Search */}
+      <div className="relative">
+        <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+        <input
+          value={q}
+          onChange={e => setQ(e.target.value)}
+          placeholder="Buscar en catálogo…"
+          className="w-full bg-slate-800 border border-slate-700 rounded-lg pl-8 pr-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+        />
+      </div>
+
+      {/* Category chips */}
+      {categoriasDisponibles.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          <button onClick={() => setFiltroCat('')}
+            className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border transition-all ${
+              filtroCat === ''
+                ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                : 'bg-slate-800/40 border-slate-700/50 text-slate-500 hover:text-slate-200'
+            }`}>
+            Todas
+          </button>
+          {categoriasDisponibles.map(cat => (
+            <button key={cat} onClick={() => setFiltroCat(cat === filtroCat ? '' : cat)}
+              className={`px-2.5 py-0.5 rounded-full text-[10px] font-semibold border transition-all ${
+                filtroCat === cat
+                  ? 'bg-blue-600/20 border-blue-500/40 text-blue-300'
+                  : 'bg-slate-800/40 border-slate-700/50 text-slate-400 hover:text-slate-100'
+              }`}>
+              {cat}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Grid */}
+      <div className="flex-1 overflow-y-auto min-h-0 -mx-1 px-1">
+        {loading ? (
+          <div className="flex justify-center py-8"><Loader2 size={18} className="animate-spin text-blue-400" /></div>
+        ) : filtered.length === 0 ? (
+          <p className="text-center text-xs text-slate-500 py-8 font-mono">Sin resultados.</p>
+        ) : (
+          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-2">
+            {filtered.map(item => {
+              const meta = catMeta(item.categoria)
+              const Icon = meta.icon
+              const sinStock = item.tipo === 'VentaUnica' && (item.stock == null || item.stock <= 0)
+              return (
+                <button key={item.id}
+                  onClick={() => setDetailItem(item)}
+                  className={`group relative text-left bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : ''}`}>
+                  <div className={`aspect-square w-full rounded-lg flex items-center justify-center ${meta.bg}`}>
+                    <Icon size={36} className={`${meta.color}`} strokeWidth={1.4} />
+                  </div>
+                  <div className="min-w-0">
+                    <p className="text-xs font-semibold text-slate-100 leading-tight line-clamp-2">{item.nombre}</p>
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-xs font-bold font-mono text-emerald-400">RD$ {fmt(item.precio)}</span>
+                      {item.tipo === 'VentaUnica' && (
+                        <span className={`text-[9px] font-mono ${sinStock ? 'text-red-400' : item.stock <= 5 ? 'text-amber-400' : 'text-slate-500'}`}>
+                          {sinStock ? 'Sin stock' : `Stk ${item.stock}`}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {detailItem && (
+        <ItemDetailModal
+          item={detailItem}
+          onClose={() => setDetailItem(null)}
+          onConfirm={handleConfirm}
+        />
+      )}
     </div>
   )
 }
@@ -228,16 +425,17 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
   const canDescuento = tienePermiso('pos:descuentos') || tienePermiso('sistema:owner')
 
-  function addItem(item) {
+  function addItem(item, qty = 1) {
     setCart(prev => {
       const idx = prev.findIndex(l => l.itemCatalogoId === item.id)
       if (idx >= 0) {
         const next = [...prev]
-        next[idx] = { ...next[idx], cantidad: next[idx].cantidad + 1 }
+        next[idx] = { ...next[idx], cantidad: next[idx].cantidad + qty }
         return next
       }
-      return [...prev, { itemCatalogoId: item.id, nombre: item.nombre, cantidad: 1, precioUnitario: Number(item.precio), descuentoPorcentaje: 0, descuentoMonto: 0 }]
+      return [...prev, { itemCatalogoId: item.id, nombre: item.nombre, cantidad: qty, precioUnitario: Number(item.precio), descuentoPorcentaje: 0, descuentoMonto: 0 }]
     })
+    toast.success(`${item.nombre} × ${qty}`, { duration: 1500 })
   }
 
   function updateLine(idx, changes) {
