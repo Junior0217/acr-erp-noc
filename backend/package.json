@@ -12,6 +12,7 @@
   "type": "commonjs",
   "dependencies": {
     "@prisma/client": "^6.19.3",
+    "@simplewebauthn/server": "^13.3.0",
     "@sparticuz/chromium": "^131.0.1",
     "@supabase/supabase-js": "^2.105.4",
     "archiver": "^7.0.1",

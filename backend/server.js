@@ -726,12 +726,14 @@ async function protegerPropietario(req, res, next) {
 // via sliding refresh in verificarJWT. RememberMe extends to 30d but keeps idle.
 const IDLE_TTL_MS = 30 * 60 * 1000
 
-// Hash de dispositivo: combina UA + bloque /24 de la IP + Accept-Language.
-// El /24 tolera DHCP rotation dentro de una misma LAN sin invalidar el fingerprint.
-// Sin Accept-Language porque puede cambiar (móvil cambia de idioma) — se omite para estabilidad.
-function computeDeviceHash(ua, ip) {
-  const ipBase = (ip ?? '').split('.').slice(0, 3).join('.') // 192.168.1.x -> 192.168.1
-  const raw    = `${ua}|${ipBase}`
+// M5: device fingerprint endurecido — IP COMPLETA + Accept-Language + Sec-CH-UA hints.
+// Trade-off: si ISP rota IP del usuario, se dispara alerta device_nuevo (falso positivo
+// aceptable). Antes el /24 perdonaba IP-spoofers en la misma LAN/router público.
+function computeDeviceHash(ua, ip, acceptLanguage = '', secChUa = '') {
+  // Tomamos solo el primer idioma preferido (sin q-values) — más estable que toda la lista.
+  const lang = String(acceptLanguage).split(',')[0]?.trim().toLowerCase() ?? ''
+  // Sec-CH-UA viene como '"Chromium";v="130", "Google Chrome";v="130"' — basta el hash crudo.
+  const raw  = `${ua}|${ip ?? ''}|${lang}|${secChUa}`
   return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)
 }
 
@@ -758,10 +760,12 @@ function labelFromUA(ua) {
 }
 
 function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = false) {
-  const jti       = crypto.randomUUID()
-  const ua        = req.headers['user-agent'] || ''
-  const ip        = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
-  const deviceHash = computeDeviceHash(ua, ip)
+  const jti        = crypto.randomUUID()
+  const ua         = req.headers['user-agent'] || ''
+  const ip         = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
+  const acceptLang = req.headers['accept-language'] || ''
+  const secChUa    = req.headers['sec-ch-ua'] || ''
+  const deviceHash = computeDeviceHash(ua, ip, acceptLang, secChUa)
   const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : IDLE_TTL_MS
   const jwtTTL    = rememberMe ? '30d' : '30m'
   const expiresAt = new Date(Date.now() + ttl)
@@ -814,8 +818,10 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
     }
     res.cookie('csrf',  csrf,  { ...cookieBase, httpOnly: false })
     res.cookie('token', token, { ...cookieBase, httpOnly: true, signed: true })
-    res.setHeader('X-CSRF-Token', csrf)
-    const response = { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos, csrfToken: csrf }
+    // M2: csrf token vive SOLO en cookie. NUNCA eco en JSON ni en header de
+    // respuesta — un XSS o log leak NO debe revelar el token. El cliente lo lee
+    // via /api/auth/csrf que requiere session válida (cookie httpOnly).
+    const response = { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos }
     if (needs2FASetup)    response.needs2FASetup = true
     if (nuevoDispositivo) response.nuevoDispositivo = true
     return response
@@ -2623,14 +2629,13 @@ function detectMimeFromBuffer(buf) {
   return null
 }
 
-// SVG sanitize: rechaza si contiene scripts o event handlers
-function svgSeguro(buf) {
-  const txt = buf.toString('utf8').toLowerCase()
-  const peligrosos = ['<script', '<foreignobject', 'onload=', 'onerror=', 'onclick=', 'onmouseover=', 'javascript:', 'data:text/html']
-  return !peligrosos.some(p => txt.includes(p))
-}
+// M6: SVG bloqueado por completo. Aunque sanitize-html podía filtrar, los
+// vectores XSS via SVG son demasiado ricos (xlink:href javascript:, <set>,
+// <animate onbegin=, <use href=data:>). Para logos corporativos PNG/WebP cubre
+// el 100% de casos prácticos sin la superficie de ataque.
+function svgSeguro(_buf) { return false }
 
-const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/svg+xml': 'svg', 'image/gif': 'gif', 'image/webp': 'webp' }
+const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
 const KINDS_VALIDOS = ['logoClaro', 'logoOscuro', 'selloFisico', 'firmaGerente']
 
 // Extrae la ruta de Supabase Storage desde una URL pública.
@@ -2951,13 +2956,18 @@ async function invalidarPdfCache(facturaId) {
   if (!facturaId) return
   try {
     const f = await prisma.factura.findUnique({ where: { id: facturaId }, select: { pdfUrl: true, fechaEmision: true } })
-    if (f?.pdfUrl) {
-      await prisma.factura.update({ where: { id: facturaId }, data: { pdfUrl: null } })
-      if (supabase) {
-        const fecha = new Date(f.fechaEmision ?? Date.now())
-        const path = `${fecha.getFullYear()}/${String(fecha.getMonth() + 1).padStart(2, '0')}/${facturaId}.pdf`
-        await supabase.storage.from(PDF_CACHE_BUCKET).remove([path]).catch(() => {})
-      }
+    // M8: SIEMPRE actualizar pdfInvalidatedAt para que el cron sepa que hubo
+    // cambio mid-flight aunque no hubiera PDF previo (ej. factura mutada antes
+    // del primer render).
+    const ahora = new Date()
+    await prisma.factura.update({
+      where: { id: facturaId },
+      data:  { pdfUrl: null, pdfInvalidatedAt: ahora, pdfRenderAttempts: 0 },
+    })
+    if (f?.pdfUrl && supabase) {
+      const fecha = new Date(f.fechaEmision ?? Date.now())
+      const path = `${fecha.getFullYear()}/${String(fecha.getMonth() + 1).padStart(2, '0')}/${facturaId}.pdf`
+      await supabase.storage.from(PDF_CACHE_BUCKET).remove([path]).catch(() => {})
     }
   } catch (e) { console.error('[PDF CACHE invalidate]', e.message) }
 }
@@ -3011,13 +3021,19 @@ async function buildPdfData(facturaOrCotizacion) {
     ? { ...empresa, assets: await inlineAssets(empresa.assets ?? {}) }
     : { razonSocial: '', rnc: '', assets: {} }
   const c = snap?.cliente ?? f.cliente ?? {}
+  // M7: cotizaciones NO son documento fiscal. La cédula es PII sensible; si el
+  // PDF se filtra (compartido por WhatsApp/email), el RNC empresarial basta.
+  // Personas físicas sin RNC -> cédula enmascarada (últimos 4 dígitos).
+  const cedulaParaPDF = f.esCotizacion
+    ? (c.rnc ? null : (c.cedula ? `***-*******-${String(c.cedula).replace(/\D/g, '').slice(-4)}` : null))
+    : c.cedula
   return {
     empresa: empresaConAssets,
     cliente: {
       razonSocial: c.razonSocial,
       noCliente:   c.noCliente,
       rnc:         c.rnc,
-      cedula:      c.cedula,
+      cedula:      cedulaParaPDF,
       direccion:   c.direccion,
       sector:      c.sector,
       provincia:   c.provincia,
@@ -3746,12 +3762,26 @@ app.get('/api/auth/me', verificarJWT, async (req, res) => {
   try {
     const emp = await prisma.empleado.findUnique({
       where: { id: req.user.sub },
-      select: { twoFactorEnabled: true, roles: { where: { activo: true }, select: { nivel: true } } },
+      select: {
+        twoFactorEnabled: true,
+        backupCodes:      true,
+        roles:            { where: { activo: true }, select: { nivel: true } },
+        _count:           { select: { webauthnCredentials: true } },
+      },
     })
     const permisos = Array.isArray(req.user.permisos) ? req.user.permisos : []
     const needs2FASetup = req.user.needs2FASetup === true && !emp?.twoFactorEnabled
     const nivelMax = emp?.roles?.length ? Math.max(...emp.roles.map(r => r.nivel ?? 0)) : 0
-    const out = { id: req.user.sub, nombre: req.user.nombre, permisos, twoFactorEnabled: emp?.twoFactorEnabled ?? false, nivelMax }
+    const backupCodesCount = Array.isArray(emp?.backupCodes) ? emp.backupCodes.length : 0
+    const out = {
+      id: req.user.sub, nombre: req.user.nombre, permisos,
+      twoFactorEnabled: emp?.twoFactorEnabled ?? false, nivelMax,
+      // Banners frontend: alertas activas.
+      backupCodesCount,
+      backupCodesAviso: emp?.twoFactorEnabled && backupCodesCount <= 2,
+      backupCodesAgotados: emp?.twoFactorEnabled && backupCodesCount === 0,
+      webauthnEnrolled: (emp?._count?.webauthnCredentials ?? 0) > 0,
+    }
     if (needs2FASetup) out.needs2FASetup = true
     res.json(out)
   } catch { res.status(500).json({ error: 'Error interno.' }) }
@@ -3813,9 +3843,9 @@ app.post('/api/auth/refresh', async (req, res) => {
     const cookieOpts = { httpOnly: true, secure: isProd, sameSite: isProd ? 'none' : 'lax', maxAge: ttl, ...(isProd ? { partitioned: true } : {}) }
     res.cookie('token', newToken, cookieOpts)
     res.cookie('csrf',  csrf,     { ...cookieOpts, httpOnly: false })
-    res.setHeader('X-CSRF-Token', csrf)
+    // M2: csrf NO se eco en JSON ni en header — solo cookie. Cliente lee via /api/auth/csrf.
     auditReq('auth:refresh', req, { empleadoId: empleado.id })
-    res.json({ id: empleado.id, nombre: empleado.nombre, permisos, csrfToken: csrf })
+    res.json({ id: empleado.id, nombre: empleado.nombre, permisos })
   } catch {
     res.status(401).json({ error: 'Token inválido.' })
   }
@@ -3934,22 +3964,24 @@ async function consumeBackupCode(empleadoId, candidate) {
   if (!candidate) return false
   const normalized = String(candidate).replace(/[-\s]/g, '').toUpperCase()
 
+  // M1: timing-safe constant-time loop. bcrypt.compare internamente usa
+  // timingSafeEqual sobre el hash; al iterar SIEMPRE sobre TODOS los códigos
+  // (sin early-return) ocultamos cuántos codes quedan y CUÁL hizo match.
   // Atomic compare-and-swap: dos peticiones paralelas no pueden consumir el mismo código.
-  // Serializable isolation -> conflicto en backupCodes column aborta una de las dos transacciones,
-  // garantizando que cada código se use EXACTAMENTE una vez aunque haya race.
   return prisma.$transaction(async (tx) => {
     const emp = await tx.empleado.findUnique({ where: { id: empleadoId }, select: { backupCodes: true } })
     const codes = Array.isArray(emp?.backupCodes) ? emp.backupCodes : []
+    let matchIdx = -1
     for (let i = 0; i < codes.length; i++) {
-      if (await bcrypt.compare(normalized, codes[i])) {
-        const next = [...codes.slice(0, i), ...codes.slice(i + 1)]
-        await tx.empleado.update({ where: { id: empleadoId }, data: { backupCodes: next } })
-        return true
-      }
+      const ok = await bcrypt.compare(normalized, codes[i])
+      // Asigna sólo si match Y no había match previo. Sin break -> tiempo constante O(n).
+      if (ok && matchIdx === -1) matchIdx = i
     }
-    return false
+    if (matchIdx === -1) return false
+    const next = [...codes.slice(0, matchIdx), ...codes.slice(matchIdx + 1)]
+    await tx.empleado.update({ where: { id: empleadoId }, data: { backupCodes: next } })
+    return true
   }, { isolationLevel: 'Serializable', timeout: 8000 }).catch(e => {
-    // Conflicto de Serializable -> retornar false (cliente reintenta con otro código si quedan).
     console.warn('[consumeBackupCode] tx conflict:', e.code, e.message)
     return false
   })
@@ -4022,6 +4054,221 @@ app.post('/api/auth/2fa/disable', verificarJWT, async (req, res) => {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'PIN de 6 dígitos requerido.' })
     res.status(500).json({ error: 'Error al desactivar 2FA.' })
   }
+})
+
+// ─── WebAuthn / Passkeys ──────────────────────────────────────────────────────
+// Reemplazo phishing-resistant del TOTP para sistema:owner. Multi-credencial
+// soportado (laptop + móvil + YubiKey). Si @simplewebauthn/server no está
+// instalado (deploy sin npm install), las rutas devuelven 503 hasta que se
+// instale el paquete — no crashea el server.
+let _webauthn = null
+try {
+  _webauthn = require('@simplewebauthn/server')
+} catch {
+  console.warn('[WEBAUTHN] @simplewebauthn/server no instalado. Las rutas /api/auth/webauthn/* devolverán 503 hasta `npm install`.')
+}
+
+// Configuración del relying party: derivada de WEBAUTHN_RP_ID (host sin protocolo)
+// y WEBAUTHN_ORIGIN (origen completo). Por defecto usa el frontend público.
+const RP_NAME    = process.env.WEBAUTHN_RP_NAME ?? 'ACR Networks ERP'
+const RP_ID      = process.env.WEBAUTHN_RP_ID ?? (process.env.PUBLIC_FRONTEND_URL ? new URL(process.env.PUBLIC_FRONTEND_URL).hostname : 'localhost')
+const RP_ORIGIN  = process.env.WEBAUTHN_ORIGIN ?? process.env.PUBLIC_FRONTEND_URL ?? `http://localhost:5173`
+
+// Challenge store in-memory con TTL 60s. Una passkey ceremony rara vez tarda más.
+const _webauthnChallengeStore = new Map()
+const WEBAUTHN_CHALLENGE_TTL_MS = 60_000
+setInterval(() => {
+  const now = Date.now()
+  for (const [k, v] of _webauthnChallengeStore.entries()) if (v.exp < now) _webauthnChallengeStore.delete(k)
+}, 60_000).unref()
+
+function _wa503() { return { status: 503, error: 'WebAuthn no instalado. Ejecuta `npm install` en backend.' } }
+
+// 1) Registro: genera options para el browser. Requiere session válida.
+app.post('/api/auth/webauthn/register/options', verificarJWT, async (req, res) => {
+  if (!_webauthn) { const e = _wa503(); return res.status(e.status).json({ error: e.error }) }
+  try {
+    const emp = await prisma.empleado.findUnique({
+      where: { id: req.user.sub },
+      include: { webauthnCredentials: { select: { credentialId: true, transports: true } } },
+    })
+    if (!emp) return res.status(404).json({ error: 'Empleado no encontrado.' })
+
+    const options = await _webauthn.generateRegistrationOptions({
+      rpName: RP_NAME,
+      rpID:   RP_ID,
+      userName: emp.email,
+      userDisplayName: emp.nombre,
+      userID: Buffer.from(String(emp.id)),
+      attestationType: 'none',                  // sin attestation -> no inquiry al vendor
+      authenticatorSelection: {
+        residentKey: 'preferred',                // permite discoverable credentials
+        userVerification: 'required',            // exige PIN/biometría no solo presencia
+      },
+      excludeCredentials: emp.webauthnCredentials.map(c => ({
+        id: c.credentialId, transports: c.transports,
+      })),
+    })
+    _webauthnChallengeStore.set(`reg:${emp.id}`, { challenge: options.challenge, exp: Date.now() + WEBAUTHN_CHALLENGE_TTL_MS })
+    res.json(options)
+  } catch (e) {
+    console.error('[WEBAUTHN reg/options]', e.message)
+    res.status(500).json({ error: 'Error generando opciones.' })
+  }
+})
+
+// 2) Registro: verifica la attestation y persiste la credencial.
+app.post('/api/auth/webauthn/register/verify', verificarJWT, async (req, res) => {
+  if (!_webauthn) { const e = _wa503(); return res.status(e.status).json({ error: e.error }) }
+  try {
+    const { deviceName } = z.object({
+      deviceName: z.string().min(2).max(60).optional(),
+    }).parse({ deviceName: req.body?.deviceName })
+    const stored = _webauthnChallengeStore.get(`reg:${req.user.sub}`)
+    if (!stored || stored.exp < Date.now()) return res.status(400).json({ error: 'Challenge expirado. Reintenta.' })
+    _webauthnChallengeStore.delete(`reg:${req.user.sub}`)
+
+    const verification = await _webauthn.verifyRegistrationResponse({
+      response: req.body,
+      expectedChallenge: stored.challenge,
+      expectedOrigin:    RP_ORIGIN,
+      expectedRPID:      RP_ID,
+      requireUserVerification: true,
+    })
+    if (!verification.verified || !verification.registrationInfo) {
+      return res.status(401).json({ error: 'Verificación WebAuthn falló.' })
+    }
+    const { credential, credentialBackedUp } = verification.registrationInfo
+    await prisma.webAuthnCredential.create({
+      data: {
+        empleadoId:     req.user.sub,
+        credentialId:   credential.id,
+        publicKey:      Buffer.from(credential.publicKey).toString('base64url'),
+        counter:        BigInt(credential.counter ?? 0),
+        transports:     credential.transports ?? [],
+        deviceName:     deviceName ?? null,
+        backupEligible: !!credentialBackedUp,
+      },
+    })
+    auditReq('auth:webauthn_registered', req, { deviceName, backupEligible: !!credentialBackedUp })
+    res.status(201).json({ ok: true, deviceName: deviceName ?? null })
+  } catch (e) {
+    console.error('[WEBAUTHN reg/verify]', e.message)
+    res.status(500).json({ error: 'Error verificando registro.' })
+  }
+})
+
+// 3) Login: genera options para autenticación. Email opcional (passkey discoverable).
+app.post('/api/auth/webauthn/login/options', loginLimiter, async (req, res) => {
+  if (!_webauthn) { const e = _wa503(); return res.status(e.status).json({ error: e.error }) }
+  try {
+    const { email } = z.object({ email: z.string().email().optional() }).parse(req.body ?? {})
+    let allowCredentials = []
+    let empleadoId = null
+    if (email) {
+      const emp = await prisma.empleado.findUnique({
+        where:   { email },
+        include: { webauthnCredentials: { select: { credentialId: true, transports: true } } },
+      })
+      if (emp) {
+        empleadoId = emp.id
+        allowCredentials = emp.webauthnCredentials.map(c => ({ id: c.credentialId, transports: c.transports }))
+      }
+    }
+    const options = await _webauthn.generateAuthenticationOptions({
+      rpID: RP_ID,
+      allowCredentials,
+      userVerification: 'required',
+    })
+    const sessionKey = `auth:${crypto.randomUUID()}`
+    _webauthnChallengeStore.set(sessionKey, { challenge: options.challenge, empleadoId, exp: Date.now() + WEBAUTHN_CHALLENGE_TTL_MS })
+    res.json({ ...options, sessionKey })
+  } catch (e) {
+    console.error('[WEBAUTHN auth/options]', e.message)
+    res.status(500).json({ error: 'Error generando opciones.' })
+  }
+})
+
+// 4) Login: verifica assertion. Si OK, completa sesión como completarLogin.
+app.post('/api/auth/webauthn/login/verify', loginLimiter, async (req, res) => {
+  if (!_webauthn) { const e = _wa503(); return res.status(e.status).json({ error: e.error }) }
+  try {
+    const { sessionKey, rememberMe } = z.object({
+      sessionKey: z.string().min(1),
+      rememberMe: z.boolean().optional().default(false),
+    }).parse({ sessionKey: req.body?.sessionKey, rememberMe: req.body?.rememberMe })
+
+    const stored = _webauthnChallengeStore.get(sessionKey)
+    if (!stored || stored.exp < Date.now()) return res.status(400).json({ error: 'Challenge expirado.' })
+    _webauthnChallengeStore.delete(sessionKey)
+
+    const credentialId = req.body?.id
+    const cred = await prisma.webAuthnCredential.findUnique({
+      where:   { credentialId },
+      include: { empleado: { include: { roles: { where: { activo: true } } } } },
+    })
+    if (!cred) return res.status(404).json({ error: 'Credencial no reconocida.' })
+    if (stored.empleadoId && stored.empleadoId !== cred.empleadoId) {
+      return res.status(401).json({ error: 'Credencial no asociada a este usuario.' })
+    }
+
+    const verification = await _webauthn.verifyAuthenticationResponse({
+      response: req.body,
+      expectedChallenge: stored.challenge,
+      expectedOrigin:    RP_ORIGIN,
+      expectedRPID:      RP_ID,
+      credential: {
+        id:        cred.credentialId,
+        publicKey: Buffer.from(cred.publicKey, 'base64url'),
+        counter:   Number(cred.counter),
+        transports:cred.transports,
+      },
+      requireUserVerification: true,
+    })
+    if (!verification.verified) {
+      auditReq('auth:webauthn_fail', req, { empleadoId: cred.empleadoId })
+      return res.status(401).json({ error: 'Assertion falló verificación.' })
+    }
+    // Replay protection: counter debe ser estrictamente mayor (o ambos 0).
+    const newCounter = BigInt(verification.authenticationInfo.newCounter ?? 0)
+    if (cred.counter > 0n && newCounter <= cred.counter) {
+      auditReq('auth:webauthn_replay_suspect', req, { empleadoId: cred.empleadoId, oldCounter: String(cred.counter), newCounter: String(newCounter) })
+      return res.status(401).json({ error: 'Counter regresivo — posible clon de credencial.' })
+    }
+    await prisma.webAuthnCredential.update({
+      where: { id: cred.id },
+      data:  { counter: newCounter, lastUsedAt: new Date() },
+    })
+    auditReq('auth:login_success', req, { via: 'webauthn' }, { userId: cred.empleadoId, userName: cred.empleado.nombre })
+    const payload = await completarLogin(cred.empleado, req, res, rememberMe)
+    res.json(payload)
+  } catch (e) {
+    console.error('[WEBAUTHN auth/verify]', e.message)
+    res.status(500).json({ error: 'Error verificando login.' })
+  }
+})
+
+// 5) Listado / borrado de credenciales del usuario.
+app.get('/api/auth/webauthn/credentials', verificarJWT, async (req, res) => {
+  try {
+    const creds = await prisma.webAuthnCredential.findMany({
+      where:  { empleadoId: req.user.sub },
+      select: { id: true, deviceName: true, transports: true, backupEligible: true, createdAt: true, lastUsedAt: true },
+      orderBy:{ createdAt: 'desc' },
+    })
+    res.json({ data: creds, count: creds.length })
+  } catch { res.status(500).json({ error: 'Error.' }) }
+})
+
+app.delete('/api/auth/webauthn/credentials/:id', verificarJWT, async (req, res) => {
+  try {
+    const r = await prisma.webAuthnCredential.deleteMany({
+      where: { id: req.params.id, empleadoId: req.user.sub },
+    })
+    if (r.count === 0) return res.status(404).json({ error: 'Credencial no encontrada.' })
+    auditReq('auth:webauthn_revoked', req, { credentialId: req.params.id })
+    res.status(204).end()
+  } catch { res.status(500).json({ error: 'Error.' }) }
 })
 
 app.patch('/api/auth/me/password', verificarJWT, async (req, res) => {
@@ -4228,13 +4475,48 @@ app.get('/api/asistencia', verificarJWT, async (req, res) => {
   }
 });
 
+// M9: cooldown anti-fraude — un empleado no puede registrar dos eventos consecutivos
+// en menos de 2 minutos (evita button-spam + asegura intención humana).
+const ASISTENCIA_COOLDOWN_MS = 2 * 60 * 1000
+
 app.post('/api/asistencia', verificarJWT, async (req, res) => {
   try {
     const data = asistenciaSchema.parse(req.body);
     if (!puedeGestionarAsistencia(req) && data.empleadoId !== req.user.sub) {
       return res.status(403).json({ error: 'Solo puedes registrar tu propia asistencia.' })
     }
-    // Prevent duplicate Entrada on the same calendar day
+
+    // M9: validar transición de estado y cooldown contra última asistencia.
+    const ultima = await prisma.asistencia.findFirst({
+      where:   { empleadoId: data.empleadoId },
+      orderBy: { fechaHora: 'desc' },
+    })
+    if (ultima) {
+      const elapsedMs = Date.now() - new Date(ultima.fechaHora).getTime()
+      if (elapsedMs < ASISTENCIA_COOLDOWN_MS) {
+        const restante = Math.ceil((ASISTENCIA_COOLDOWN_MS - elapsedMs) / 1000)
+        return res.status(429).json({
+          error: `Espera ${restante}s antes de registrar otra asistencia.`,
+          code:  'ASISTENCIA_COOLDOWN',
+        })
+      }
+      // Transición correcta: Entrada → Salida → Entrada → ...
+      if (ultima.tipo === data.tipo) {
+        return res.status(409).json({
+          error: `No puedes registrar ${data.tipo} consecutiva. Falta registrar ${data.tipo === 'Entrada' ? 'Salida' : 'Entrada'} anterior.`,
+          code:  'ASISTENCIA_TRANSICION_INVALIDA',
+          ultimaEn: ultima.fechaHora,
+        })
+      }
+    } else if (data.tipo === 'Salida') {
+      // Primera asistencia del empleado nunca puede ser Salida.
+      return res.status(409).json({
+        error: 'No existe Entrada previa para registrar Salida.',
+        code:  'ASISTENCIA_SIN_ENTRADA',
+      })
+    }
+
+    // Prevent duplicate Entrada on the same calendar day (defensa adicional).
     if (data.tipo === 'Entrada') {
       const hoy = new Date();
       const inicioDia = new Date(hoy.getFullYear(), hoy.getMonth(), hoy.getDate());
@@ -6100,7 +6382,9 @@ const lineaPOSCatalogoSchema = z.object({
 
 const pagoMetodoSchema = z.object({
   metodo: z.enum(['Efectivo', 'Transferencia', 'Tarjeta', 'Cheque', 'Otro']),
-  monto:  z.number().positive(),
+  // M4: tope mínimo defensivo. positive() ya rechaza 0/negativo pero acepta 1e-12;
+  // 0.01 es 1 centavo, el mínimo monetario real en DOP/USD. Bloquea pagos basura.
+  monto:  z.number().min(0.01, 'Monto debe ser ≥ RD$0.01.').max(10_000_000, 'Monto excesivo.'),
   refer:  z.string().max(60).optional().nullable(),
 })
 
@@ -7129,14 +7413,42 @@ async function prerenderPdfsBatch() {
           },
         })
         if (!f || f.deletedAt) return
+        // M8: snapshot del timestamp de invalidación ANTES de rendrir.
+        const invalidatedAtBefore = f.pdfInvalidatedAt
         const data    = await buildPdfData(f)
         const tipo    = f.esCotizacion ? 'cotizacion' : 'factura'
         const html    = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
         const pdfBuf  = await generarPdfDocumento(html)
-        const url     = await subirPdfAlStorage(pdfBuf, f)
+
+        // M8: re-check pdfInvalidatedAt — si cambió mid-flight, otra ruta mutó
+        // la factura y nuestro PDF es OBSOLETO. Descartar sin subir/persistir.
+        const reFetch = await prisma.factura.findUnique({
+          where: { id: f.id },
+          select: { pdfInvalidatedAt: true, deletedAt: true },
+        })
+        if (reFetch?.deletedAt) return
+        if (reFetch?.pdfInvalidatedAt && (!invalidatedAtBefore || reFetch.pdfInvalidatedAt > invalidatedAtBefore)) {
+          console.warn(`[PDF CRON] ${c.noFactura} invalidated mid-render — descartando.`)
+          return
+        }
+
+        const url = await subirPdfAlStorage(pdfBuf, f)
         if (url) {
           // Render OK: pdfUrl set, attempts no se incrementa (queda donde estaba).
-          await prisma.factura.update({ where: { id: f.id }, data: { pdfUrl: url } })
+          // updateMany con WHERE pdfInvalidatedAt sin cambio -> CAS final atómico.
+          const r = await prisma.factura.updateMany({
+            where: {
+              id: f.id,
+              OR: [
+                { pdfInvalidatedAt: null },
+                { pdfInvalidatedAt: invalidatedAtBefore ?? new Date(0) },
+              ],
+            },
+            data: { pdfUrl: url },
+          })
+          if (r.count === 0) {
+            console.warn(`[PDF CRON] ${c.noFactura} CAS rechazó update — invalidación tardía.`)
+          }
           ok++
         } else {
           // Upload falló pero el render OK - cuenta como fail e incrementa attempts.
@@ -7179,6 +7491,150 @@ async function prerenderPdfsBatch() {
 
 // */5 * * * *  →  cada 5 min en TZ de RD.
 cron.schedule('*/5 * * * *', prerenderPdfsBatch, { timezone: 'America/Santo_Domingo' })
+
+// ─── Reconciliación nocturna stock vs movimientos (sugerencia #2) ────────────
+// 03:00 AM RD: detecta drift entre Producto.stockActual y la suma neta de
+// MovimientoInventario (entradas - salidas). Registra en AuditCaja para que
+// el panel del owner muestre los productos que necesitan re-conteo físico.
+async function reconciliarStockNocturno() {
+  const t0 = Date.now()
+  try {
+    const drifts = await prisma.$queryRaw`
+      WITH movs AS (
+        SELECT "productoId",
+          SUM(CASE WHEN tipo = 'Entrada' THEN cantidad ELSE 0 END) AS entradas,
+          SUM(CASE WHEN tipo = 'Salida'  THEN cantidad ELSE 0 END) AS salidas
+        FROM "MovimientoInventario"
+        GROUP BY "productoId"
+      )
+      SELECT p.id, p.sku, p.nombre, p."stockActual" AS stock_actual,
+             COALESCE(m.entradas, 0) - COALESCE(m.salidas, 0) AS esperado,
+             p."stockActual" - (COALESCE(m.entradas, 0) - COALESCE(m.salidas, 0)) AS drift
+      FROM "Producto" p
+      LEFT JOIN movs m ON m."productoId" = p.id
+      WHERE p."tipoItem" = 'ARTICULO'
+        AND p."stockActual" <> COALESCE(m.entradas, 0) - COALESCE(m.salidas, 0)
+    `
+    for (const d of drifts) {
+      await prisma.auditCaja.create({ data: {
+        tipo:    'stock_reconciliation_drift',
+        detalle: `Producto ${d.sku} (${d.nombre}): stockActual=${d.stock_actual}, esperado=${d.esperado}, drift=${d.drift}`,
+      }}).catch(() => {})
+    }
+    console.log(`[STOCK RECON] ${drifts.length} drifts detectados en ${Date.now() - t0}ms.`)
+  } catch (e) {
+    console.error('[STOCK RECON]', e.message)
+  }
+}
+cron.schedule('0 3 * * *', reconciliarStockNocturno, { timezone: 'America/Santo_Domingo' })
+
+// ─── Anomalía descuentos por cajero (sugerencia #3) ──────────────────────────
+// 03:30 AM RD: calcula promedio + stddev global de descuentos en últimos 30
+// días. Cualquier cajero con avg > mean + 2σ se flagea para revisión.
+async function detectarAnomaliaDescuentos() {
+  const t0 = Date.now()
+  try {
+    const desde = new Date(Date.now() - 30 * 86_400_000)
+    const overall = await prisma.$queryRaw`
+      SELECT AVG("descPct") AS m, COALESCE(STDDEV("descPct"), 0) AS s
+      FROM "AuditCaja"
+      WHERE tipo IN ('descuento_pin','descuento_rechazado') AND "createdAt" >= ${desde}
+    `
+    const gMean = Number(overall[0]?.m ?? 0)
+    const gStd  = Number(overall[0]?.s ?? 0)
+    const threshold = gMean + 2 * gStd
+    if (threshold <= 0) {
+      console.log('[ANOMALIA DESC] sin datos suficientes (umbral=0).')
+      return
+    }
+    const rows = await prisma.$queryRaw`
+      SELECT a."empleadoId", COALESCE(e.nombre, 'desconocido') AS nombre,
+             COUNT(*)::int AS ventas, AVG(a."descPct") AS avg_desc,
+             MAX(a."descPct") AS max_desc
+      FROM "AuditCaja" a
+      LEFT JOIN "Empleado" e ON e.id = a."empleadoId"
+      WHERE a.tipo IN ('descuento_pin','descuento_rechazado')
+        AND a."createdAt" >= ${desde}
+        AND a."empleadoId" IS NOT NULL
+      GROUP BY a."empleadoId", e.nombre
+      HAVING COUNT(*) >= 5 AND AVG(a."descPct") > ${threshold}
+    `
+    for (const r of rows) {
+      await prisma.auditCaja.create({ data: {
+        tipo:       'anomalia_descuentos',
+        empleadoId: Number(r.empleadoId),
+        descPct:    Number(r.avg_desc),
+        detalle:    `Cajero ${r.nombre} avg descuento ${Number(r.avg_desc).toFixed(2)}% (umbral ${threshold.toFixed(2)}%) en ${r.ventas} ventas últimos 30 días. Max=${Number(r.max_desc).toFixed(2)}%.`,
+      }}).catch(() => {})
+    }
+    console.log(`[ANOMALIA DESC] ${rows.length} cajeros anómalos. Umbral 2σ=${threshold.toFixed(2)}%. Tiempo ${Date.now() - t0}ms.`)
+  } catch (e) {
+    console.error('[ANOMALIA DESC]', e.message)
+  }
+}
+cron.schedule('30 3 * * *', detectarAnomaliaDescuentos, { timezone: 'America/Santo_Domingo' })
+
+// ─── Alerta NCF vencimiento / agotamiento (sugerencia #5) ────────────────────
+// 04:00 AM RD: revisa ConfiguracionNCF y alerta cuando una secuencia tiene
+// < 100 NCF disponibles O vence en menos de 30 días. Owner ve en AuditCaja.
+async function alertaNCFVencimiento() {
+  const t0 = Date.now()
+  try {
+    const configs = await prisma.configuracionNCF.findMany({
+      where:  { activo: true },
+      select: { id: true, prefijo: true, tipoNcf: true, secuenciaActual: true, limite: true, vencimiento: true },
+    })
+    let alertas = 0
+    for (const c of configs) {
+      const restante = Number(c.limite) - Number(c.secuenciaActual)
+      const venceEnDias = c.vencimiento
+        ? Math.floor((new Date(c.vencimiento).getTime() - Date.now()) / 86_400_000)
+        : null
+      const lowStock  = restante < 100
+      const expiring  = venceEnDias !== null && venceEnDias < 30
+      if (lowStock || expiring) {
+        await prisma.auditCaja.create({ data: {
+          tipo:    'ncf_alerta',
+          detalle: `NCF ${c.tipoNcf} (${c.prefijo}): ${restante} secuencias restantes${venceEnDias !== null ? `, vence en ${venceEnDias} día(s)` : ''}. ${lowStock ? '[AGOTAMIENTO]' : ''} ${expiring ? '[VENCIMIENTO]' : ''}`.trim(),
+        }}).catch(() => {})
+        alertas++
+      }
+    }
+    console.log(`[NCF ALERTA] ${alertas}/${configs.length} secuencias en alerta. Tiempo ${Date.now() - t0}ms.`)
+  } catch (e) {
+    console.error('[NCF ALERTA]', e.message)
+  }
+}
+cron.schedule('0 4 * * *', alertaNCFVencimiento, { timezone: 'America/Santo_Domingo' })
+
+// ─── Auto-rotación recordatorio backup codes (sugerencia #4) ─────────────────
+// 04:30 AM RD: empleados con 2FA + ≤2 backup codes -> registra en auditoría
+// para que el owner les recuerde rotar. Frontend muestra banner via /api/auth/me.
+async function recordarRotacionBackupCodes() {
+  const t0 = Date.now()
+  try {
+    const empleados = await prisma.empleado.findMany({
+      where:  { twoFactorEnabled: true, deletedAt: null },
+      select: { id: true, nombre: true, email: true, backupCodes: true },
+    })
+    let recordatorios = 0
+    for (const emp of empleados) {
+      const count = Array.isArray(emp.backupCodes) ? emp.backupCodes.length : 0
+      if (count <= 2) {
+        await prisma.auditCaja.create({ data: {
+          tipo:       'backup_codes_low',
+          empleadoId: emp.id,
+          detalle:    `Empleado ${emp.nombre} (${emp.email}) tiene ${count} backup code(s) restantes. Recomendar rotación.`,
+        }}).catch(() => {})
+        recordatorios++
+      }
+    }
+    console.log(`[BACKUP CODES] ${recordatorios}/${empleados.length} empleados con códigos bajos. Tiempo ${Date.now() - t0}ms.`)
+  } catch (e) {
+    console.error('[BACKUP CODES]', e.message)
+  }
+}
+cron.schedule('30 4 * * *', recordarRotacionBackupCodes, { timezone: 'America/Santo_Domingo' })
 
 
 // ─── Server ───────────────────────────────────────────────────────────────────
@@ -7354,8 +7810,27 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "empleadoId"          INTEGER`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "verifyHash"          TEXT`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pdfRenderAttempts"   INTEGER NOT NULL DEFAULT 0`)
+    // M8: timestamp para CAS anti-stale en cron PDF.
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pdfInvalidatedAt"    TIMESTAMP`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_empleadoId_idx" ON "Factura"("empleadoId")`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_verifyHash_idx" ON "Factura"("verifyHash")`)
+    // WebAuthn credentials table
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "WebAuthnCredential" (
+        "id" TEXT PRIMARY KEY,
+        "empleadoId" INTEGER NOT NULL REFERENCES "Empleado"("id") ON DELETE CASCADE,
+        "credentialId" TEXT NOT NULL UNIQUE,
+        "publicKey" TEXT NOT NULL,
+        "counter" BIGINT NOT NULL DEFAULT 0,
+        "transports" TEXT[] NOT NULL DEFAULT '{}',
+        "deviceName" TEXT,
+        "backupEligible" BOOLEAN NOT NULL DEFAULT false,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "lastUsedAt" TIMESTAMP
+      )
+    `)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "WebAuthnCredential_empleadoId_idx" ON "WebAuthnCredential"("empleadoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "WebAuthnCredential_lastUsedAt_idx" ON "WebAuthnCredential"("lastUsedAt")`)
     try {
       await prisma.$executeRawUnsafe(`DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Factura_empleadoId_fkey') THEN

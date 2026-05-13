@@ -118,7 +118,9 @@ export function AuthProvider({ children }) {
     // 2FA required — token not yet issued, csrf comes after TOTP step
     if (json.requires2FA) return json
 
-    setCsrfToken(json.csrfToken ?? null)
+    // M2: backend ya NO eco el csrf en JSON. Lo leemos del endpoint dedicado
+    // que requiere session cookie httpOnly válida.
+    await fetchCsrfToken()
     setUser(json)
     return json
   }
@@ -131,9 +133,19 @@ export function AuthProvider({ children }) {
     })
     const json = await r.json()
     if (!r.ok) throw new Error(json.error ?? 'PIN inválido')
-    setCsrfToken(json.csrfToken ?? null)
+    await fetchCsrfToken()
     setUser(json)
     return json
+  }
+
+  async function fetchCsrfToken() {
+    try {
+      const cr = await fetch(`${BASE}/api/auth/csrf`, { credentials: 'include' })
+      if (cr.ok) {
+        const { csrfToken } = await cr.json()
+        setCsrfToken(csrfToken)
+      }
+    } catch {}
   }
 
   async function refreshUser() {

@@ -108,36 +108,64 @@ model Rol {
 }
 
 model Empleado {
-  id               Int                        @id @default(autoincrement())
-  nombre           String
-  cargo            String
-  email            String                     @unique
-  passwordHash     String                     @default("")
-  bloqueado        Boolean                    @default(false)
-  permisosExtra    Json                       @default("[]")
-  twoFactorSecret  String?
-  twoFactorEnabled Boolean                    @default(false)
+  id                  Int                        @id @default(autoincrement())
+  nombre              String
+  cargo               String
+  email               String                     @unique
+  passwordHash        String                     @default("")
+  bloqueado           Boolean                    @default(false)
+  permisosExtra       Json                       @default("[]")
+  twoFactorSecret     String?
+  twoFactorEnabled    Boolean                    @default(false)
   // Hashes bcrypt de 8 códigos de respaldo TOTP (un-solo-uso). Si pierde el
   // dispositivo TOTP, ingresa uno y se elimina del array. Se generan al
   // habilitar 2FA y se muestran UNA SOLA VEZ en plano al user.
-  backupCodes      Json                       @default("[]")
-  creadoEn         DateTime                   @default(now())
-  deletedAt        DateTime?
-  asistencias      Asistencia[]
-  ordenes          OrdenInstalacion[]
-  ordenesTrabajo   OrdenTrabajo[]
-  sessions         SessionToken[]
-  fingerprints     DeviceFingerprint[]
-  roles            Rol[]
-  carritoTemp      CarritoTemp?
-  ticketsTaller    TicketTaller[]
-  fotosOT          OrdenFoto[]
-  incidencias      IncidenciaReconciliacion[]
-  timelineEvents   ActivoTimeline[]
-  facturas         Factura[]
+  backupCodes         Json                       @default("[]")
+  creadoEn            DateTime                   @default(now())
+  deletedAt           DateTime?
+  asistencias         Asistencia[]
+  ordenes             OrdenInstalacion[]
+  ordenesTrabajo      OrdenTrabajo[]
+  sessions            SessionToken[]
+  fingerprints        DeviceFingerprint[]
+  roles               Rol[]
+  carritoTemp         CarritoTemp?
+  ticketsTaller       TicketTaller[]
+  fotosOT             OrdenFoto[]
+  incidencias         IncidenciaReconciliacion[]
+  timelineEvents      ActivoTimeline[]
+  facturas            Factura[]
+  webauthnCredentials WebAuthnCredential[]
 
   @@index([nombre])
   @@index([deletedAt])
+}
+
+// Credenciales WebAuthn (passkeys) por empleado. Pensado primariamente para
+// sistema:owner como reemplazo phishing-resistant del TOTP. Multi-credential
+// permite registrar laptop + móvil + YubiKey: cualquiera completa el login.
+model WebAuthnCredential {
+  id             String    @id @default(uuid())
+  empleadoId     Int
+  // Base64URL del rawId que retorna el authenticator (la authenticator-side ID).
+  credentialId   String    @unique
+  // Base64URL de la public key COSE encoded (verificada en cada assertion).
+  publicKey      String
+  // Counter monotónico — replay-protection. Si recibimos counter ≤ almacenado,
+  // sospechamos clon del credencial y rechazamos el login.
+  counter        BigInt    @default(0)
+  // Transports posibles ('usb', 'nfc', 'ble', 'internal', 'hybrid').
+  transports     String[]  @default([])
+  // Friendly name editable por el user ("MacBook Touch ID", "YubiKey azul").
+  deviceName     String?
+  // Backup eligibility: passkey replicable cross-device (iCloud, Bitwarden, 1Password).
+  backupEligible Boolean   @default(false)
+  createdAt      DateTime  @default(now())
+  lastUsedAt     DateTime?
+  empleado       Empleado  @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  @@index([empleadoId])
+  @@index([lastUsedAt])
 }
 
 model SessionToken {
@@ -650,6 +678,9 @@ model Factura {
   // Contador de intentos de render PDF fallidos. Cron lo usa para backoff
   // exponencial y abort a partir del 5to fallo (evita romper batch entero).
   pdfRenderAttempts Int            @default(0)
+  // M8: timestamp de la última invalidación del cache PDF. El cron compara este
+  // valor pre/post render — si cambia mid-flight, descarta el render obsoleto.
+  pdfInvalidatedAt  DateTime?
   cliente           Cliente        @relation(fields: [clienteId], references: [id], onDelete: Restrict)
   orden             OrdenTrabajo?  @relation(fields: [ordenId], references: [id], onDelete: SetNull)
   empleado          Empleado?      @relation(fields: [empleadoId], references: [id], onDelete: SetNull)
