@@ -712,16 +712,13 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
   const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : IDLE_TTL_MS
   const jwtTTL    = rememberMe ? '30d' : '30m'
   const expiresAt = new Date(Date.now() + ttl)
-  // Single-session enforcement: revoke all prior sessions de este empleado.
-  // Excepción: el Owner (Propietario) puede tener varias sesiones activas
-  // (laptop + tablet + móvil) sin invalidarse entre sí. Detectamos por nombre
-  // de rol; soporta variantes "Propietario" / "Owner".
-  const esOwner = (empleado.roles ?? []).some(r => /^(propietario|owner)$/i.test(r.nombre ?? ''))
-  const revokePromise = esOwner
-    ? Promise.resolve()  // skip wipe
-    : prisma.sessionToken.deleteMany({ where: { empleadoId: empleado.id } })
-  return revokePromise.then(() =>
-  prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } })).then(() => {
+  // Multi-session por default: cada empleado puede tener sesiones activas en
+  // varios dispositivos (PC oficina, laptop campo, tablet POS, móvil). El
+  // endpoint DELETE /api/auth/me/sessions sigue disponible para que el user
+  // cierre manualmente todas sus sesiones desde Mi Cuenta. Ver propuesta de
+  // arquitectura en CONTEXT.md para evolución futura (device fingerprint,
+  // límites por rol, modo kiosco).
+  return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } }).then(() => {
     const permisos = [...new Set([
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
       ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
@@ -3825,6 +3822,18 @@ app.delete('/api/auth/me/sessions/:jti', verificarJWT, async (req, res) => {
     auditReq('auth:session_revoked', req, { jti })
     res.status(204).end()
   } catch { res.status(500).json({ error: 'Error cerrando sesión.' }) }
+})
+
+// Bulk "Cerrar todas mis otras sesiones" — preserva la sesión actual del user.
+// Útil cuando perdió un dispositivo o sospecha de acceso no autorizado.
+app.delete('/api/auth/me/sessions', verificarJWT, async (req, res) => {
+  try {
+    const r = await prisma.sessionToken.deleteMany({
+      where: { empleadoId: req.user.sub, jti: { not: req.user.jti } },
+    })
+    auditReq('auth:sessions_revoked_bulk', req, { count: r.count })
+    res.json({ ok: true, count: r.count })
+  } catch { res.status(500).json({ error: 'Error cerrando sesiones.' }) }
 })
 
 // ─── Admin — Global Session Management (Owner only) ──────────────────────────
