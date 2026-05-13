@@ -623,7 +623,11 @@ export default function PanelFacturas({ highlightId = null }) {
                       {selected.has(f.id) ? <CheckSquare size={15} className="text-blue-400" /> : <Square size={15} />}
                     </button>
                   </td>
-                  <td className="px-4 py-3 font-mono text-xs text-slate-300 whitespace-nowrap">{f.noFactura}</td>
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-mono font-bold border bg-blue-600/15 text-blue-300 border-blue-600/40 tracking-wide shadow-sm shadow-blue-600/10">
+                      {f.noFactura}
+                    </span>
+                  </td>
                   <td className="px-4 py-3">
                     {f.ncf
                       ? <span className="font-mono text-xs text-blue-300 bg-blue-600/10 border border-blue-600/20 px-2 py-0.5 rounded">{f.ncf}</span>

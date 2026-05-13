@@ -1,12 +1,30 @@
-import { createContext, useContext, useState, useEffect } from 'react'
+import { createContext, useContext, useState, useEffect, useRef } from 'react'
 import { toast } from 'sonner'
 import { setCsrfToken } from '../utils/api'
 
 const BASE = import.meta.env.VITE_API_URL || ''
 const AuthContext = createContext(null)
 
+// Llaves de localStorage que se limpian al forzar logout. Cualquier dato cacheado
+// del usuario anterior NO debe sobrevivir al cambio de sesión (multi-tenant safe).
+const LS_KEYS_TO_PURGE = [
+  'cart',                  // carrito tienda legacy
+  'acr_pos_cart',          // carrito POS persistente
+  'acr_backend_version',   // version-sync cache
+  'acr_inv_view',          // pref vista inventario
+  'acr_cot_view',          // pref vista cotizaciones
+]
+
+// Evita disparos múltiples del flujo de logout en una misma ronda (varios 401
+// paralelos no deben multiplicar toasts ni redirects).
+let _logoutInFlight = false
+
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(undefined)
+  // Ref espejo para que el handler de 'auth:logout' (closure) lea el valor más
+  // reciente de `user` sin depender de re-suscripción del listener.
+  const userRef = useRef(undefined)
+  userRef.current = user
 
   useEffect(() => {
     fetch(`${BASE}/api/auth/me`, { credentials: 'include' })
@@ -14,10 +32,6 @@ export function AuthProvider({ children }) {
       .then(async u => {
         setUser(u)
         if (u) {
-          // Restore in-memory CSRF token after hard reload.
-          // /api/auth/csrf reads the csrf cookie server-side and echoes it —
-          // works cross-origin because the browser sends the cookie even though
-          // document.cookie cannot read third-party cookies (CHIPS / ITP).
           try {
             const cr = await fetch(`${BASE}/api/auth/csrf`, { credentials: 'include' })
             if (cr.ok) {
@@ -29,20 +43,51 @@ export function AuthProvider({ children }) {
       })
       .catch(() => setUser(null))
 
-    const handler = (e) => {
-      const wasLoggedIn = user !== null && user !== undefined
+    function purgeClientState() {
       setUser(null)
       setCsrfToken(null)
-      try { localStorage.removeItem('cart') } catch {}
-      if (wasLoggedIn) {
+      for (const k of LS_KEYS_TO_PURGE) {
+        try { localStorage.removeItem(k) } catch {}
+      }
+      // sessionStorage también — algunas vistas guardan filtros ahí.
+      try { sessionStorage.clear() } catch {}
+    }
+
+    function handler(e) {
+      if (_logoutInFlight) return
+      _logoutInFlight = true
+      // Lee el user MÁS RECIENTE via ref (closure fresh). Antes leíamos del
+      // closure inicial -> wasLoggedIn salía false si el evento llegaba en la
+      // primera render -> no toast no redirect.
+      const wasLoggedIn = userRef.current !== null && userRef.current !== undefined
+      purgeClientState()
+
+      // Rutas públicas que NO deben redirigir (portal cliente, tracking, verify).
+      const path = window.location.pathname
+      const isPublic = path.startsWith('/login') || path.startsWith('/portal')
+                    || path.startsWith('/track') || path.startsWith('/verify')
+                    || path.startsWith('/tienda') || path.startsWith('/cotizacion-dgii')
+
+      if (wasLoggedIn || !isPublic) {
+        const reason = e?.detail?.reason ?? 'expirada'
         toast.error('Sesión cerrada por seguridad', {
-          description: 'Tu sesión expiró o fue cerrada por inicio en otro dispositivo.',
-          duration: 6000,
+          description: reason === 'csrf_persistente'
+            ? 'Tu sesión ya no es válida en el servidor. Por favor inicia sesión de nuevo.'
+            : reason === 'csrf_bootstrap_fail'
+              ? 'No se pudo refrescar el token CSRF. Reautenticación requerida.'
+              : 'Tu sesión expiró, fue revocada o el usuario fue eliminado.',
+          duration: 5000,
         })
-        if (!window.location.pathname.startsWith('/login') && !window.location.pathname.startsWith('/portal') && !window.location.pathname.startsWith('/track')) {
-          setTimeout(() => { window.location.href = '/login' }, 800)
+        if (!isPublic) {
+          // Pequeño delay para que el toast sea visible antes del reload.
+          setTimeout(() => {
+            // location.replace evita que el botón "atrás" vuelva a la vista privada.
+            window.location.replace('/login')
+          }, 900)
         }
       }
+      // Permite re-disparo después de cooldown (en caso de race en SPA durante logout manual).
+      setTimeout(() => { _logoutInFlight = false }, 2500)
     }
     window.addEventListener('auth:logout', handler)
     return () => window.removeEventListener('auth:logout', handler)
@@ -102,6 +147,8 @@ export function AuthProvider({ children }) {
     } catch {}
     setCsrfToken(null)
     setUser(null)
+    for (const k of LS_KEYS_TO_PURGE) { try { localStorage.removeItem(k) } catch {} }
+    try { sessionStorage.clear() } catch {}
   }
 
   function tienePermiso(permiso) {

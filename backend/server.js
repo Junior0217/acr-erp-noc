@@ -372,7 +372,7 @@ function csrfMiddleware(req, res, next) {
   const header = req.headers['x-csrf-token']
   const cookie = req.cookies?.csrf
   if (!header || !cookie || header !== cookie) {
-    return res.status(403).json({ error: 'CSRF token inválido.' })
+    return res.status(403).json({ error: 'CSRF token inválido.', code: 'CSRF_INVALID' })
   }
   next()
 }
@@ -600,8 +600,12 @@ async function verificarJWT(req, res, next) {
     }
     const session = await prisma.sessionToken.findUnique({ where: { jti: payload.jti } });
     if (!session || session.expiresAt < new Date()) {
-      res.clearCookie('token');
-      return res.status(401).json({ error: 'Sesión expirada.' });
+      // Limpia AMBAS cookies para que el browser quede 100% deslogueado.
+      // Sin esto, la cookie csrf vivía huérfana y el siguiente mutating request
+      // pasaba CSRF pero volvía a fallar en verificarJWT -> bucle de 401.
+      res.clearCookie('token')
+      res.clearCookie('csrf')
+      return res.status(401).json({ error: 'Sesión expirada.', code: 'SESSION_EXPIRED' });
     }
     req.user = payload;
 
@@ -3192,6 +3196,9 @@ app.get('/api/productos/:id/series', verificarJWT, async (req, res) => {
 })
 
 // Mover cotización entre etapas del pipeline (Kanban).
+// Si la etapa nueva es 'Perdida' -> libera inmediatamente las reservas de stock
+// asociadas (en lugar de esperar las 72h del TTL). Stock vuelve a estar
+// disponible en el POS al instante para evitar bloqueo de inventario activo.
 app.patch('/api/cotizaciones/:id/etapa',
   verificarJWT,
   requerirPermiso('venta:ver_cotizaciones'),
@@ -3206,10 +3213,21 @@ app.patch('/api/cotizaciones/:id/etapa',
         data:  { etapaPipeline: etapa },
         select:{ id: true, etapaPipeline: true, noFactura: true },
       })
-      auditReq('cotizacion:etapa', req, { id: f.id, etapa })
-      res.json(f)
+      let reservasLiberadas = 0
+      if (etapa === 'Perdida') {
+        // Borrado físico: la reserva pierde su razón de ser, no queremos arrastrar
+        // filas zombi en queries futuras. deleteMany porque liberada=true seguiría
+        // contando para el groupBy si el filtro cambiara.
+        const r = await prisma.reservaInventario.deleteMany({ where: { facturaId: f.id } })
+        reservasLiberadas = r.count
+        if (reservasLiberadas > 0) {
+          auditReq('cotizacion:reservas_liberadas', req, { id: f.id, count: reservasLiberadas })
+        }
+      }
+      auditReq('cotizacion:etapa', req, { id: f.id, etapa, reservasLiberadas })
+      res.json({ ...f, reservasLiberadas })
     } catch (e) {
-      console.error('[PATCH ETAPA]', e.message)
+      console.error('[PATCH ETAPA]', e.code, e.message)
       res.status(500).json({ error: 'Error interno.' })
     }
   }

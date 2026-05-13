@@ -121,22 +121,32 @@ export async function apiFetch(path, options = {}) {
   checkVersionDrift(res)
 
   // Recuperación automática: si fue rechazado por CSRF, refrescar token y reintentar 1 vez.
+  // Si el reintento también falla con 403, asumimos sesión inválida (DB wipe, token revocado, etc).
   if (res.status === 403 && mutating) {
     let csrfFail = false
     try {
       const clone = res.clone()
       const j = await clone.json()
-      if (j?.error && /csrf/i.test(j.error)) csrfFail = true
+      if (j?.code === 'CSRF_INVALID' || (j?.error && /csrf/i.test(j.error))) csrfFail = true
     } catch {}
     if (csrfFail) {
       _csrfToken = null
-      await ensureCsrf()
-      if (_csrfToken) res = await doFetch()
+      const got = await ensureCsrf()
+      if (got) {
+        res = await doFetch()
+        // Si tras el refresh sigue fallando, la sesión completa está rota -> kick.
+        if (res.status === 401 || res.status === 403) {
+          window.dispatchEvent(new CustomEvent('auth:logout', { detail: { reason: 'csrf_persistente' } }))
+        }
+      } else {
+        // ensureCsrf devolvió null = /api/auth/csrf también dio 401 = sesión perdida.
+        window.dispatchEvent(new CustomEvent('auth:logout', { detail: { reason: 'csrf_bootstrap_fail' } }))
+      }
     }
   }
 
   if (res.status === 401) {
-    window.dispatchEvent(new CustomEvent('auth:logout'))
+    window.dispatchEvent(new CustomEvent('auth:logout', { detail: { reason: 'http_401' } }))
   }
   return res
 }

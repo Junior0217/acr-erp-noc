@@ -55,8 +55,10 @@ function KanbanCard({ cot, onOpen, onPDF }) {
           <GripVertical size={12} />
         </span>
         <button onClick={() => onOpen(cot)}
-          className="text-xs font-mono font-bold text-slate-200 hover:text-blue-300 truncate flex-1 text-left">
-          {cot.noFactura}
+          className="flex-1 text-left truncate">
+          <span className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-bold border bg-amber-600/15 text-amber-300 border-amber-600/40 hover:bg-amber-600/25 transition-colors">
+            {cot.noFactura}
+          </span>
         </button>
         <button onClick={() => onPDF(cot)} className="text-slate-600 hover:text-blue-400 flex-shrink-0" title="PDF">
           <Printer size={11} />
@@ -672,7 +674,11 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
                     {selected.has(c.id) ? <CheckSquare size={15} className="text-blue-400" /> : <Square size={15} />}
                   </button>
                 </td>
-                <td className={TD + ' font-mono font-medium text-slate-200'}>{c.noFactura}</td>
+                <td className="px-4 py-3 whitespace-nowrap">
+                  <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-mono font-bold border bg-amber-600/15 text-amber-300 border-amber-600/40 tracking-wide shadow-sm shadow-amber-600/10">
+                    {c.noFactura}
+                  </span>
+                </td>
                 <td className={TD}>
                   <div className="text-slate-200 leading-tight">{c.cliente?.razonSocial ?? 'Consumidor Final'}</div>
                   {c.cliente?.noCliente && <div className="text-xs text-slate-500 font-mono">{c.cliente.noCliente}</div>}
