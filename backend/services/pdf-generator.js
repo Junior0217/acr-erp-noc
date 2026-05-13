@@ -187,7 +187,10 @@ async function getBrowser() {
   _launching = puppeteer.launch(opts)
   try {
     _browser = await _launching
-    _browser.on('disconnected', () => { _browser = null })
+    _browser.on('disconnected', () => {
+      _browser = null
+      _pagePool.length = 0
+    })
     return _browser
   } finally {
     _launching = null
@@ -195,6 +198,11 @@ async function getBrowser() {
 }
 
 async function cerrarBrowser() {
+  // Cierra pages del pool primero (evita pages huérfanas que retienen RAM).
+  while (_pagePool.length) {
+    const p = _pagePool.pop()
+    try { await p.close() } catch {}
+  }
   if (_browser) {
     try { await _browser.close() } catch {}
     _browser = null
@@ -204,15 +212,81 @@ async function cerrarBrowser() {
 process.on('SIGTERM', () => { cerrarBrowser() })
 process.on('SIGINT',  () => { cerrarBrowser() })
 
-/**
- * Renderiza HTML completo a PDF.
- */
-async function generarPdfDocumento(html, opts = {}) {
+// ─── Page pool: páginas pre-warmed reutilizables ─────────────────────────────
+// Crear `page = await browser.newPage()` cuesta ~150ms (V8 init + context).
+// Mantenemos un pool de 2 páginas idle y las reusamos -> cada PDF reaprovecha
+// ~150ms. Tras usar, limpiamos contenido y devolvemos al pool. Max pool size
+// limita RAM (~40MB por page); 2 es suficiente para concurrency razonable.
+const _pagePool = []
+const POOL_SIZE = 2
+
+async function newConfiguredPage() {
   const browser = await getBrowser()
   const page = await browser.newPage()
+  // No necesitamos JS (templates son HTML+CSS puro). Apagar JS reduce:
+  //   - 200-300ms de parseo/compilación V8
+  //   - Riesgo de XSS si un template caso-borde colara script
+  await page.setJavaScriptEnabled(false)
+  // Cero requests externos: todos los assets vienen como data:URI (inlineAssets).
+  // Cualquier intent de network (analytics, fonts, etc) bloqueado en hard.
+  await page.setRequestInterception(true)
+  page.on('request', req => {
+    const url = req.url()
+    if (url.startsWith('data:') || url.startsWith('about:')) return req.continue()
+    // file:// se permite por si alguien renderiza un asset local en dev.
+    if (url.startsWith('file:')) return req.continue()
+    req.abort()
+  })
+  // Print media + viewport fijo Letter para evitar reflow al cambiar de page.pdf.
+  await page.emulateMediaType('print')
+  await page.setViewport({ width: 816, height: 1056, deviceScaleFactor: 1 }) // 8.5x11" @ 96dpi
+  return page
+}
+
+async function acquirePage() {
+  while (_pagePool.length) {
+    const p = _pagePool.pop()
+    if (p && !p.isClosed?.()) return p
+  }
+  return newConfiguredPage()
+}
+
+async function releasePage(page) {
+  if (!page || page.isClosed?.()) return
+  // Reset: navega a about:blank para liberar memoria del DOM del PDF anterior.
+  // Más rápido que cerrar + abrir.
   try {
-    await page.emulateMediaType('print')
-    await page.setContent(html, { waitUntil: 'networkidle0', timeout: 30_000 })
+    await page.goto('about:blank', { waitUntil: 'load', timeout: 5_000 })
+    if (_pagePool.length < POOL_SIZE) { _pagePool.push(page); return }
+  } catch {}
+  // Pool lleno o reset falló -> cerrar.
+  try { await page.close() } catch {}
+}
+
+// Warm-up: pre-crea pages en background tras boot del browser. No bloquea.
+async function warmupPages() {
+  try {
+    await getBrowser()
+    for (let i = 0; i < POOL_SIZE; i++) {
+      const p = await newConfiguredPage()
+      _pagePool.push(p)
+    }
+    console.log(`[PDF] page pool listo (${POOL_SIZE} páginas idle pre-warmed)`)
+  } catch (e) { console.error('[PDF WARMUP PAGES]', e.message) }
+}
+
+/**
+ * Renderiza HTML completo a PDF. Optimizado:
+ *   - Page reutilizada del pool (-150ms vs newPage)
+ *   - JS off (-200-300ms parse)
+ *   - Request interception (cero net wait)
+ *   - waitUntil: 'load' en vez de 'networkidle0' (no hay net -> 'networkidle0'
+ *     espera 500ms inútilmente)
+ */
+async function generarPdfDocumento(html, opts = {}) {
+  const page = await acquirePage()
+  try {
+    await page.setContent(html, { waitUntil: 'load', timeout: 30_000 })
     const pdf = await page.pdf({
       format:            opts.format ?? 'Letter',
       printBackground:   true,
@@ -224,8 +298,9 @@ async function generarPdfDocumento(html, opts = {}) {
     })
     return Buffer.from(pdf)
   } finally {
-    await page.close()
+    // Devuelve la page al pool en background — no bloquea la respuesta al user.
+    setImmediate(() => releasePage(page).catch(() => {}))
   }
 }
 
-module.exports = { generarPdfDocumento, cerrarBrowser, getBrowser, inlineAssets, fetchToDataUri }
+module.exports = { generarPdfDocumento, cerrarBrowser, getBrowser, inlineAssets, fetchToDataUri, warmupPages }

@@ -117,12 +117,17 @@ model Empleado {
   permisosExtra    Json               @default("[]")
   twoFactorSecret  String?
   twoFactorEnabled Boolean            @default(false)
+  // Hashes bcrypt de 8 códigos de respaldo TOTP (un-solo-uso). Si pierde el
+  // dispositivo TOTP, ingresa uno y se elimina del array. Se generan al
+  // habilitar 2FA y se muestran UNA SOLA VEZ en plano al user.
+  backupCodes      Json               @default("[]")
   creadoEn         DateTime           @default(now())
   deletedAt        DateTime?
   asistencias    Asistencia[]
   ordenes        OrdenInstalacion[]
   ordenesTrabajo OrdenTrabajo[]
   sessions       SessionToken[]
+  fingerprints   DeviceFingerprint[]
   roles          Rol[]
   carritoTemp    CarritoTemp?
   ticketsTaller  TicketTaller[]
@@ -140,12 +145,36 @@ model SessionToken {
   empleadoId Int
   userAgent  String   @default("")
   ip         String?
+  // Hash sha256 de (UA + IP /24 + Accept-Language). Vincula la sesión con un
+  // dispositivo conocido para facilitar UX (mismo device = no spammear "device
+  // desconocido"). Null en sesiones legacy.
+  deviceHash String?
   empleado   Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
   createdAt  DateTime @default(now())
   expiresAt  DateTime
 
   @@index([empleadoId])
   @@index([jti])
+  @@index([deviceHash])
+}
+
+// Dispositivos reconocidos por empleado. La PRIMERA vez que un (empleadoId, hash)
+// se ve -> nuevo device, dispara alerta "Inicio desde dispositivo desconocido".
+// Las siguientes -> renueva ultimoLogin.
+model DeviceFingerprint {
+  id          Int      @id @default(autoincrement())
+  empleadoId  Int
+  hash        String
+  label       String?  // Ej: "Chrome en Windows 11 · 192.168.1.x"
+  ip          String?
+  userAgent   String?
+  primerLogin DateTime @default(now())
+  ultimoLogin DateTime @default(now())
+  empleado    Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  @@unique([empleadoId, hash])
+  @@index([empleadoId])
+  @@index([ultimoLogin])
 }
 
 model Asistencia {

@@ -705,20 +705,77 @@ async function protegerPropietario(req, res, next) {
 // via sliding refresh in verificarJWT. RememberMe extends to 30d but keeps idle.
 const IDLE_TTL_MS = 30 * 60 * 1000
 
+// Hash de dispositivo: combina UA + bloque /24 de la IP + Accept-Language.
+// El /24 tolera DHCP rotation dentro de una misma LAN sin invalidar el fingerprint.
+// Sin Accept-Language porque puede cambiar (móvil cambia de idioma) — se omite para estabilidad.
+function computeDeviceHash(ua, ip) {
+  const ipBase = (ip ?? '').split('.').slice(0, 3).join('.') // 192.168.1.x -> 192.168.1
+  const raw    = `${ua}|${ipBase}`
+  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)
+}
+
+function labelFromUA(ua) {
+  if (!ua) return 'Desconocido'
+  const lower = ua.toLowerCase()
+  let device = 'Computadora'
+  if (/iphone|android|mobile/.test(lower)) device = 'Móvil'
+  else if (/ipad|tablet/.test(lower))      device = 'Tablet'
+  let browser = 'Navegador'
+  if (/edg\//.test(lower))      browser = 'Edge'
+  else if (/chrome/.test(lower))browser = 'Chrome'
+  else if (/firefox/.test(lower)) browser = 'Firefox'
+  else if (/safari/.test(lower))browser = 'Safari'
+  let os = 'OS'
+  if (/windows nt 11/.test(lower)) os = 'Windows 11'
+  else if (/windows nt 10/.test(lower)) os = 'Windows 10'
+  else if (/windows/.test(lower)) os = 'Windows'
+  else if (/mac os x/.test(lower)) os = 'macOS'
+  else if (/android/.test(lower)) os = 'Android'
+  else if (/iphone|ipad|ios/.test(lower)) os = 'iOS'
+  else if (/linux/.test(lower)) os = 'Linux'
+  return `${browser} en ${os} · ${device}`
+}
+
 function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = false) {
   const jti       = crypto.randomUUID()
   const ua        = req.headers['user-agent'] || ''
   const ip        = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
+  const deviceHash = computeDeviceHash(ua, ip)
   const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : IDLE_TTL_MS
   const jwtTTL    = rememberMe ? '30d' : '30m'
   const expiresAt = new Date(Date.now() + ttl)
-  // Multi-session por default: cada empleado puede tener sesiones activas en
-  // varios dispositivos (PC oficina, laptop campo, tablet POS, móvil). El
-  // endpoint DELETE /api/auth/me/sessions sigue disponible para que el user
-  // cierre manualmente todas sus sesiones desde Mi Cuenta. Ver propuesta de
-  // arquitectura en CONTEXT.md para evolución futura (device fingerprint,
-  // límites por rol, modo kiosco).
-  return prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } }).then(() => {
+
+  // Device fingerprint: detecta first-login desde un dispositivo nuevo.
+  // Si es desconocido, registra + dispara alerta en AuditCaja para que el
+  // dashboard del owner muestre "Inicio desde dispositivo desconocido".
+  const fingerprintTask = (async () => {
+    try {
+      const existing = await prisma.deviceFingerprint.findUnique({
+        where: { empleadoId_hash: { empleadoId: empleado.id, hash: deviceHash } },
+      })
+      if (existing) {
+        await prisma.deviceFingerprint.update({
+          where: { id: existing.id },
+          data:  { ultimoLogin: new Date(), ip, userAgent: ua },
+        })
+        return { nuevoDispositivo: false }
+      }
+      await prisma.deviceFingerprint.create({
+        data: { empleadoId: empleado.id, hash: deviceHash, label: labelFromUA(ua), ip, userAgent: ua },
+      })
+      // Alerta visible al owner via AuditCaja (vista existente filtra por tipo).
+      await prisma.auditCaja.create({ data: {
+        tipo: 'device_nuevo', empleadoId: empleado.id,
+        detalle: `Nuevo dispositivo: ${labelFromUA(ua)} desde ${ip ?? 'IP desconocida'}`,
+        ip, ua: ua.slice(0, 200),
+      }}).catch(() => {})
+      auditReq('auth:device_nuevo', req, { empleadoId: empleado.id, deviceHash, label: labelFromUA(ua) })
+      return { nuevoDispositivo: true }
+    } catch (e) { console.error('[FINGERPRINT]', e.message); return { nuevoDispositivo: false } }
+  })()
+
+  return fingerprintTask.then(({ nuevoDispositivo }) =>
+  prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip, deviceHash } }).then(() => {
     const permisos = [...new Set([
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
       ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
@@ -738,9 +795,10 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
     res.cookie('token', token, { ...cookieBase, httpOnly: true, signed: true })
     res.setHeader('X-CSRF-Token', csrf)
     const response = { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos, csrfToken: csrf }
-    if (needs2FASetup) response.needs2FASetup = true
+    if (needs2FASetup)    response.needs2FASetup = true
+    if (nuevoDispositivo) response.nuevoDispositivo = true
     return response
-  })
+  }))
 }
 
 // ─── Portal JWT ───────────────────────────────────────────────────────────────
@@ -3696,7 +3754,11 @@ app.post('/api/auth/refresh', async (req, res) => {
 
 app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
   try {
-    const { tempToken, totp } = z.object({ tempToken: z.string().uuid(), totp: z.string().length(6) }).parse(req.body)
+    // Acepta TOTP (6 dígitos) o backup code (formato XXXXX-XXXXX, 10 chars + guion).
+    const { tempToken, totp } = z.object({
+      tempToken: z.string().uuid(),
+      totp:      z.string().min(6).max(20),
+    }).parse(req.body)
     const entry = twoFAStore.get(tempToken)
     if (!entry || entry.exp < Date.now()) return res.status(400).json({ error: 'Token expirado. Vuelve a iniciar sesión.' })
     twoFAStore.delete(tempToken)
@@ -3720,11 +3782,23 @@ app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
       })
     }
 
-    if (!authenticator.verify({ token: totp, secret })) {
+    // Primero intenta TOTP normal. Si falla, intenta backup code.
+    let valido = authenticator.verify({ token: totp, secret })
+    let viaBackup = false
+    if (!valido) {
+      // Backup codes son 10 chars alfanuméricos con guion opcional. Si parece
+      // backup (longitud >= 10), valida contra los hashes guardados.
+      if (totp.replace(/[-\s]/g, '').length >= 10) {
+        valido = await consumeBackupCode(empleado.id, totp)
+        viaBackup = valido
+      }
+    }
+    if (!valido) {
       auditReq('auth:2fa_fail', req, {}, { userId: empleado.id, userName: empleado.nombre })
       return res.status(401).json({ error: 'PIN inválido.' })
     }
-    auditReq('auth:login_success', req, { via: '2fa' }, { userId: empleado.id, userName: empleado.nombre })
+    if (viaBackup) auditReq('auth:2fa_backup_used', req, {}, { userId: empleado.id, userName: empleado.nombre })
+    auditReq('auth:login_success', req, { via: viaBackup ? 'backup' : '2fa' }, { userId: empleado.id, userName: empleado.nombre })
     const payload = await completarLogin(empleado, req, res, entry.rememberMe ?? false)
     res.json(payload)
   } catch (e) {
@@ -3745,6 +3819,46 @@ app.get('/api/auth/2fa/setup', verificarJWT, async (req, res) => {
   } catch (e) { console.error('[2fa/setup]', e); res.status(500).json({ error: 'Error generando 2FA.' }) }
 })
 
+// ─── 2FA Backup Codes ────────────────────────────────────────────────────────
+// 8 códigos de 10 caracteres alfanuméricos, formato XXXXX-XXXXX. Almacenados
+// como bcrypt hash (no plano). Al enable 2FA se devuelven UNA SOLA VEZ en plano
+// para que el user los descargue/copie. Si pierde el TOTP, ingresa uno y
+// el código se elimina del array (un-solo-uso).
+const BACKUP_CODES_COUNT = 8
+
+function generarBackupCodes() {
+  const codes = []
+  for (let i = 0; i < BACKUP_CODES_COUNT; i++) {
+    // Caracteres seguros (sin O/0/I/1 para evitar confusión visual al copiar).
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+    let code = ''
+    const bytes = crypto.randomBytes(10)
+    for (let j = 0; j < 10; j++) code += chars[bytes[j] % chars.length]
+    codes.push(`${code.slice(0, 5)}-${code.slice(5)}`)
+  }
+  return codes
+}
+
+async function hashBackupCodes(plainCodes) {
+  return Promise.all(plainCodes.map(c => bcrypt.hash(c.replace(/-/g, '').toUpperCase(), 10)))
+}
+
+async function consumeBackupCode(empleadoId, candidate) {
+  if (!candidate) return false
+  const normalized = String(candidate).replace(/[-\s]/g, '').toUpperCase()
+  const emp = await prisma.empleado.findUnique({ where: { id: empleadoId }, select: { backupCodes: true } })
+  const codes = Array.isArray(emp?.backupCodes) ? emp.backupCodes : []
+  for (let i = 0; i < codes.length; i++) {
+    if (await bcrypt.compare(normalized, codes[i])) {
+      // Consumido: lo elimina del array.
+      const next = [...codes.slice(0, i), ...codes.slice(i + 1)]
+      await prisma.empleado.update({ where: { id: empleadoId }, data: { backupCodes: next } })
+      return true
+    }
+  }
+  return false
+}
+
 app.post('/api/auth/2fa/enable', verificarJWT, async (req, res) => {
   try {
     const { totp } = z.object({ totp: z.string().length(6) }).parse(req.body)
@@ -3753,13 +3867,49 @@ app.post('/api/auth/2fa/enable', verificarJWT, async (req, res) => {
     if (emp.twoFactorEnabled) return res.status(400).json({ error: '2FA ya está activo.' })
     const secret = decryptTOTP(emp.twoFactorSecret)
     if (!authenticator.verify({ token: totp, secret })) return res.status(401).json({ error: 'PIN inválido.' })
-    await prisma.empleado.update({ where: { id: req.user.sub }, data: { twoFactorEnabled: true } })
-    auditReq('auth:2fa_enabled', req)
-    res.status(204).end()
+
+    // Genera + guarda hashes + responde con plano (única vez).
+    const plain  = generarBackupCodes()
+    const hashed = await hashBackupCodes(plain)
+    await prisma.empleado.update({
+      where: { id: req.user.sub },
+      data:  { twoFactorEnabled: true, backupCodes: hashed },
+    })
+    auditReq('auth:2fa_enabled', req, { backupCodesGenerados: plain.length })
+    res.status(201).json({ backupCodes: plain, count: plain.length })
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'PIN de 6 dígitos requerido.' })
+    console.error('[2fa/enable]', e.message)
     res.status(500).json({ error: 'Error al activar 2FA.' })
   }
+})
+
+// Regenerar backup codes (invalida los anteriores). Requiere TOTP válido.
+app.post('/api/auth/2fa/backup-codes/regenerate', verificarJWT, async (req, res) => {
+  try {
+    const { totp } = z.object({ totp: z.string().length(6) }).parse(req.body)
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { twoFactorSecret: true, twoFactorEnabled: true } })
+    if (!emp?.twoFactorEnabled) return res.status(400).json({ error: '2FA no está activo.' })
+    const secret = decryptTOTP(emp.twoFactorSecret)
+    if (!authenticator.verify({ token: totp, secret })) return res.status(401).json({ error: 'PIN inválido.' })
+    const plain  = generarBackupCodes()
+    const hashed = await hashBackupCodes(plain)
+    await prisma.empleado.update({ where: { id: req.user.sub }, data: { backupCodes: hashed } })
+    auditReq('auth:2fa_backup_regen', req)
+    res.json({ backupCodes: plain, count: plain.length })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: 'PIN requerido.' })
+    res.status(500).json({ error: 'Error.' })
+  }
+})
+
+// Conteo restante (no expone los códigos).
+app.get('/api/auth/2fa/backup-codes/count', verificarJWT, async (req, res) => {
+  try {
+    const emp = await prisma.empleado.findUnique({ where: { id: req.user.sub }, select: { backupCodes: true } })
+    const codes = Array.isArray(emp?.backupCodes) ? emp.backupCodes : []
+    res.json({ count: codes.length })
+  } catch { res.status(500).json({ error: 'Error.' }) }
 })
 
 app.post('/api/auth/2fa/disable', verificarJWT, async (req, res) => {
@@ -5925,8 +6075,16 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       const itemIds = [...new Set(lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))]
       const prodIds = [...new Set(lineas.filter(l => l.productoId).map(l => l.productoId))]
       const [items, prods] = await Promise.all([
-        itemIds.length ? tx.itemCatalogo.findMany({ where: { id: { in: itemIds } }, select: { id: true, nombre: true, precio: true, tipoItem: true, stock: true, productoId: true } }) : [],
-        prodIds.length ? tx.producto.findMany({ where: { id: { in: prodIds } }, select: { id: true, nombre: true, precio: true, stockActual: true } }) : [],
+        itemIds.length ? tx.itemCatalogo.findMany({
+          where: { id: { in: itemIds } },
+          // descripcion + producto.sku necesarios para snapshot fiel al PDF.
+          select: { id: true, nombre: true, descripcion: true, precio: true, tipoItem: true, stock: true, productoId: true,
+                    producto: { select: { sku: true } } },
+        }) : [],
+        prodIds.length ? tx.producto.findMany({
+          where: { id: { in: prodIds } },
+          select: { id: true, sku: true, nombre: true, descripcion: true, precio: true, stockActual: true },
+        }) : [],
       ])
       const iMap = Object.fromEntries(items.map(i => [i.id, i]))
       const pMap = Object.fromEntries(prods.map(p => [p.id, p]))
@@ -5935,23 +6093,38 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         if (l.productoId     && !pMap[l.productoId])     throw Object.assign(new Error(`Producto ${l.productoId} no encontrado.`), { status: 404 })
       }
 
-      // 3. Build enriched lines + totals
+      // 3. Build enriched lines + totals.
+      // CRÍTICO: la descripcion enriquecida (markdown title + bullets) DEBE viajar
+      // como snapshot al LineaFactura. Si solo guardamos item.nombre, el PDF
+      // pierde el detalle (Smart Markdown necesita el texto largo para parsear).
+      // Formato: si hay descripción rica -> "**título**\n descripción", el parser
+      // del PDF la reconoce como heading + body automáticamente.
+      const composeDesc = (titulo, descripcion) => {
+        const desc = (descripcion ?? '').trim()
+        if (!desc) return titulo
+        return `**${titulo}**\n${desc}`
+      }
       const lineasEnriquecidas = lineas.map(l => {
         if (l.productoId) {
           const p = pMap[l.productoId]
           const pu  = l.precioUnitario ?? Number(p.precio)
           return {
-            descripcion: p.nombre, cantidad: l.cantidad, precioUnitario: pu,
-            productoId:  p.id,
+            descripcion: composeDesc(p.nombre, p.descripcion),
+            cantidad: l.cantidad, precioUnitario: pu,
+            productoId:  p.id,                  // -> Factura.lineas.producto.sku flows to PDF
             descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
             descuentoMonto:      l.descuentoMonto ?? 0,
-            _isProducto: true,  // marca para deducción de stock más abajo
+            _isProducto: true,
           }
         }
         const item = iMap[l.itemCatalogoId]
         const pu   = l.precioUnitario ?? Number(item.precio)
         return {
-          descripcion: item.nombre, cantidad: l.cantidad, precioUnitario: pu,
+          descripcion: composeDesc(item.nombre, item.descripcion),
+          cantidad: l.cantidad, precioUnitario: pu,
+          // Si el ItemCatalogo está atado a un Producto físico, copia productoId
+          // para que el PDF tire el SKU del producto vinculado.
+          productoId:  item.productoId ?? null,
           descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
           descuentoMonto:      l.descuentoMonto ?? 0,
         }
@@ -6899,6 +7072,20 @@ async function ensureSchemaColumns() {
       )`)
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ProductoBundle_padreId_hijoId_key" ON "ProductoBundle"("padreId","hijoId")`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ProductoBundle_padreId_idx" ON "ProductoBundle"("padreId")`)
+    // Device fingerprint + backup codes 2FA
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Empleado"     ADD COLUMN IF NOT EXISTS "backupCodes" JSONB NOT NULL DEFAULT '[]'::jsonb`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "SessionToken" ADD COLUMN IF NOT EXISTS "deviceHash"  TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "SessionToken_deviceHash_idx" ON "SessionToken"("deviceHash")`)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "DeviceFingerprint" (
+        "id" SERIAL PRIMARY KEY,
+        "empleadoId" INTEGER NOT NULL REFERENCES "Empleado"("id") ON DELETE CASCADE,
+        "hash" TEXT NOT NULL, "label" TEXT, "ip" TEXT, "userAgent" TEXT,
+        "primerLogin" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "ultimoLogin" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`)
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "DeviceFingerprint_empleadoId_hash_key" ON "DeviceFingerprint"("empleadoId","hash")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "DeviceFingerprint_empleadoId_idx" ON "DeviceFingerprint"("empleadoId")`)
     // FK opcional + índice (idempotente via catalog lookup)
     try {
       await prisma.$executeRawUnsafe(`DO $$ BEGIN
@@ -6999,13 +7186,11 @@ async function startServer() {
     process.exit(1);
   }
 
-  // Warm-up Puppeteer/Chromium en background. Sin await: el servidor empieza
-  // a aceptar requests mientras el browser se inicializa. Cold-start primer
-  // PDF baja de ~3s a ~150ms si la warm-up termina antes del primer request.
-  const { getBrowser } = require('./services/pdf-generator')
-  getBrowser()
-    .then(() => console.log('[PDF] Chromium warmed up.'))
-    .catch(err => console.error('[PDF WARMUP]', err.message))
+  // Warm-up Puppeteer/Chromium + page pool en background. Sin await: el servidor
+  // empieza a aceptar requests mientras el browser y 2 páginas idle se inicializan.
+  // Cold-start primer PDF baja de ~3s a ~50ms si el warmup termina antes.
+  const { warmupPages } = require('./services/pdf-generator')
+  warmupPages().catch(err => console.error('[PDF WARMUP]', err.message))
 
   // Pre-generate RSA challenges so first login after cold start never fails
   await warmChallengeStore(3)

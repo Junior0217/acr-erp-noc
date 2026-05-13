@@ -545,6 +545,9 @@ function PanelMiPerfil() {
   const [qrCode,     setQrCode]     = useState(null)
   const [totpPin,    setTotpPin]    = useState('')
   const [saving2FA,  setSaving2FA]  = useState(false)
+  // Backup codes en plano — se muestran UNA VEZ tras enable. null = no mostrar.
+  const [backupCodes, setBackupCodes] = useState(null)
+  const user = me
   const [loading2FA, setLoading2FA] = useState(false)
 
   useEffect(() => {
@@ -578,10 +581,49 @@ function PanelMiPerfil() {
     setSaving2FA(true)
     try {
       const r = await apiFetch('/api/auth/2fa/enable', { method: 'POST', body: JSON.stringify({ totp: totpPin }) })
-      if (r.status === 204) { toast.success('2FA activado.'); setTwoFAEnabled(true); setQrCode(null); setTotpPin('') }
-      else toast.error((await r.json()).error)
+      const j = await r.json().catch(() => ({}))
+      if (r.status === 201 && j.backupCodes) {
+        toast.success('2FA activado. ¡Guarda tus códigos de respaldo ahora!')
+        setBackupCodes(j.backupCodes)
+        setTwoFAEnabled(true)
+        setQrCode(null); setTotpPin('')
+      } else if (r.status === 204) {
+        // Compatibilidad con backend viejo que no devolvía codes
+        toast.success('2FA activado.'); setTwoFAEnabled(true); setQrCode(null); setTotpPin('')
+      } else toast.error(j.error ?? 'Error al activar.')
     } catch { toast.error('Error de conexión') }
     finally { setSaving2FA(false) }
+  }
+
+  function descargarBackupCodes() {
+    if (!backupCodes?.length) return
+    const text = [
+      'ACR ERP — Códigos de respaldo 2FA',
+      '═══════════════════════════════════',
+      'Usuario: ' + (user?.nombre ?? ''),
+      'Generados: ' + new Date().toLocaleString('es-DO'),
+      '',
+      'Cada código sirve UNA SOLA VEZ. Guárdalos en un lugar seguro.',
+      'Si pierdes tu dispositivo TOTP, ingresa uno de estos códigos en el campo PIN.',
+      '',
+      ...backupCodes.map((c, i) => `${(i + 1).toString().padStart(2, '0')}.  ${c}`),
+      '',
+      '═══════════════════════════════════',
+    ].join('\n')
+    const blob = new Blob([text], { type: 'text/plain' })
+    const url  = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url; a.download = `ACR-2FA-backup-codes-${new Date().toISOString().slice(0, 10)}.txt`
+    document.body.appendChild(a); a.click(); a.remove()
+    URL.revokeObjectURL(url)
+  }
+
+  async function copiarBackupCodes() {
+    if (!backupCodes?.length) return
+    try {
+      await navigator.clipboard.writeText(backupCodes.join('\n'))
+      toast.success('Códigos copiados al portapapeles.')
+    } catch { toast.error('No se pudo copiar.') }
   }
 
   async function disable2FA() {
@@ -690,6 +732,41 @@ function PanelMiPerfil() {
             </div>
             <button onClick={() => { setQrCode(null); setTotpPin('') }} className="text-xs text-slate-600 hover:text-slate-400 transition-colors w-full text-center">
               Cancelar
+            </button>
+          </div>
+        ) : backupCodes ? (
+          /* Modal blocking: muestra códigos UNA SOLA VEZ. El usuario debe guardarlos. */
+          <div className="rounded-xl border-2 border-amber-500/50 bg-amber-900/15 p-5 space-y-4 max-w-md">
+            <div className="flex items-center gap-2">
+              <ShieldCheck size={18} className="text-amber-300" />
+              <h4 className="text-sm font-bold text-amber-300 uppercase tracking-wider">Códigos de Respaldo 2FA</h4>
+            </div>
+            <p className="text-xs text-slate-300 leading-relaxed">
+              ⚠ Guarda estos {backupCodes.length} códigos en un lugar seguro <strong>ahora mismo</strong>.
+              Si pierdes tu teléfono podrás usar uno (una sola vez) para entrar.
+              <strong className="text-amber-300"> No se mostrarán de nuevo.</strong>
+            </p>
+            <div className="grid grid-cols-2 gap-1.5 bg-slate-900 border border-slate-700 rounded-lg p-3 font-mono text-sm">
+              {backupCodes.map((c, i) => (
+                <div key={i} className="text-center text-slate-100 tracking-wider py-1">
+                  <span className="text-slate-600 mr-2">{(i + 1).toString().padStart(2, '0')}.</span>
+                  {c}
+                </div>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <button onClick={copiarBackupCodes}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-xs font-semibold transition-colors">
+                Copiar todos
+              </button>
+              <button onClick={descargarBackupCodes}
+                className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold transition-colors">
+                Descargar .txt
+              </button>
+            </div>
+            <button onClick={() => setBackupCodes(null)}
+              className="w-full px-3 py-2 rounded-lg bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-600/40 text-xs font-bold transition-colors">
+              Ya los guardé — Continuar
             </button>
           </div>
         ) : (

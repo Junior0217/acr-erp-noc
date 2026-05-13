@@ -11,6 +11,7 @@ import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useOfflineStatus } from '../hooks/useOfflineStatus'
 import CarritoSlideOver from '../components/CarritoSlideOver'
+import SessionsWidget   from '../components/SessionsWidget'
 import ACRLogo from '../components/ACRLogo'
 
 function Setup2FAModal() {
@@ -310,6 +311,7 @@ export default function AdminLayout() {
           </div>
 
           <div className="flex items-center gap-2 sm:gap-3">
+            <SessionsWidget />
             <button
               onClick={handleCartClick}
               title={posItemsCount > 0 ? `${posItemsCount} en POS · click para ir a Ventas/POS` : `${totalItems} en carrito`}
