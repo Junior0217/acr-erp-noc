@@ -6,6 +6,7 @@ import {
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import { useCart } from '../../contexts/CartContext'
+import { useEmpresa } from '../../contexts/EmpresaContext'
 import { toast } from 'sonner'
 import { marked } from 'marked'
 
@@ -433,6 +434,9 @@ function CartLine({ linea, onChange, onRemove }) {
 // ── PanelPOS ──────────────────────────────────────────────────────────────────
 export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaCreada }) {
   const { tienePermiso } = useAuth()
+  const { empresa } = useEmpresa()
+  // Límite dinámico desde EmpresaPerfil — el dueño configura en /empresa.
+  const maxDescuentoCajero = Number(empresa?.maxDescuentoCajero ?? 15)
   // Carrito persistido en localStorage vía CartContext — sobrevive cambios de tab.
   const { posCart: cart, posAddItem, posUpdateLine, posRemoveLine, posClear } = useCart()
   const [cliente, setCliente]       = useState(null)
@@ -471,8 +475,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const subtotal      = Math.round((subtotalBruto - globalDesc) * 100) / 100
   const itbisAmt      = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
   const total         = Math.round((subtotal + itbisAmt) * 100) / 100
-  // Trigger del PIN: descuento global > 15% requiere autorización supervisor.
-  const necesitaPIN  = descGlobalPct > 15
+  // Trigger del PIN: descuento global > maxDescuentoCajero requiere PIN supervisor.
+  const necesitaPIN  = descGlobalPct > maxDescuentoCajero
   const [showCheckout, setShowCheckout] = useState(false)
 
   async function submit(esCotizacion, opts = {}) {
@@ -634,6 +638,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
           total={total}
           necesitaPIN={necesitaPIN}
           descuentoPct={descGlobalPct}
+          maxPct={maxDescuentoCajero}
           submitting={submitting}
           onClose={() => setShowCheckout(false)}
           onSubmit={(pagos, pinSupervisor) => submit(false, { pagos, pinSupervisor })}
@@ -644,7 +649,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
 }
 
 // ── CheckoutModal: cobro mixto + PIN supervisor ──────────────────────────────
-function CheckoutModal({ total, necesitaPIN, descuentoPct, submitting, onClose, onSubmit }) {
+function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitting, onClose, onSubmit }) {
   const [pagos, setPagos] = useState([{ metodo: 'Efectivo', monto: total, refer: '' }])
   const [pinSupervisor, setPinSupervisor] = useState('')
   const [showPin, setShowPin] = useState(false)
@@ -678,7 +683,7 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, submitting, onClose, 
           {necesitaPIN && (
             <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-900/20 border border-amber-700/40 text-xs text-amber-300">
               <span className="w-1.5 h-1.5 rounded-full mt-1.5 bg-amber-400 flex-shrink-0" />
-              <span>Descuento <strong>{descuentoPct}%</strong> excede el límite (15%). Requiere PIN de supervisor para autorizar.</span>
+              <span>Descuento <strong>{descuentoPct}%</strong> excede el límite ({maxPct}%). Requiere PIN de supervisor para autorizar.</span>
             </div>
           )}
 

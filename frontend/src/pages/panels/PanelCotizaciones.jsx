@@ -3,7 +3,7 @@ import { toast } from 'sonner'
 import {
   RefreshCw, Loader2, FileText, RotateCcw, AlertTriangle,
   Search, X, Printer, CheckSquare, Square, FileArchive, Plus, ScrollText,
-  Edit3, Save,
+  Edit3, Save, Table2, LayoutGrid, ChevronRight,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '../../utils/pdf'
@@ -16,6 +16,83 @@ const fmtFull = d => new Date(d).toLocaleString('es-DO', { day: '2-digit', month
 
 const TH = 'px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap bg-slate-800/60'
 const TD = 'px-4 py-3 text-sm text-slate-300'
+
+// ─── Kanban de cotizaciones — vista columnar por etapaPipeline ───────────────
+const KANBAN_ETAPAS = [
+  { id: 'Borrador',    color: 'slate',    label: 'Borrador'    },
+  { id: 'Enviada',     color: 'blue',     label: 'Enviada'     },
+  { id: 'Negociacion', color: 'amber',    label: 'Negociación' },
+  { id: 'Aceptada',    color: 'emerald',  label: 'Aceptada'    },
+  { id: 'Convertida',  color: 'violet',   label: 'Convertida'  },
+  { id: 'Perdida',     color: 'red',      label: 'Perdida'     },
+]
+const KANBAN_COLORS = {
+  slate:   { bg: 'bg-slate-800/30',   border: 'border-slate-700',   text: 'text-slate-400'   },
+  blue:    { bg: 'bg-blue-900/15',    border: 'border-blue-700/30', text: 'text-blue-400'    },
+  amber:   { bg: 'bg-amber-900/15',   border: 'border-amber-700/30',text: 'text-amber-400'   },
+  emerald: { bg: 'bg-emerald-900/15', border: 'border-emerald-700/30', text: 'text-emerald-400' },
+  violet:  { bg: 'bg-violet-900/15',  border: 'border-violet-700/30', text: 'text-violet-400'  },
+  red:     { bg: 'bg-red-900/15',     border: 'border-red-700/30',  text: 'text-red-400'     },
+}
+
+function KanbanCotizaciones({ rows, loading, onMove, onOpen, onPDF }) {
+  const grouped = KANBAN_ETAPAS.reduce((acc, e) => { acc[e.id] = []; return acc }, {})
+  for (const r of rows) {
+    const k = r.etapaPipeline ?? 'Borrador'
+    if (grouped[k]) grouped[k].push(r); else grouped.Borrador.push(r)
+  }
+  return (
+    <div className="overflow-x-auto p-3">
+      <div className="flex gap-3 min-w-[1200px]">
+        {KANBAN_ETAPAS.map(et => {
+          const c = KANBAN_COLORS[et.color]
+          const items = grouped[et.id]
+          const total = items.reduce((s, x) => s + Number(x.total || 0), 0)
+          return (
+            <div key={et.id} className={`flex-1 min-w-[200px] rounded-xl border ${c.border} ${c.bg} p-2.5 flex flex-col gap-2`}>
+              <div className="flex items-center justify-between px-1">
+                <div>
+                  <p className={`text-xs font-bold uppercase tracking-widest ${c.text}`}>{et.label}</p>
+                  <p className="text-[10px] text-slate-500 font-mono">{items.length} · RD$ {total.toLocaleString('es-DO', { minimumFractionDigits: 0 })}</p>
+                </div>
+              </div>
+              <div className="flex-1 overflow-y-auto space-y-2 min-h-[120px]">
+                {loading && items.length === 0 ? (
+                  <div className="flex justify-center py-4"><Loader2 size={14} className="animate-spin text-slate-500" /></div>
+                ) : items.length === 0 ? (
+                  <p className="text-[10px] text-slate-700 italic text-center py-3">— vacío —</p>
+                ) : items.map(c => (
+                  <div key={c.id} className="bg-slate-900/70 border border-slate-700/60 rounded-lg p-2.5 hover:border-blue-600/40 transition-colors group">
+                    <div className="flex items-start justify-between gap-1 mb-1">
+                      <button onClick={() => onOpen(c)} className="text-xs font-mono font-bold text-slate-200 hover:text-blue-300 truncate flex-1 text-left">
+                        {c.noFactura}
+                      </button>
+                      <button onClick={() => onPDF(c)} className="text-slate-600 hover:text-blue-400 flex-shrink-0" title="PDF">
+                        <Printer size={11} />
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 truncate">{c.cliente?.razonSocial ?? 'Consumidor Final'}</p>
+                    <p className="text-[10px] font-mono font-bold text-emerald-400 mt-1">RD$ {Number(c.total).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</p>
+                    {/* Move-to dropdown */}
+                    <div className="flex flex-wrap gap-1 mt-2">
+                      {KANBAN_ETAPAS.filter(x => x.id !== et.id).map(target => (
+                        <button key={target.id} onClick={() => onMove(c.id, target.id)}
+                          title={`Mover a ${target.label}`}
+                          className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border opacity-40 hover:opacity-100 transition-opacity ${KANBAN_COLORS[target.color].text} ${KANBAN_COLORS[target.color].border}`}>
+                          <ChevronRight size={9} className="inline" />{target.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 // Normalizer compartido: legacy string -> { incluir, texto }.
 function normCondField(v) {
@@ -347,6 +424,20 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
   const [loading, setLoading]   = useState(false)
   const [modalCot, setModalCot] = useState(null)
   const [pdfId, setPdfId]       = useState(null)
+  const [vista, setVista] = useState(() => {
+    try { return localStorage.getItem('acr_cot_view') ?? 'tabla' } catch { return 'tabla' }
+  })
+  function cambiarVista(v) { setVista(v); try { localStorage.setItem('acr_cot_view', v) } catch {} }
+
+  async function moverEtapa(cotId, nuevaEtapa) {
+    try {
+      const r = await apiFetch(`/api/cotizaciones/${cotId}/etapa`, { method: 'PATCH', body: JSON.stringify({ etapa: nuevaEtapa }) })
+      if (!r.ok) { const j = await r.json().catch(() => ({})); toast.error(j.error ?? 'Error.'); return }
+      toast.success(`Movida a "${nuevaEtapa}"`)
+      fetch_(offset)
+    } catch { toast.error('Error de red.') }
+  }
+
   const [drawer, setDrawer] = useState({ open: false, blob: null, blobUrl: null, filename: null, title: null, subtitle: null, loading: false })
   const [selected, setSelected] = useState(() => new Set())
   const [bulkBusy, setBulkBusy] = useState(false)
@@ -471,6 +562,14 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
               <X size={11} /> Limpiar
             </button>
           )}
+          <div className="inline-flex bg-slate-800 border border-slate-700 rounded-lg p-0.5" title="Vista">
+            <button onClick={() => cambiarVista('tabla')}
+              className={`p-1.5 rounded ${vista === 'tabla' ? 'bg-slate-700 text-blue-300' : 'text-slate-500 hover:text-slate-300'}`}
+              title="Vista tabla"><Table2 size={14} /></button>
+            <button onClick={() => cambiarVista('kanban')}
+              className={`p-1.5 rounded ${vista === 'kanban' ? 'bg-slate-700 text-blue-300' : 'text-slate-500 hover:text-slate-300'}`}
+              title="Vista Kanban"><LayoutGrid size={14} /></button>
+          </div>
           <button onClick={() => fetch_(offset)}
             className="ml-auto p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
             <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
@@ -478,7 +577,11 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
         </div>
       </div>
 
-      <div className="overflow-x-auto">
+      {vista === 'kanban' && (
+        <KanbanCotizaciones rows={rows} loading={loading} onMove={moverEtapa} onOpen={c => setModalCot(c)} onPDF={previewPDF} />
+      )}
+
+      {vista === 'tabla' && <div className="overflow-x-auto">
         <table className="w-full min-w-[640px]">
           <thead className="sticky top-0 z-10">
             <tr>
@@ -530,7 +633,7 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
 
       {totalPages > 1 && (
         <div className="flex items-center justify-between px-4 py-3 border-t border-slate-800">

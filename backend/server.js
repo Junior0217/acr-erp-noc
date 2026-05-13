@@ -3133,6 +3133,46 @@ app.post('/api/pdf/bulk',
   }
 )
 
+// Mover cotización entre etapas del pipeline (Kanban).
+app.patch('/api/cotizaciones/:id/etapa',
+  verificarJWT,
+  requerirPermiso('venta:ver_cotizaciones'),
+  async (req, res) => {
+    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+    const etapas = ['Borrador', 'Enviada', 'Negociacion', 'Aceptada', 'Convertida', 'Perdida']
+    const { etapa } = req.body ?? {}
+    if (!etapas.includes(etapa)) return res.status(400).json({ error: `Etapa inválida. Permitidas: ${etapas.join(', ')}.` })
+    try {
+      const f = await prisma.factura.update({
+        where: { id: req.params.id },
+        data:  { etapaPipeline: etapa },
+        select:{ id: true, etapaPipeline: true, noFactura: true },
+      })
+      auditReq('cotizacion:etapa', req, { id: f.id, etapa })
+      res.json(f)
+    } catch (e) {
+      console.error('[PATCH ETAPA]', e.message)
+      res.status(500).json({ error: 'Error interno.' })
+    }
+  }
+)
+
+// AuditCaja: visible solo a sistema:owner
+app.get('/api/auditoria/caja', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const { tipo, limit = '100' } = req.query
+    const where = {}
+    if (tipo) where.tipo = tipo
+    const rows = await prisma.auditCaja.findMany({
+      where, orderBy: { createdAt: 'desc' }, take: Math.min(parseInt(limit) || 100, 500),
+    })
+    res.json({ data: rows })
+  } catch (e) {
+    console.error('[GET /api/auditoria/caja]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // Edición rápida de condiciones comerciales por documento.
 // Cada campo acepta:
 //   - string (legacy)         → incluir si no vacío
@@ -5697,8 +5737,6 @@ const posVentaSchema = z.object({
   lineas:              z.array(lineaPOSCatalogoSchema).min(1),
 })
 
-const DESCUENTO_LIMITE_PIN = 15  // porcentaje
-
 app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
   try {
     const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas } = posVentaSchema.parse(req.body)
@@ -5707,20 +5745,38 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
     if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
       return res.status(403).json({ error: `Se requiere permiso "${permReq}".` })
 
-    // Validación PIN supervisor: si el cajero aplicó descuento global > 15%
-    // exige el PIN configurado en EmpresaPerfil. Owners se saltan el check.
+    // Validación PIN supervisor con LÍMITE DINÁMICO desde EmpresaPerfil. Owners exempt.
     const isOwner = permisos.includes('sistema:owner')
-    if (!isOwner && !esCotizacion && descuentoGlobalPct > DESCUENTO_LIMITE_PIN) {
-      const emp = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true } })
-      const pinReal = emp?.pinSupervisor ?? '1234'
+    const empCfg  = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true, maxDescuentoCajero: true } })
+    const maxDescuentoCajero = Number(empCfg?.maxDescuentoCajero ?? 15)
+    if (!isOwner && !esCotizacion && descuentoGlobalPct > maxDescuentoCajero) {
+      const pinReal = empCfg?.pinSupervisor ?? '1234'
       if (!pinSupervisor || pinSupervisor !== pinReal) {
-        auditReq('pos:descuento_pin_fail', req, { descuentoPct: descuentoGlobalPct })
+        auditReq('pos:descuento_pin_fail', req, { descuentoPct: descuentoGlobalPct, max: maxDescuentoCajero })
+        // Log en AuditCaja (fraude trail dedicado)
+        try {
+          await prisma.auditCaja.create({ data: {
+            tipo: 'descuento_rechazado', empleadoId: req.user?.sub ?? null,
+            descPct: descuentoGlobalPct,
+            detalle: `Cajero intentó aplicar ${descuentoGlobalPct}% (límite ${maxDescuentoCajero}%) sin PIN válido`,
+            ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
+          }})
+        } catch {}
         return res.status(403).json({
-          error: `Descuento ${descuentoGlobalPct}% excede ${DESCUENTO_LIMITE_PIN}%. Requiere PIN de supervisor.`,
+          error: `Descuento ${descuentoGlobalPct}% excede ${maxDescuentoCajero}%. Requiere PIN de supervisor.`,
           code:  'PIN_REQUIRED',
         })
       }
-      auditReq('pos:descuento_pin_ok', req, { descuentoPct: descuentoGlobalPct })
+      // PIN válido: log de override autorizado.
+      auditReq('pos:descuento_pin_ok', req, { descuentoPct: descuentoGlobalPct, max: maxDescuentoCajero })
+      try {
+        await prisma.auditCaja.create({ data: {
+          tipo: 'descuento_pin', empleadoId: req.user?.sub ?? null,
+          descPct: descuentoGlobalPct,
+          detalle: `PIN supervisor validó descuento ${descuentoGlobalPct}% (límite ${maxDescuentoCajero}%)`,
+          ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
+        }})
+      } catch {}
     }
 
     const factura = await prisma.$transaction(async (tx) => {
@@ -5818,6 +5874,18 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       })
     })
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:pos_catalogo', req, { facturaId: factura.id, total: Number(factura.total) })
+    // AuditCaja: log venta concretada (no cotización) para fraud trail.
+    if (!esCotizacion) {
+      try {
+        await prisma.auditCaja.create({ data: {
+          tipo: 'venta', empleadoId: req.user?.sub ?? null,
+          facturaId: factura.id, monto: Number(factura.total),
+          descPct: descuentoGlobalPct || null,
+          detalle: `${factura.noFactura} · NCF ${factura.ncf ?? '—'} · ${lineas.length} líneas`,
+          ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
+        }})
+      } catch (e) { console.error('[AUDIT CAJA]', e.message) }
+    }
     res.status(201).json(factura)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: 'Datos inválidos.', detail: e.errors })
@@ -6185,7 +6253,17 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
     const factura = await prisma.factura.update({ where: { id: req.params.id }, data })
     invalidarPdfCache(factura.id).catch(() => {})
     auditReq('factura:estado', req, { facturaId: factura.id, estado, ncf: factura.ncf })
-    if (estado === 'Anulada') auditReq('factura:anulada', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(existing.total) })
+    if (estado === 'Anulada') {
+      auditReq('factura:anulada', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(existing.total) })
+      try {
+        await prisma.auditCaja.create({ data: {
+          tipo: 'anulacion', empleadoId: req.user?.sub ?? null,
+          facturaId: factura.id, monto: Number(existing.total),
+          detalle: `Anulación · NCF ${factura.ncf ?? '—'} · ${factura.noFactura}`,
+          ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
+        }})
+      } catch {}
+    }
     res.json(factura)
 
     // Fire-and-forget: sync RouterOS Address List for ISP clients (Pagada → activo, Vencida → moroso)
@@ -6573,7 +6651,56 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo"   ADD COLUMN IF NOT EXISTS "codigo"              TEXT`)
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ItemCatalogo_codigo_key" ON "ItemCatalogo"("codigo")`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "pinSupervisor"       TEXT NOT NULL DEFAULT '1234'`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "maxDescuentoCajero" INTEGER NOT NULL DEFAULT 15`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pagos"               JSONB`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "etapaPipeline"       TEXT NOT NULL DEFAULT 'Borrador'`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_etapaPipeline_idx" ON "Factura"("etapaPipeline")`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Producto"       ADD COLUMN IF NOT EXISTS "costoPromedio"       DECIMAL(12,2) NOT NULL DEFAULT 0`)
+    // Tablas nuevas (idempotente via IF NOT EXISTS)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "AuditCaja" (
+        "id" SERIAL PRIMARY KEY, "tipo" TEXT NOT NULL, "empleadoId" INTEGER, "facturaId" TEXT,
+        "monto" DECIMAL(12,2), "descPct" DECIMAL(5,2), "detalle" TEXT, "ip" TEXT, "ua" TEXT,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_tipo_idx"       ON "AuditCaja"("tipo")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_empleadoId_idx" ON "AuditCaja"("empleadoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_facturaId_idx"  ON "AuditCaja"("facturaId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_createdAt_idx"  ON "AuditCaja"("createdAt")`)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "ProductoSerial" (
+        "id" SERIAL PRIMARY KEY,
+        "productoId" INTEGER NOT NULL REFERENCES "Producto"("id") ON DELETE CASCADE,
+        "serie" TEXT NOT NULL, "estado" TEXT NOT NULL DEFAULT 'Disponible',
+        "ubicacion" TEXT, "facturaId" TEXT, "garantiaHasta" TIMESTAMP, "notas" TEXT,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        "updatedAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`)
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ProductoSerial_productoId_serie_key" ON "ProductoSerial"("productoId","serie")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ProductoSerial_estado_idx"     ON "ProductoSerial"("estado")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ProductoSerial_facturaId_idx"  ON "ProductoSerial"("facturaId")`)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "ReservaInventario" (
+        "id" SERIAL PRIMARY KEY,
+        "productoId" INTEGER NOT NULL REFERENCES "Producto"("id") ON DELETE CASCADE,
+        "facturaId" TEXT, "cantidad" INTEGER NOT NULL, "expiraEn" TIMESTAMP NOT NULL,
+        "liberada" BOOLEAN NOT NULL DEFAULT false, "motivo" TEXT,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ReservaInventario_productoId_idx" ON "ReservaInventario"("productoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ReservaInventario_facturaId_idx"  ON "ReservaInventario"("facturaId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ReservaInventario_expiraEn_idx"   ON "ReservaInventario"("expiraEn")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ReservaInventario_liberada_idx"   ON "ReservaInventario"("liberada")`)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "ProductoBundle" (
+        "id" SERIAL PRIMARY KEY,
+        "padreId" INTEGER NOT NULL REFERENCES "Producto"("id") ON DELETE CASCADE,
+        "hijoId"  INTEGER NOT NULL REFERENCES "Producto"("id") ON DELETE CASCADE,
+        "score" INTEGER NOT NULL DEFAULT 1, "motivo" TEXT,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )`)
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ProductoBundle_padreId_hijoId_key" ON "ProductoBundle"("padreId","hijoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ProductoBundle_padreId_idx" ON "ProductoBundle"("padreId")`)
     // FK opcional + índice (idempotente via catalog lookup)
     try {
       await prisma.$executeRawUnsafe(`DO $$ BEGIN

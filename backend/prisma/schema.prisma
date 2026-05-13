@@ -177,6 +177,9 @@ model Producto {
   // URL de imagen (Supabase Storage). Si presente, sustituye el ícono genérico en el POS.
   imagenUrl        String?
   precio           Decimal                @db.Decimal(12, 2)
+  // Costo promedio ponderado: se actualiza en cada entrada con
+  // (stockActual*costoPromedio + entrada*costoNuevo) / (stockActual+entrada).
+  costoPromedio    Decimal                @default(0) @db.Decimal(12, 2)
   stockActual      Int                    @default(0)
   stockMinimo      Int                    @default(5)
   categoriaId      Int
@@ -192,6 +195,10 @@ model Producto {
   activosCliente   ActivoCliente[]
   prestamos        EquipoPrestamo[]
   itemsCatalogo    ItemCatalogo[]   // ItemCatalogos que apuntan a este Producto físico
+  series           ProductoSerial[]
+  bundlesPadre     ProductoBundle[] @relation("BundlePadre")
+  bundlesHijo      ProductoBundle[] @relation("BundleHijo")
+  reservas         ReservaInventario[]
 
   @@index([sku])
   @@index([categoriaId])
@@ -598,6 +605,10 @@ model Factura {
   // Null para cotizaciones (no fiscal) y facturas pre-rollout.
   snapshot     Json?
   esCotizacion Boolean       @default(false)
+  // Etapa del pipeline Kanban para cotizaciones:
+  // Borrador → Enviada → Negociacion → Aceptada → Convertida → Perdida
+  // Facturas reales (esCotizacion=false) lo mantienen en 'Convertida'.
+  etapaPipeline String       @default("Borrador")
   deletedAt    DateTime?
   cliente      Cliente       @relation(fields: [clienteId], references: [id], onDelete: Restrict)
   orden        OrdenTrabajo? @relation(fields: [ordenId], references: [id], onDelete: SetNull)
@@ -613,6 +624,7 @@ model Factura {
   @@index([esCotizacion])
   @@index([noFactura])
   @@index([deletedAt])
+  @@index([etapaPipeline])
   @@index([clienteId, estado])
   @@index([clienteId, fechaEmision])
   @@index([estado, fechaEmision])
@@ -709,9 +721,10 @@ model EmpresaPerfil {
   // Cada factura puede sobreescribirlas en Factura.condiciones.
   condicionesDefault    Json      @default("{}")
   // PIN del supervisor (4-8 dígitos). Requerido cuando un cajero aplica
-  // descuento global > 15% en POS. Hash bcrypt si nunca se setea queda en
-  // texto plano '1234' como bootstrap inicial.
+  // descuento global > maxDescuentoCajero% en POS. Texto plano bootstrap.
   pinSupervisor         String    @default("1234")
+  // Umbral configurable: por encima de este % el POS exige PIN.
+  maxDescuentoCajero    Int       @default(15)
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 }
@@ -890,4 +903,75 @@ model EquipoPrestamo {
   @@index([productoId])
   @@index([fechaLimite])
   @@index([fechaDevolucion])
+}
+
+// ─── Audit trail de caja: fraude interno + descuentos autorizados ────────────
+model AuditCaja {
+  id         Int       @id @default(autoincrement())
+  tipo       String    // 'venta' | 'anulacion' | 'descuento_pin' | 'descuento_rechazado'
+  empleadoId Int?
+  facturaId  String?
+  monto      Decimal?  @db.Decimal(12, 2)
+  descPct    Decimal?  @db.Decimal(5, 2)  // % de descuento aplicado
+  detalle    String?
+  ip         String?
+  ua         String?
+  createdAt  DateTime  @default(now())
+
+  @@index([tipo])
+  @@index([empleadoId])
+  @@index([facturaId])
+  @@index([createdAt])
+}
+
+// ─── Trazabilidad serializada (CCTV, routers, NVR) ───────────────────────────
+model ProductoSerial {
+  id              Int       @id @default(autoincrement())
+  productoId      Int
+  serie           String
+  estado          String    @default("Disponible")  // Disponible|Vendido|RMA|Defectuoso|Reservado
+  ubicacion       String?
+  facturaId       String?   // ref opcional a la factura donde se vendió
+  garantiaHasta   DateTime?
+  producto        Producto  @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  notas           String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([productoId, serie])
+  @@index([estado])
+  @@index([facturaId])
+}
+
+// ─── Reserva de stock al cotizar (TTL 72h por default) ───────────────────────
+model ReservaInventario {
+  id          Int       @id @default(autoincrement())
+  productoId  Int
+  facturaId   String?   // cotización asociada (opcional)
+  cantidad    Int
+  expiraEn    DateTime
+  liberada    Boolean   @default(false)
+  motivo      String?
+  producto    Producto  @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  createdAt   DateTime  @default(now())
+
+  @@index([productoId])
+  @@index([facturaId])
+  @@index([expiraEn])
+  @@index([liberada])
+}
+
+// ─── Bundles para cross-sell en POS ──────────────────────────────────────────
+model ProductoBundle {
+  id        Int      @id @default(autoincrement())
+  padreId   Int
+  hijoId    Int
+  score     Int      @default(1)  // mayor = más relevante
+  motivo    String?
+  padre     Producto @relation("BundlePadre", fields: [padreId], references: [id], onDelete: Cascade)
+  hijo      Producto @relation("BundleHijo",  fields: [hijoId],  references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+
+  @@unique([padreId, hijoId])
+  @@index([padreId])
 }
