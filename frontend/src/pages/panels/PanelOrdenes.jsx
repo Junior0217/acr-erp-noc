@@ -184,7 +184,7 @@ function LineasPicker({ lineas, setLineas }) {
     .filter(c => !search || c.nombre.toLowerCase().includes(search.toLowerCase()))
     .slice(0, 10)
 
-  const total = lineas.reduce((s, l) => s + Number(l.precioUnitario) * (Number(l.cantidad) || 1), 0)
+  const total = (Array.isArray(lineas) ? lineas : []).reduce((s, l) => s + Number(l.precioUnitario) * (Number(l.cantidad) || 1), 0)
 
   return (
     <div className="space-y-2">
@@ -522,7 +522,7 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
                   No hay órdenes de trabajo.
                 </td></tr>
               ) : ordenes.map(ot => {
-                const total = ot.lineas?.reduce((s, l) => s + Number(l.precioUnitario) * (l.cantidad ?? 1), 0) ?? 0
+                const total = Array.isArray(ot.lineas) ? ot.lineas.reduce((s, l) => s + Number(l.precioUnitario) * (l.cantidad ?? 1), 0) : 0
                 return (
                   <tr key={ot.id} className="hover:bg-slate-800/50 transition-colors">
                     <td className="px-4 py-3 whitespace-nowrap">

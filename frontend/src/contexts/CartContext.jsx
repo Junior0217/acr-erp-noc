@@ -17,15 +17,20 @@ export function CartProvider({ children }) {
   // se hidrata desde localStorage y sobrevive a navegación + refresh.
   const POS_CART_KEY = 'acr_pos_cart'
   const [posCart, setPosCart] = useState(() => {
-    try { const raw = localStorage.getItem(POS_CART_KEY); return raw ? JSON.parse(raw) : [] }
-    catch { return [] }
+    // Defensiva: localStorage puede contener basura legacy (string, objeto) tras
+    // un upgrade de schema. Si JSON.parse no devuelve array, reset a [].
+    try {
+      const raw = localStorage.getItem(POS_CART_KEY)
+      const parsed = raw ? JSON.parse(raw) : []
+      return Array.isArray(parsed) ? parsed : []
+    } catch { return [] }
   })
   // Persiste cada cambio (debounced no necesario — operaciones del POS son lentas).
   useEffect(() => {
-    try { localStorage.setItem(POS_CART_KEY, JSON.stringify(posCart)) } catch {}
+    try { localStorage.setItem(POS_CART_KEY, JSON.stringify(Array.isArray(posCart) ? posCart : [])) } catch {}
   }, [posCart])
 
-  const posItemsCount = posCart.reduce((s, l) => s + (l.cantidad ?? 0), 0)
+  const posItemsCount = (Array.isArray(posCart) ? posCart : []).reduce((s, l) => s + (l.cantidad ?? 0), 0)
 
   function posAddItem(item, qty = 1) {
     // Discrimina la fuente:
@@ -71,7 +76,7 @@ export function CartProvider({ children }) {
 
   useEffect(() => { fetchCarrito() }, [fetchCarrito])
 
-  const totalItems = carrito?.lineas?.reduce((s, l) => s + l.cantidad, 0) ?? 0
+  const totalItems = Array.isArray(carrito?.lineas) ? carrito.lineas.reduce((s, l) => s + (l.cantidad ?? 0), 0) : 0
 
   async function addItem(productoId, cantidad = 1) {
     setLoading(true)

@@ -22,6 +22,7 @@ const ENTIDADES = [
   { key: 'cliente',    label: 'Clientes',     desc: 'Número de cliente único (no fiscal).' },
   { key: 'producto',   label: 'Artículos',    desc: 'SKUs auto-generados (inventario).' },
   { key: 'servicio',   label: 'Servicios',    desc: 'Contratos/suscripciones de servicio.' },
+  { key: 'plan',       label: 'Planes ISP',   desc: 'SKU del plan (WISP/CCTV/Mixto).' },
   { key: 'rma',        label: 'Tickets RMA',  desc: 'Reparación y servicio técnico en taller.' },
 ]
 

@@ -188,7 +188,7 @@ function ModalFacturaManual({ onClose, onSuccess }) {
   function removeLinea(i)    { setLineas(p => p.filter((_, idx) => idx !== i)) }
   function updateLinea(i, u) { setLineas(p => p.map((l, idx) => idx === i ? { ...l, ...u } : l)) }
 
-  const totales = lineas.reduce((acc, l) => {
+  const totales = (Array.isArray(lineas) ? lineas : []).reduce((acc, l) => {
     const pu  = l.precioOverride !== '' ? parseFloat(l.precioOverride) || 0 : (l.producto ? Number(l.producto.precio) : 0)
     const sub = pu * (parseInt(l.cantidad) || 0)
     acc.subtotal += sub

@@ -288,6 +288,9 @@ model MovimientoInventario {
 
 model Plan {
   id                String            @id @default(uuid())
+  // SKU auto-generado vía generarSiguienteCodigo('plan') — visible al cliente
+  // y al equipo de ventas para referencia rápida en cotizaciones B2B.
+  sku               String?           @unique
   nombre            String
   tipo              TipoServicio
   precioMensualBase Decimal           @default(0) @db.Decimal(12, 2)
@@ -302,6 +305,7 @@ model Plan {
   @@index([activo])
   @@index([nombre])
   @@index([createdAt])
+  @@index([sku])
 }
 
 model PlantillaEquipo {

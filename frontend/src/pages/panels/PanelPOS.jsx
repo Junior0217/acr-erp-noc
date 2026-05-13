@@ -547,7 +547,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   function removeLine(idx)          { posRemoveLine(idx) }
 
   const efectivoUnitario = (pu, pct, mon) => Math.max(0, pu * (1 - (pct ?? 0) / 100) - (mon ?? 0))
-  const subtotalBruto = cart.reduce((s, l) => s + efectivoUnitario(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto) * l.cantidad, 0)
+  const subtotalBruto = (Array.isArray(cart) ? cart : []).reduce((s, l) => s + efectivoUnitario(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto) * l.cantidad, 0)
   const globalDesc    = descGlobalPct > 0 ? subtotalBruto * (descGlobalPct / 100) : Math.min(descGlobalMonto, subtotalBruto)
   const subtotal      = Math.round((subtotalBruto - globalDesc) * 100) / 100
   const itbisAmt      = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
@@ -733,7 +733,7 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
   const [pagos, setPagos] = useState([{ metodo: 'Efectivo', monto: total, refer: '' }])
   const [pinSupervisor, setPinSupervisor] = useState('')
   const [showPin, setShowPin] = useState(false)
-  const sumaPagos = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0)
+  const sumaPagos = (Array.isArray(pagos) ? pagos : []).reduce((s, p) => s + (Number(p.monto) || 0), 0)
   const diff = Math.round((total - sumaPagos) * 100) / 100
   const sumaOk = Math.abs(diff) < 0.01
   const puedeFacturar = sumaOk && (!necesitaPIN || pinSupervisor.trim().length >= 4)

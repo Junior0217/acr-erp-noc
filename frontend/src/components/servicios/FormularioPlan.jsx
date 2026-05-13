@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
-import { X, Loader2, Plus, Trash2, Search } from 'lucide-react'
+import { X, Loader2, Plus, Trash2, Search, Sparkles } from 'lucide-react'
+import { apiFetch } from '../../utils/api'
 
 const API = import.meta.env.VITE_API_URL || ''
 const TIPOS = ['WISP','CCTV','Redes','CercosElectricos','VentaEquipos','Mixto']
@@ -23,6 +24,15 @@ export default function FormularioPlan({ plan, onClose, onSaved }) {
   const [loadingProductos, setLoadingProductos] = useState(false)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  const [proximoSku, setProximoSku] = useState(null)
+
+  useEffect(() => {
+    if (!plan) {
+      apiFetch('/api/configuracion/secuencias/preview/plan').then(r => r.ok ? r.json() : null)
+        .then(j => j?.proximo && setProximoSku(j.proximo))
+        .catch(() => {})
+    }
+  }, [plan])
 
   const buscarProductos = useCallback(async (q) => {
     if (!q.trim()) { setProductos([]); return }
@@ -80,6 +90,16 @@ export default function FormularioPlan({ plan, onClose, onSaved }) {
 
         <div className="overflow-y-auto flex-1 p-5 space-y-5">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={LABEL}>SKU del Plan</label>
+              <div className="px-3 py-2 rounded-lg bg-blue-900/15 border border-blue-700/30 text-sm text-blue-300 font-mono flex items-center gap-2">
+                <Sparkles size={12} className="text-blue-400" />
+                {plan ? (plan.sku ?? 'Sin SKU (plan legacy)') : (proximoSku ?? 'Auto-generado al guardar')}
+              </div>
+              <p className="text-[10px] text-slate-600 mt-1">
+                {plan ? 'SKU inmutable post-creación.' : 'Configurable en Configuración → Secuencias.'}
+              </p>
+            </div>
             <div className="sm:col-span-2">
               <label className={LABEL}>Nombre del Plan</label>
               <input className={INPUT} value={form.nombre} onChange={e => set('nombre', e.target.value)} placeholder="Ej. WISP 50Mbps Residencial" />

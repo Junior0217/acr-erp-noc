@@ -3589,6 +3589,7 @@ const secuenciasPatchSchema = z.object({
   servicio:   secuenciaEntradaSchema.optional(),
   cliente:    secuenciaEntradaSchema.optional(),
   rma:        secuenciaEntradaSchema.optional(),
+  plan:       secuenciaEntradaSchema.optional(),
 }).strict()
 
 app.patch('/api/configuracion/secuencias', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
@@ -3623,6 +3624,92 @@ app.get('/api/configuracion/secuencias/preview/:entidad', verificarJWT, requerir
     res.json({ entidad, prefijo: cfg.prefijo, actual: cfg.actual, padding: cfg.padding, proximo: `${cfg.prefijo}-${String(next).padStart(cfg.padding, '0')}` })
   } catch (e) {
     res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── Bulk migration de descripciones legacy -> formato estructurado v=1 ───────
+// Endpoint de uso único (owner only). Recorre Producto + ItemCatalogo y, para
+// cada fila cuya descripcion NO sea JSON v=1, aplica el parser primitivo:
+//   linea 1  -> titulo (strip ** o # heading si aplica)
+//   resto    -> bullets (strip prefijos -, *, •, ·, "1.")
+// Idempotente: re-ejecutar no daña filas ya migradas (las salta).
+function _parsearLegacyDescripcion(raw) {
+  if (!raw || typeof raw !== 'string') return null
+  const trimmed = raw.trim()
+  if (!trimmed) return null
+  // Ya está en formato estructurado -> skip.
+  if (trimmed.startsWith('{')) {
+    try { const o = JSON.parse(trimmed); if (o?.v === 1) return null } catch {}
+  }
+  const lines = trimmed.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  if (lines.length === 0) return null
+  let titulo = '', bullets = []
+  const m = lines[0].match(/^\*\*(.+)\*\*\s*$/) || lines[0].match(/^#{1,6}\s+(.+)$/)
+  if (m) { titulo = m[1].trim(); bullets = lines.slice(1) }
+  else   { titulo = lines[0];    bullets = lines.slice(1) }
+  bullets = bullets
+    .map(l => l.replace(/^[-*•·]\s+/, '').replace(/^\d+\.\s+/, '').trim())
+    .filter(Boolean)
+    .slice(0, 30)
+    .map(b => b.slice(0, 200))
+  return { v: 1, titulo: titulo.slice(0, 200), bullets }
+}
+
+app.post('/api/admin/migrar-descripciones', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  const t0 = Date.now()
+  const stats = { producto: { total: 0, migrados: 0, skipped: 0, errores: 0 },
+                  itemCatalogo: { total: 0, migrados: 0, skipped: 0, errores: 0 } }
+  try {
+    // PRODUCTOS
+    const productos = await prisma.producto.findMany({
+      where:  { descripcion: { not: null } },
+      select: { id: true, descripcion: true },
+    })
+    stats.producto.total = productos.length
+    for (const p of productos) {
+      const parsed = _parsearLegacyDescripcion(p.descripcion)
+      if (!parsed) { stats.producto.skipped++; continue }
+      try {
+        await prisma.producto.update({
+          where: { id: p.id },
+          data:  { descripcion: JSON.stringify(parsed) },
+        })
+        stats.producto.migrados++
+      } catch (e) {
+        console.error(`[MIGRACION] producto ${p.id}:`, e.message)
+        stats.producto.errores++
+      }
+    }
+    // ITEM CATALOGO
+    const items = await prisma.itemCatalogo.findMany({
+      where:  { descripcion: { not: null } },
+      select: { id: true, descripcion: true },
+    })
+    stats.itemCatalogo.total = items.length
+    for (const it of items) {
+      const parsed = _parsearLegacyDescripcion(it.descripcion)
+      if (!parsed) { stats.itemCatalogo.skipped++; continue }
+      try {
+        await prisma.itemCatalogo.update({
+          where: { id: it.id },
+          data:  { descripcion: JSON.stringify(parsed) },
+        })
+        stats.itemCatalogo.migrados++
+      } catch (e) {
+        console.error(`[MIGRACION] itemCatalogo ${it.id}:`, e.message)
+        stats.itemCatalogo.errores++
+      }
+    }
+    auditReq('admin:migrar_descripciones', req, { stats, elapsedMs: Date.now() - t0 })
+    res.json({
+      ok: true,
+      elapsedMs: Date.now() - t0,
+      stats,
+      resumen: `Productos: ${stats.producto.migrados}/${stats.producto.total} migrados, ${stats.producto.skipped} ya estructurados. ItemCatalogo: ${stats.itemCatalogo.migrados}/${stats.itemCatalogo.total} migrados, ${stats.itemCatalogo.skipped} ya estructurados.`,
+    })
+  } catch (e) {
+    console.error('[MIGRACION]', e.message)
+    res.status(500).json({ ok: false, error: e.message, stats })
   }
 })
 
@@ -5210,10 +5297,13 @@ app.get('/api/planes/:id', async (req, res) => {
 app.post('/api/planes', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const { plantillaEquipos, ...rest } = planSchema.parse(req.body);
-    const plan = await prisma.plan.create({
-      data: { ...rest, plantillaEquipos: { create: plantillaEquipos } },
-      include: { plantillaEquipos: { include: { producto: { select: { id: true, nombre: true, sku: true } } } } },
-    });
+    const plan = await prisma.$transaction(async (tx) => {
+      const sku = await generarSiguienteCodigo('plan', tx)
+      return tx.plan.create({
+        data: { ...rest, sku, plantillaEquipos: { create: plantillaEquipos } },
+        include: { plantillaEquipos: { include: { producto: { select: { id: true, nombre: true, sku: true } } } } },
+      })
+    })
     res.status(201).json(formatPlan(plan));
   } catch (error) {
     res.status(400).json({ error: 'Datos inválidos' });
@@ -6252,6 +6342,7 @@ const SECUENCIA_DEFAULTS = {
   servicio:   { prefijo: 'SVC', actual: 0, padding: 6 },
   cliente:    { prefijo: 'CLI', actual: 0, padding: 6 },
   rma:        { prefijo: 'RMA', actual: 0, padding: 5 },
+  plan:       { prefijo: 'PLN', actual: 0, padding: 6 },
 }
 
 async function generarSiguienteCodigo(entidad, tx) {
@@ -7991,6 +8082,9 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "pinSupervisor"       TEXT NOT NULL DEFAULT '1234'`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "maxDescuentoCajero" INTEGER NOT NULL DEFAULT 15`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "secuenciasConfig"   JSONB NOT NULL DEFAULT '{}'::jsonb`)
+    // Plan.sku — auto-secuenciador (PLN-000001 por defecto)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "sku" TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Plan_sku_key" ON "Plan"("sku") WHERE "sku" IS NOT NULL`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pagos"               JSONB`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "etapaPipeline"       TEXT NOT NULL DEFAULT 'Borrador'`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_etapaPipeline_idx" ON "Factura"("etapaPipeline")`)

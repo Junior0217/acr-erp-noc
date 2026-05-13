@@ -74,7 +74,7 @@ function KanbanCard({ cot, onOpen, onPDF }) {
 function KanbanColumn({ etapa, items, loading, onOpen, onPDF }) {
   const c = KANBAN_COLORS[etapa.color]
   const { setNodeRef, isOver } = useDroppable({ id: etapa.id, data: { etapa: etapa.id } })
-  const total = items.reduce((s, x) => s + Number(x.total || 0), 0)
+  const total = (Array.isArray(items) ? items : []).reduce((s, x) => s + Number(x.total || 0), 0)
   return (
     <div ref={setNodeRef}
       className={`flex-1 min-w-[200px] rounded-xl border ${c.border} ${c.bg} p-2.5 flex flex-col gap-2 transition-all ${isOver ? 'ring-2 ring-blue-500/60 scale-[1.01]' : ''}`}>
