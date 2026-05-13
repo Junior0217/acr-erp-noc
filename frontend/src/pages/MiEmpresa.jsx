@@ -125,9 +125,11 @@ export default function MiEmpresa() {
         Icon={asset.Icon}
         url={form.assets?.[asset.key] ?? ''}
         canEdit={canEdit}
+        // El upload sólo sube a Storage y devuelve URL. La URL se persiste
+        // a BD recién cuando se envía el form completo (botón "Guardar cambios").
         onUpdated={(url) => {
           setForm(f => ({ ...f, assets: { ...(f.assets ?? {}), [asset.key]: url } }))
-          refresh(true)
+          setDirty(true)
         }}
       />
     )
@@ -227,7 +229,7 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
       const r = await apiFetch('/api/configuracion/empresa/upload', { method: 'POST', body: fd })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.url) {
-        toast.success(`${label} actualizado`)
+        toast.success(`${label} listo · pulsa Guardar para aplicar`)
         onUpdated?.(j.url)
         setPreview(null)
       } else {
@@ -246,18 +248,14 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
     }
   }
 
-  async function quitar() {
+  // Quitar no toca BD: sólo marca el asset como null en el form padre.
+  // El borrado real ocurre al pulsar "Guardar cambios" (PATCH /api/configuracion/empresa),
+  // y el orphan-cleanup en Storage corre fire-and-forget en el backend.
+  function quitar() {
     if (!canEdit) return
-    setBusy(true)
-    try {
-      const r = await apiFetch('/api/configuracion/empresa', {
-        method: 'PATCH',
-        body: JSON.stringify({ assets: { [kind]: null } }),
-      })
-      if (r.ok) { toast.success(`${label} eliminado`); onUpdated?.(null) }
-      else { toast.error('Error al eliminar.') }
-    } catch { toast.error('Error de red.') }
-    finally { setBusy(false) }
+    onUpdated?.(null)
+    setPreview(null)
+    toast.message(`${label} marcado para quitar · pulsa Guardar para aplicar`)
   }
 
   const displayUrl = preview ?? url

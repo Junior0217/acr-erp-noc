@@ -2590,12 +2590,9 @@ app.post(
       const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
       const path     = `acr/${filename}`
 
-      // 4. Snapshot del asset viejo ANTES del upload nuevo (para cleanup)
-      const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } })
-      const urlVieja = current?.assets?.[kind] ?? null
-      const pathViejo = pathFromSupabaseUrl(urlVieja)
-
-      // 5. Upload nuevo
+      // Upload a Supabase Storage. NO se escribe en BD aquí — la URL se
+      // persiste sólo cuando el usuario envíe el form completo vía
+      // PATCH /api/configuracion/empresa (orphan cleanup vive en esa ruta).
       const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, buffer, {
         contentType: finalMime,
         cacheControl: '3600',
@@ -2612,38 +2609,19 @@ app.post(
         return res.status(500).json({ error: 'URL pública generada inválida.', code: 'URL_INVALID' })
       }
 
-      // 6. Update singleton ANTES de borrar archivo viejo (consistencia)
-      const nextAssets = { ...(current?.assets ?? {}), [kind]: publicUrl }
-      await prisma.empresaPerfil.update({ where: { id: 1 }, data: { assets: nextAssets } })
-
-      // 7. Cleanup fire-and-forget — NO bloquea respuesta si falla
       const ahorroPct = ((req.file.size - buffer.length) / req.file.size * 100)
       auditReq('empresa:upload', req, {
         kind, inputMime, finalMime,
         sizeOriginal: req.file.size, sizeComprimido: buffer.length,
         ahorroPct: Number(ahorroPct.toFixed(1)),
         url: publicUrl,
-        pathViejoBorrado: pathViejo ?? null,
       })
-      if (pathViejo) {
-        supabase.storage.from(SUPABASE_BUCKET).remove([pathViejo])
-          .then(({ error }) => {
-            if (error) {
-              console.error('[CLEANUP FAIL]', pathViejo, error.message)
-              auditReq('empresa:upload_cleanup_fail', { ...req, user: req.user }, { pathViejo, error: error.message })
-            } else {
-              console.log('[CLEANUP OK]', pathViejo)
-            }
-          })
-          .catch(e => console.error('[CLEANUP EXCEPTION]', e.message))
-      }
 
       res.status(201).json({
         kind, url: publicUrl, mime: finalMime,
         size: buffer.length,
         sizeOriginal: req.file.size,
         ahorroPct: Number(ahorroPct.toFixed(1)),
-        oldRemoved: !!pathViejo,
       })
     } catch (e) {
       if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
@@ -2679,12 +2657,14 @@ async function buildPdfData(facturaOrCotizacion) {
       telefono:    c.telefono,
       email:       c.email,
     },
+    // LineaFactura SOLO tiene relación con producto (no con itemCatalogo).
+    // El nombre del item siempre vive en l.descripcion (string nativo).
     items: (f.lineas ?? []).map(l => ({
-      descripcion:     l.descripcion,
-      detalle:         l.itemCatalogo?.descripcion ?? null,
-      sku:             l.producto?.sku ?? (l.itemCatalogo?.nombre && l.itemCatalogo.nombre !== l.descripcion ? l.itemCatalogo.nombre : null),
-      cantidad:        l.cantidad,
-      precioUnitario:  Number(l.precioUnitario),
+      descripcion:    l.descripcion,
+      detalle:        l.producto?.nombre && l.producto.nombre !== l.descripcion ? l.producto.nombre : null,
+      sku:            l.producto?.sku ?? null,
+      cantidad:       l.cantidad,
+      precioUnitario: Number(l.precioUnitario),
     })),
     ncf:          f.ncf ?? null,
     tipoNcf:      f.tipoNcf ?? null,
@@ -2707,7 +2687,7 @@ app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_co
       where:   { id: req.params.id },
       include: {
         cliente: true,
-        lineas:  { include: { itemCatalogo: { select: { nombre: true, descripcion: true } }, producto: { select: { sku: true, nombre: true } } } },
+        lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
       },
     })
     if (!cot || cot.deletedAt) return res.status(404).json({ error: 'Cotización no encontrada.' })
@@ -2745,7 +2725,7 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
       where:   { id: req.params.id },
       include: {
         cliente: true,
-        lineas:  { include: { itemCatalogo: { select: { nombre: true, descripcion: true } }, producto: { select: { sku: true, nombre: true } } } },
+        lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
       },
     })
     if (!fact || fact.deletedAt) return res.status(404).json({ error: 'Factura no encontrada.' })
@@ -2779,7 +2759,7 @@ app.get('/api/portal/facturas/:id/pdf-v2', verificarPortalJWT, async (req, res) 
   try {
     const fact = await prisma.factura.findUnique({
       where:   { id: req.params.id },
-      include: { cliente: true, lineas: { include: { itemCatalogo: { select: { nombre: true, descripcion: true } } } } },
+      include: { cliente: true, lineas: { include: { producto: { select: { sku: true, nombre: true } } } } },
     })
     if (!fact || fact.clienteId !== req.portalUser.clienteId) return res.status(404).json({ error: 'No encontrada.' })
     const data = await buildPdfData(fact)
@@ -2868,10 +2848,14 @@ const empresaPatchSchema = z.object({
 app.patch('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:editar'), async (req, res) => {
   try {
     const data = empresaPatchSchema.parse(req.body)
+    // Snapshot previo: necesario para identificar URLs huérfanas a remover de Storage
+    // cuando el cliente reemplaza o limpia un asset al guardar el form.
+    const prevAssets = data.assets
+      ? ((await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } }))?.assets ?? {})
+      : null
     // Merge assets en el JSON existente (no sobreescribir si el cliente omite alguna URL)
     if (data.assets) {
-      const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { assets: true } })
-      data.assets = { ...(current?.assets ?? {}), ...data.assets }
+      data.assets = { ...(prevAssets ?? {}), ...data.assets }
     }
     const e = await prisma.empresaPerfil.upsert({
       where:  { id: 1 },
@@ -2879,6 +2863,29 @@ app.patch('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:e
       create: { id: 1, rnc: data.rnc ?? '', razonSocial: data.razonSocial ?? 'Empresa', ...data },
     })
     auditReq('empresa:perfil_update', req, { campos: Object.keys(data) })
+
+    // Fire-and-forget: limpia Storage de assets que ya no se referencian.
+    // Sólo borra paths que viven en el bucket SUPABASE_BUCKET de ACR (validados por pathFromSupabaseUrl).
+    if (prevAssets && supabase) {
+      setImmediate(async () => {
+        try {
+          const paths = []
+          for (const [k, oldUrl] of Object.entries(prevAssets)) {
+            if (!oldUrl) continue
+            const newUrl = data.assets?.[k]
+            if (newUrl === oldUrl) continue
+            const p = pathFromSupabaseUrl(oldUrl)
+            if (p) paths.push(p)
+          }
+          if (paths.length === 0) return
+          const { error } = await supabase.storage.from(SUPABASE_BUCKET).remove(paths)
+          if (error) console.error('[EMPRESA PATCH CLEANUP]', error.message)
+          else       console.log('[EMPRESA PATCH CLEANUP OK]', paths.length, 'paths')
+        } catch (err) {
+          console.error('[EMPRESA PATCH CLEANUP EXCEPTION]', err.message)
+        }
+      })
+    }
     res.json(e)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })

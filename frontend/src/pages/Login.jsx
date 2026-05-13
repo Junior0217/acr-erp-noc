@@ -177,17 +177,22 @@ export default function Login() {
                 </div>
               </div>
 
-              <label className="flex items-center gap-2.5 cursor-pointer select-none group">
-                <div className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${
+              {/* Checkbox custom: el <input sr-only> dentro del <label> es la fuente de verdad.
+                  El click sobre el div visual burbujea al label, el cual dispara click() al input,
+                  toggleando `checked` y propagando onChange. Antes el div tenía su propio onClick
+                  que hacía DOBLE toggle (div + label) → click sobre el cuadrito no hacía nada. */}
+              <label htmlFor="remember-me" className="flex items-center gap-2.5 cursor-pointer select-none group">
+                <input id="remember-me" type="checkbox" checked={rememberMe}
+                  onChange={e => setRememberMe(e.target.checked)} className="sr-only" />
+                <span className={`w-4 h-4 rounded border flex items-center justify-center flex-shrink-0 transition-colors ${
                   rememberMe ? 'bg-blue-600 border-blue-500' : 'bg-slate-800 border-slate-600 group-hover:border-slate-500'
-                }`} onClick={() => setRememberMe(v => !v)}>
+                }`}>
                   {rememberMe && (
                     <svg width="10" height="8" viewBox="0 0 10 8" fill="none">
                       <path d="M1 4L3.5 6.5L9 1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
                     </svg>
                   )}
-                </div>
-                <input type="checkbox" checked={rememberMe} onChange={e => setRememberMe(e.target.checked)} className="sr-only" />
+                </span>
                 <span className="text-xs text-slate-500 group-hover:text-slate-400 transition-colors font-mono">
                   Mantener sesión iniciada <span className="text-slate-700">(30 días)</span>
                 </span>
