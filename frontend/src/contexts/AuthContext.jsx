@@ -56,10 +56,11 @@ export function AuthProvider({ children }) {
     function handler(e) {
       if (_logoutInFlight) return
       _logoutInFlight = true
-      // Lee el user MÁS RECIENTE via ref (closure fresh). Antes leíamos del
-      // closure inicial -> wasLoggedIn salía false si el evento llegaba en la
-      // primera render -> no toast no redirect.
-      const wasLoggedIn = userRef.current !== null && userRef.current !== undefined
+      // Lee el user MÁS RECIENTE via ref. wasLoggedIn=true SOLO si user es objeto
+      // (no null no undefined). H10: undefined = AuthContext aún hidratando -> el
+      // 401 es por sesión-nunca-iniciada, NO toast falso "Sesión cerrada por seguridad".
+      const wasLoggedIn  = userRef.current !== null && userRef.current !== undefined
+      const hidratando   = userRef.current === undefined
       purgeClientState()
 
       // Rutas públicas que NO deben redirigir (portal cliente, tracking, verify).
@@ -68,7 +69,9 @@ export function AuthProvider({ children }) {
                     || path.startsWith('/track') || path.startsWith('/verify')
                     || path.startsWith('/tienda') || path.startsWith('/cotizacion-dgii')
 
-      if (wasLoggedIn || !isPublic) {
+      // Toast SOLO cuando el user estaba realmente logueado. Si hidratando o nunca
+      // logueado, redirigimos silenciosamente sin alarma falsa.
+      if (wasLoggedIn) {
         const reason = e?.detail?.reason ?? 'expirada'
         toast.error('Sesión cerrada por seguridad', {
           description: reason === 'csrf_persistente'
@@ -78,16 +81,15 @@ export function AuthProvider({ children }) {
               : 'Tu sesión expiró, fue revocada o el usuario fue eliminado.',
           duration: 5000,
         })
-        if (!isPublic) {
-          // Pequeño delay para que el toast sea visible antes del reload.
-          setTimeout(() => {
-            // location.replace evita que el botón "atrás" vuelva a la vista privada.
-            window.location.replace('/login')
-          }, 900)
-        }
       }
-      // Permite re-disparo después de cooldown (en caso de race en SPA durante logout manual).
-      setTimeout(() => { _logoutInFlight = false }, 2500)
+      if (!isPublic) {
+        // Sin toast -> redirigimos inmediato. Con toast -> esperamos 900ms para que sea visible.
+        setTimeout(() => {
+          window.location.replace('/login')
+        }, wasLoggedIn ? 900 : 0)
+      }
+      // Si hidratando, permite reintentos rápidos cuando AuthContext termine de cargar.
+      setTimeout(() => { _logoutInFlight = false }, hidratando ? 500 : 2500)
     }
     window.addEventListener('auth:logout', handler)
     return () => window.removeEventListener('auth:logout', handler)

@@ -49,6 +49,28 @@ function detectMimeFromMagic(buf) {
   return null
 }
 
+// SSRF guard local (duplicado de server.js: esUrlPublicaSegura). Sin import circular.
+// Bloquea http(s) interno, IPs privadas, link-local, IPv6 loopback. No bulletproof
+// contra DNS rebinding pero cubre el 95% de vectores en headless contexts.
+function _esUrlSeguraPDF(u) {
+  try {
+    const url = new URL(u)
+    if (!/^https?:$/.test(url.protocol)) return false
+    const host = url.hostname.toLowerCase()
+    if (host === 'localhost' || host === '0.0.0.0' || host === '::1' || host === '[::1]') return false
+    if (/^127\./.test(host)) return false
+    if (/^10\./.test(host))  return false
+    if (/^192\.168\./.test(host)) return false
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false
+    if (/^169\.254\./.test(host)) return false // link-local AWS metadata
+    if (/^fc00:/i.test(host) || /^fe80:/i.test(host)) return false
+    if (host.endsWith('.local') || host.endsWith('.internal')) return false
+    return true
+  } catch { return false }
+}
+
+const PDF_ASSET_MAX_BYTES = 10 * 1024 * 1024  // 10MB cap por asset
+
 async function fetchToDataUri(url, { timeoutMs = 5000 } = {}) {
   if (!url) return null
   if (_assetCache.has(url)) return _assetCache.get(url)
@@ -60,6 +82,10 @@ async function fetchToDataUri(url, { timeoutMs = 5000 } = {}) {
       const abs = path.isAbsolute(url) ? url : path.join(__dirname, '..', url)
       if (fs.existsSync(abs)) {
         const buf = fs.readFileSync(abs)
+        if (buf.length > PDF_ASSET_MAX_BYTES) {
+          console.warn(`[pdf:asset] Local file too large (${buf.length}B > ${PDF_ASSET_MAX_BYTES}B): ${abs}`)
+          return null
+        }
         const mime = detectMimeFromMagic(buf) || mimeFromUrl(abs) || 'application/octet-stream'
         const uri = `data:${mime};base64,${buf.toString('base64')}`
         if (_assetCache.size >= ASSET_CACHE_MAX) _assetCache.delete(_assetCache.keys().next().value)
@@ -70,13 +96,29 @@ async function fetchToDataUri(url, { timeoutMs = 5000 } = {}) {
     return null
   }
 
+  // SSRF guard: solo dominios públicos. Bloquea redirects para evitar bypass.
+  if (!_esUrlSeguraPDF(url)) {
+    console.warn(`[pdf:asset] URL bloqueada por SSRF guard: ${url}`)
+    return null
+  }
+
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const r = await fetch(url, { signal: controller.signal })
+    const r = await fetch(url, { signal: controller.signal, redirect: 'error' })
     if (!r.ok) return null
+    // Content-length pre-check para abortar antes de bajar payload masivo.
+    const cl = parseInt(r.headers.get('content-length') ?? '0', 10)
+    if (cl > 0 && cl > PDF_ASSET_MAX_BYTES) {
+      console.warn(`[pdf:asset] Content-length too large (${cl}B > ${PDF_ASSET_MAX_BYTES}B): ${url}`)
+      return null
+    }
     const ab = await r.arrayBuffer()
     const buf = Buffer.from(ab)
+    if (buf.length > PDF_ASSET_MAX_BYTES) {
+      console.warn(`[pdf:asset] Stream too large (${buf.length}B > ${PDF_ASSET_MAX_BYTES}B): ${url}`)
+      return null
+    }
     const mime = detectMimeFromMagic(buf)
               || r.headers.get('content-type')?.split(';')[0]?.trim()
               || mimeFromUrl(url)

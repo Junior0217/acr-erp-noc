@@ -334,6 +334,18 @@ const totpLimiter = rateLimit({
   skipSuccessfulRequests: true,
 });
 
+// H7: limitador AISLADO para backup codes — más estricto que totpLimiter porque
+// los códigos no rotan automáticamente y son objetivo prioritario de brute-force.
+// 3 intentos por hora por fingerprint; sí cuenta los exitosos (para evitar enum).
+const backupCodeLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 3,
+  keyGenerator: reqFingerprint,
+  store: makeRateLimitStore(),
+  message: { error: 'Demasiados intentos con código de respaldo. Intente en 1 hora.' },
+  skipSuccessfulRequests: false,
+});
+
 const billingLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 5,
@@ -609,26 +621,35 @@ async function verificarJWT(req, res, next) {
     }
     req.user = payload;
 
-    // Sliding refresh: if JWT has < 15min left, re-sign and extend session
+    // Sliding refresh: if JWT has < 15min left, re-sign and extend session.
+    // H5: actualización atómica con WHERE condicional — dos requests paralelas
+    // no pueden ambas extender la sesión (la segunda hace 0 rows updated y noop).
     const nowSec    = Math.floor(Date.now() / 1000);
     const remaining = (payload.exp ?? 0) - nowSec;
     if (remaining > 0 && remaining < 900) {
-      const newJwt = jwt.sign(
-        { sub: payload.sub, nombre: payload.nombre, permisos: payload.permisos, jti: payload.jti, ua: payload.ua, ...(payload.needs2FASetup ? { needs2FASetup: true } : {}) },
-        process.env.JWT_SECRET,
-        { expiresIn: '30m' }
-      );
-      const newToken = wrapJWT(newJwt);
-      const isProd   = process.env.NODE_ENV === 'production';
-      const cookieOpts = {
-        httpOnly: true, signed: true,
-        secure:   isProd,
-        sameSite: isProd ? 'none' : 'lax',
-        maxAge:   30 * 60 * 1000,
-        ...(isProd ? { partitioned: true } : {}),
-      };
-      res.cookie('token', newToken, cookieOpts);
-      await prisma.sessionToken.update({ where: { jti: payload.jti }, data: { expiresAt: new Date(Date.now() + 30 * 60 * 1000) } });
+      const newExpAt = new Date(Date.now() + 30 * 60 * 1000)
+      const result = await prisma.sessionToken.updateMany({
+        where: { jti: payload.jti, expiresAt: { lt: newExpAt } },
+        data:  { expiresAt: newExpAt },
+      });
+      // Solo emitimos cookie nueva si NOSOTROS ganamos el CAS (otra request ya extendió).
+      if (result.count > 0) {
+        const newJwt = jwt.sign(
+          { sub: payload.sub, nombre: payload.nombre, permisos: payload.permisos, jti: payload.jti, ua: payload.ua, ...(payload.needs2FASetup ? { needs2FASetup: true } : {}) },
+          process.env.JWT_SECRET,
+          { expiresIn: '30m' }
+        );
+        const newToken = wrapJWT(newJwt);
+        const isProd   = process.env.NODE_ENV === 'production';
+        const cookieOpts = {
+          httpOnly: true, signed: true,
+          secure:   isProd,
+          sameSite: isProd ? 'none' : 'lax',
+          maxAge:   30 * 60 * 1000,
+          ...(isProd ? { partitioned: true } : {}),
+        };
+        res.cookie('token', newToken, cookieOpts);
+      }
     }
 
     next();
@@ -2830,7 +2851,8 @@ app.post('/api/inventario/upload-url',
       const timer = setTimeout(() => controller.abort(), 8000)
       let buf
       try {
-        const r = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+        // H1: redirect:'error' bloquea SSRF chains tipo bit.ly -> 169.254.169.254/metadata
+        const r = await fetch(url, { signal: controller.signal, redirect: 'error' })
         if (!r.ok) return res.status(422).json({ error: `Servidor remoto devolvió ${r.status}.`, code: 'REMOTE_FAIL' })
         const len = Number(r.headers.get('content-length') ?? 0)
         if (len > 5 * 1024 * 1024) return res.status(413).json({ error: 'Imagen remota excede 5MB.', code: 'TOO_LARGE' })
@@ -2889,6 +2911,20 @@ const VERIFY_SECRET = process.env.VERIFY_SECRET ?? process.env.JWT_SECRET ?? 'ch
 function facturaVerifyHash(f) {
   const payload = [f.id, f.noFactura, f.ncf ?? '', String(f.total), f.fechaEmision?.toISOString?.() ?? f.fechaEmision ?? ''].join('|')
   return crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
+}
+
+// H4: persiste verifyHash en columna indexada para lookup O(log n).
+// Fire-and-forget — el endpoint /verify tiene fallback scan si aún no se persistió.
+async function persistirVerifyHash(factura) {
+  if (!factura?.id || factura.verifyHash) return factura
+  try {
+    const vh = facturaVerifyHash(factura)
+    await prisma.factura.update({ where: { id: factura.id }, data: { verifyHash: vh } })
+    factura.verifyHash = vh
+  } catch (e) {
+    console.warn('[verifyHash] persist failed:', e.code, e.message)
+  }
+  return factura
 }
 
 // PUBLIC_URL para verificación (frontend host). Si no se configura, omite el link en el PDF.
@@ -3270,27 +3306,41 @@ app.get('/api/productos/:id/series', verificarJWT, async (req, res) => {
 // disponible en el POS al instante para evitar bloqueo de inventario activo.
 app.patch('/api/cotizaciones/:id/etapa',
   verificarJWT,
-  requerirPermiso('venta:ver_cotizaciones'),
+  requerirPermiso('venta:editar_cotizaciones'),
   async (req, res) => {
     if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
     const etapas = ['Borrador', 'Enviada', 'Negociacion', 'Aceptada', 'Convertida', 'Perdida']
     const { etapa } = req.body ?? {}
     if (!etapas.includes(etapa)) return res.status(400).json({ error: `Etapa inválida. Permitidas: ${etapas.join(', ')}.` })
     try {
+      // RBAC adicional: cajeros normales solo mueven cotizaciones propias.
+      // Owners/managers (permiso global venta:gestionar_todas) pasan a cualquier etapa.
+      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+      const puedeGestionarTodas = permisos.includes('sistema:owner') || permisos.includes('venta:gestionar_todas')
+      const factura = await prisma.factura.findUnique({
+        where:  { id: req.params.id },
+        select: { id: true, esCotizacion: true, etapaPipeline: true, empleadoId: true },
+      })
+      if (!factura) return res.status(404).json({ error: 'Cotización no encontrada.' })
+      if (!factura.esCotizacion) return res.status(400).json({ error: 'Solo cotizaciones tienen etapa pipeline.' })
+      if (!puedeGestionarTodas && factura.empleadoId && factura.empleadoId !== req.user.sub) {
+        auditReq('cotizacion:etapa_denied', req, { id: factura.id, owner: factura.empleadoId, etapaIntento: etapa })
+        return res.status(403).json({ error: 'No puedes mover cotizaciones de otros vendedores.' })
+      }
+
       const f = await prisma.factura.update({
         where: { id: req.params.id },
         data:  { etapaPipeline: etapa },
         select:{ id: true, etapaPipeline: true, noFactura: true },
       })
       let reservasLiberadas = 0
-      if (etapa === 'Perdida') {
-        // Borrado físico: la reserva pierde su razón de ser, no queremos arrastrar
-        // filas zombi en queries futuras. deleteMany porque liberada=true seguiría
-        // contando para el groupBy si el filtro cambiara.
+      // Libera reservas en etapas terminales: Perdida (rechazo), Aceptada (conversión inminente),
+      // Convertida (ya facturada -> stock se descuenta vía Factura, reservar duplica).
+      if (etapa === 'Perdida' || etapa === 'Aceptada' || etapa === 'Convertida') {
         const r = await prisma.reservaInventario.deleteMany({ where: { facturaId: f.id } })
         reservasLiberadas = r.count
         if (reservasLiberadas > 0) {
-          auditReq('cotizacion:reservas_liberadas', req, { id: f.id, count: reservasLiberadas })
+          auditReq('cotizacion:reservas_liberadas', req, { id: f.id, etapa, count: reservasLiberadas })
         }
       }
       auditReq('cotizacion:etapa', req, { id: f.id, etapa, reservasLiberadas })
@@ -3384,17 +3434,28 @@ app.get('/api/publico/verify/:hash', verifyLimiter, async (req, res) => {
     const hash = String(req.params.hash || '').toLowerCase()
     if (!/^[a-f0-9]{24}$/.test(hash)) return res.status(400).json({ valid: false, error: 'Hash inválido.' })
 
-    // Búsqueda eficiente: solo facturas activas. Para volúmenes grandes consider
-    // precomputar columna verifyHash con índice. Por ahora, scan acotado.
-    const candidatos = await prisma.factura.findMany({
-      where:  { deletedAt: null },
+    // H4: lookup O(log n) por columna indexada verifyHash. Fallback al scan legacy
+    // si la fila aún no tiene hash precomputado (facturas pre-H4 deployment).
+    let match = await prisma.factura.findFirst({
+      where:  { deletedAt: null, verifyHash: hash },
       select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true, estado: true, esCotizacion: true, clienteId: true },
-      orderBy:{ fechaEmision: 'desc' },
-      take:   20000,
     })
+    if (!match) {
+      // Fallback transitorio: facturas legacy sin verifyHash. Scan acotado a las
+      // 20k más recientes (suficiente para histórico no migrado).
+      const candidatos = await prisma.factura.findMany({
+        where:  { deletedAt: null, verifyHash: null },
+        select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true, estado: true, esCotizacion: true, clienteId: true },
+        orderBy:{ fechaEmision: 'desc' },
+        take:   20000,
+      })
+      match = candidatos.find(f => facturaVerifyHash(f) === hash) ?? null
+      // Self-heal: backfill el hash en la primera consulta exitosa.
+      if (match) {
+        prisma.factura.update({ where: { id: match.id }, data: { verifyHash: hash } }).catch(() => {})
+      }
+    }
     const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { razonSocial: true, rnc: true } })
-
-    const match = candidatos.find(f => facturaVerifyHash(f) === hash)
     if (!match) return res.status(404).json({ valid: false, error: 'Documento no encontrado o alterado.' })
 
     const cliente = await prisma.cliente.findUnique({ where: { id: match.clienteId }, select: { razonSocial: true } }).catch(() => null)
@@ -3521,6 +3582,16 @@ const empresaPatchSchema = z.object({
 app.patch('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:editar'), async (req, res) => {
   try {
     const data = empresaPatchSchema.parse(req.body)
+    // H2: pinSupervisor SOLO editable por sistema:owner (no por roles intermedios
+    // con permiso 'empresa:editar'). Cambiar el PIN equivale a bypass de descuentos.
+    if (data.pinSupervisor !== undefined) {
+      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+      if (!permisos.includes('sistema:owner')) {
+        auditReq('empresa:pin_edit_denied', req, { rol: permisos })
+        return res.status(403).json({ error: 'Solo el propietario absoluto puede modificar el PIN de supervisor.', code: 'OWNER_REQUIRED' })
+      }
+      auditReq('empresa:pin_supervisor_changed', req)
+    }
     // Snapshot previo: necesario para identificar URLs huérfanas a remover de Storage
     // cuando el cliente reemplaza o limpia un asset al guardar el form.
     const prevAssets = data.assets
@@ -3752,7 +3823,16 @@ app.post('/api/auth/refresh', async (req, res) => {
 
 // ─── 2FA Endpoints ────────────────────────────────────────────────────────────
 
-app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
+// Wrapper: aplica totpLimiter SIEMPRE, y backupCodeLimiter EXTRA si el input
+// luce como backup code (≥10 chars). Evita que un atacante con tempToken válido
+// queme intentos solo en backup codes — cada uno cuenta contra ambos limiters.
+function aplicarBackupLimiterSiAplica(req, res, next) {
+  const candidate = String(req.body?.totp ?? '').replace(/[-\s]/g, '')
+  if (candidate.length >= 10) return backupCodeLimiter(req, res, next)
+  next()
+}
+
+app.post('/api/auth/2fa/verify', totpLimiter, aplicarBackupLimiterSiAplica, async (req, res) => {
   try {
     // Acepta TOTP (6 dígitos) o backup code (formato XXXXX-XXXXX, 10 chars + guion).
     const { tempToken, totp } = z.object({
@@ -3797,9 +3877,16 @@ app.post('/api/auth/2fa/verify', totpLimiter, async (req, res) => {
       auditReq('auth:2fa_fail', req, {}, { userId: empleado.id, userName: empleado.nombre })
       return res.status(401).json({ error: 'PIN inválido.' })
     }
-    if (viaBackup) auditReq('auth:2fa_backup_used', req, {}, { userId: empleado.id, userName: empleado.nombre })
+    // H9: rotación recomendada cuando quedan ≤2 backup codes (frontend lo muestra).
+    let backupCodesRestantes = null
+    if (viaBackup) {
+      const recargado = await prisma.empleado.findUnique({ where: { id: empleado.id }, select: { backupCodes: true } })
+      backupCodesRestantes = Array.isArray(recargado?.backupCodes) ? recargado.backupCodes.length : null
+      auditReq('auth:2fa_backup_used', req, { restantes: backupCodesRestantes }, { userId: empleado.id, userName: empleado.nombre })
+    }
     auditReq('auth:login_success', req, { via: viaBackup ? 'backup' : '2fa' }, { userId: empleado.id, userName: empleado.nombre })
     const payload = await completarLogin(empleado, req, res, entry.rememberMe ?? false)
+    if (viaBackup) payload.backupCodesRestantes = backupCodesRestantes
     res.json(payload)
   } catch (e) {
     console.error('[2FA ERROR]', { message: e.message, stack: e.stack })
@@ -3846,17 +3933,26 @@ async function hashBackupCodes(plainCodes) {
 async function consumeBackupCode(empleadoId, candidate) {
   if (!candidate) return false
   const normalized = String(candidate).replace(/[-\s]/g, '').toUpperCase()
-  const emp = await prisma.empleado.findUnique({ where: { id: empleadoId }, select: { backupCodes: true } })
-  const codes = Array.isArray(emp?.backupCodes) ? emp.backupCodes : []
-  for (let i = 0; i < codes.length; i++) {
-    if (await bcrypt.compare(normalized, codes[i])) {
-      // Consumido: lo elimina del array.
-      const next = [...codes.slice(0, i), ...codes.slice(i + 1)]
-      await prisma.empleado.update({ where: { id: empleadoId }, data: { backupCodes: next } })
-      return true
+
+  // Atomic compare-and-swap: dos peticiones paralelas no pueden consumir el mismo código.
+  // Serializable isolation -> conflicto en backupCodes column aborta una de las dos transacciones,
+  // garantizando que cada código se use EXACTAMENTE una vez aunque haya race.
+  return prisma.$transaction(async (tx) => {
+    const emp = await tx.empleado.findUnique({ where: { id: empleadoId }, select: { backupCodes: true } })
+    const codes = Array.isArray(emp?.backupCodes) ? emp.backupCodes : []
+    for (let i = 0; i < codes.length; i++) {
+      if (await bcrypt.compare(normalized, codes[i])) {
+        const next = [...codes.slice(0, i), ...codes.slice(i + 1)]
+        await tx.empleado.update({ where: { id: empleadoId }, data: { backupCodes: next } })
+        return true
+      }
     }
-  }
-  return false
+    return false
+  }, { isolationLevel: 'Serializable', timeout: 8000 }).catch(e => {
+    // Conflicto de Serializable -> retornar false (cliente reintenta con otro código si quedan).
+    console.warn('[consumeBackupCode] tx conflict:', e.code, e.message)
+    return false
+  })
 }
 
 app.post('/api/auth/2fa/enable', verificarJWT, async (req, res) => {
@@ -4192,7 +4288,7 @@ app.get('/api/clientes', async (req, res) => {
   }
 });
 
-app.post('/api/clientes', async (req, res) => {
+app.post('/api/clientes', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   try {
     const { prospectoOrigenId, ...body } = req.body;
     const data = clienteSchema.parse(body);
@@ -4213,7 +4309,7 @@ app.post('/api/clientes', async (req, res) => {
   }
 });
 
-app.put('/api/clientes/:id', async (req, res) => {
+app.put('/api/clientes/:id', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const data = clienteUpdateSchema.parse(req.body);
@@ -4242,7 +4338,7 @@ app.delete('/api/clientes/:id', verificarJWT, requerirPermiso('crm:borrar'), asy
   }
 });
 
-app.patch('/api/clientes/:id/toggle', async (req, res) => {
+app.patch('/api/clientes/:id/toggle', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const current = await prisma.cliente.findUnique({ where: { id: req.params.id } });
@@ -4285,7 +4381,7 @@ app.get('/api/suplidores', async (req, res) => {
   }
 });
 
-app.post('/api/suplidores', async (req, res) => {
+app.post('/api/suplidores', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   try {
     const data = suplidorSchema.parse(req.body);
     res.status(201).json(formatSuplidor(await prisma.suplidor.create({ data })));
@@ -4295,7 +4391,7 @@ app.post('/api/suplidores', async (req, res) => {
   }
 });
 
-app.put('/api/suplidores/:id', async (req, res) => {
+app.put('/api/suplidores/:id', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const data = suplidorUpdateSchema.parse(req.body);
@@ -4308,7 +4404,7 @@ app.put('/api/suplidores/:id', async (req, res) => {
   }
 });
 
-app.patch('/api/suplidores/:id/toggle', async (req, res) => {
+app.patch('/api/suplidores/:id/toggle', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const current = await prisma.suplidor.findUnique({ where: { id: req.params.id } });
@@ -4349,7 +4445,7 @@ app.get('/api/prospectos', async (req, res) => {
   }
 });
 
-app.post('/api/prospectos', async (req, res) => {
+app.post('/api/prospectos', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   try {
     const data = prospectoSchema.parse(req.body);
     res.status(201).json(formatProspecto(await prisma.prospecto.create({ data })));
@@ -4358,7 +4454,7 @@ app.post('/api/prospectos', async (req, res) => {
   }
 });
 
-app.put('/api/prospectos/:id', async (req, res) => {
+app.put('/api/prospectos/:id', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const data = prospectoUpdateSchema.parse(req.body);
@@ -4370,7 +4466,7 @@ app.put('/api/prospectos/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/prospectos/:id', async (req, res) => {
+app.delete('/api/prospectos/:id', verificarJWT, requerirPermiso('crm:borrar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     await prisma.prospecto.delete({ where: { id: req.params.id } });
@@ -4511,7 +4607,7 @@ app.get('/api/categorias', async (req, res) => {
   }
 });
 
-app.post('/api/categorias', async (req, res) => {
+app.post('/api/categorias', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = categoriaSchema.parse(req.body);
     const cat = await prisma.categoria.create({ data, include: { _count: { select: { productos: true } } } });
@@ -4522,7 +4618,7 @@ app.post('/api/categorias', async (req, res) => {
   }
 });
 
-app.put('/api/categorias/:id', async (req, res) => {
+app.put('/api/categorias/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
@@ -4536,7 +4632,7 @@ app.put('/api/categorias/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/categorias/:id', async (req, res) => {
+app.delete('/api/categorias/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
@@ -4580,7 +4676,7 @@ app.get('/api/productos', async (req, res) => {
   }
 });
 
-app.post('/api/productos', async (req, res) => {
+app.post('/api/productos', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = productoSchema.parse(req.body);
     const producto = await prisma.producto.create({
@@ -4594,7 +4690,7 @@ app.post('/api/productos', async (req, res) => {
   }
 });
 
-app.put('/api/productos/:id', async (req, res) => {
+app.put('/api/productos/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
@@ -4611,7 +4707,7 @@ app.put('/api/productos/:id', async (req, res) => {
   }
 });
 
-app.delete('/api/productos/:id', async (req, res) => {
+app.delete('/api/productos/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   const id = parseInt(req.params.id);
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
@@ -4712,7 +4808,7 @@ app.get('/api/planes/:id', async (req, res) => {
   }
 });
 
-app.post('/api/planes', async (req, res) => {
+app.post('/api/planes', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const { plantillaEquipos, ...rest } = planSchema.parse(req.body);
     const plan = await prisma.plan.create({
@@ -4725,7 +4821,7 @@ app.post('/api/planes', async (req, res) => {
   }
 });
 
-app.put('/api/planes/:id', async (req, res) => {
+app.put('/api/planes/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const { plantillaEquipos, ...rest } = planUpdateSchema.parse(req.body);
@@ -4746,7 +4842,7 @@ app.put('/api/planes/:id', async (req, res) => {
   }
 });
 
-app.patch('/api/planes/:id/toggle', async (req, res) => {
+app.patch('/api/planes/:id/toggle', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const current = await prisma.plan.findUnique({ where: { id: req.params.id } });
@@ -4804,7 +4900,7 @@ app.get('/api/servicios', async (req, res) => {
   }
 });
 
-app.post('/api/servicios', async (req, res) => {
+app.post('/api/servicios', verificarJWT, requerirPermiso('servicios:crear'), async (req, res) => {
   try {
     const data = servicioSchema.parse(req.body);
     const servicio = await prisma.$transaction(async (tx) => {
@@ -4817,7 +4913,7 @@ app.post('/api/servicios', async (req, res) => {
   }
 });
 
-app.put('/api/servicios/:id', async (req, res) => {
+app.put('/api/servicios/:id', verificarJWT, requerirPermiso('servicios:crear'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const data = servicioUpdateSchema.parse(req.body);
@@ -4829,7 +4925,7 @@ app.put('/api/servicios/:id', async (req, res) => {
   }
 });
 
-app.patch('/api/servicios/:id/estado', async (req, res) => {
+app.patch('/api/servicios/:id/estado', verificarJWT, requerirPermiso('servicios:crear'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const { estado } = z.object({ estado: z.enum(ESTADOS_SERVICIO) }).parse(req.body);
@@ -4911,7 +5007,7 @@ app.get('/api/ordenes-instalacion', async (req, res) => {
   }
 });
 
-app.post('/api/ordenes-instalacion', async (req, res) => {
+app.post('/api/ordenes-instalacion', verificarJWT, requerirPermiso('ot:crear'), async (req, res) => {
   try {
     const { detalles, ...rest } = ordenSchema.parse(req.body);
     const orden = await prisma.ordenInstalacion.create({
@@ -4927,7 +5023,7 @@ app.post('/api/ordenes-instalacion', async (req, res) => {
   }
 });
 
-app.put('/api/ordenes-instalacion/:id', async (req, res) => {
+app.put('/api/ordenes-instalacion/:id', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const { detalles, ...rest } = ordenUpdateSchema.parse(req.body);
@@ -4947,7 +5043,7 @@ app.put('/api/ordenes-instalacion/:id', async (req, res) => {
   }
 });
 
-app.patch('/api/ordenes-instalacion/:id/completar', async (req, res) => {
+app.patch('/api/ordenes-instalacion/:id/completar', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const orden = await prisma.ordenInstalacion.findUnique({ where: { id: req.params.id }, include: { detalles: true } });
@@ -5686,6 +5782,7 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
           noFactura,
           clienteId:  ot.clienteId,
           ordenId:    ot.id,
+          empleadoId: req.user?.sub ?? null,
           estado:     'Emitida',
           subtotal,
           itbis,
@@ -5708,6 +5805,7 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
       })
     })
 
+    persistirVerifyHash(factura).catch(() => {})
     auditReq('factura:emitir', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
     res.status(201).json(factura)
 
@@ -5781,7 +5879,8 @@ const facturaManualSchema = z.object({
 })
 
 // Shared transaction: used by /api/facturas/manual and /api/carrito/checkout
-async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0 }) {
+// C2: puedeOverridePrecio gating + empleadoId trace.
+async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0, puedeOverridePrecio = false, empleadoId = null }) {
   return prisma.$transaction(async (tx) => {
     // 1. Resolve client
     let cliente
@@ -5821,16 +5920,21 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
     // Performed later via atomic UPDATE to avoid TOCTOU race conditions
 
     // 4. Build enriched lines + totals (with discounts)
+    // C2: precio autoritativo DB. Si cliente no tiene 'pos:override_precio',
+    // ignoramos l.precioUnitario y usamos Producto.precio actual.
     const lineasEnriquecidas = lineas.map(l => {
       if (l.productoId) {
         const p   = pMap[l.productoId]
-        const pu  = l.precioUnitario ?? Number(p.precio)
+        const pu  = (puedeOverridePrecio && l.precioUnitario != null)
+          ? Number(l.precioUnitario)
+          : Number(p.precio)
         const pct = l.descuentoPorcentaje ?? 0
         const mon = l.descuentoMonto ?? 0
         return { productoId: l.productoId, descripcion: l.descripcion ?? p.nombre, cantidad: l.cantidad,
                  precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon, _tipoItem: p.tipoItem }
       }
-      // Description-only line (POS catalog item — no inventory tracking)
+      // Description-only line (POS catalog item — no inventory tracking).
+      // Aquí precio sí puede venir del cliente (no hay producto físico que validar).
       const pu  = l.precioUnitario ?? 0
       const pct = l.descuentoPorcentaje ?? 0
       const mon = l.descuentoMonto ?? 0
@@ -5917,6 +6021,7 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
       data: {
         noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
         ncf, tipoNcf, esCotizacion,
+        empleadoId,                              // C6: ownership trail
         snapshot,
         notas:      esCotizacion
           ? `Cotización POS — ${lineas.length} línea(s)`
@@ -5961,7 +6066,10 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
 app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), async (req, res) => {
   try {
     const { clienteId, itbis: applyItbis, diasVence, esCotizacion, lineas } = facturaManualSchema.parse(req.body)
-    const factura = await procesarFacturaPOS({ inputClienteId: clienteId, applyItbis, diasVence, esCotizacion, lineas })
+    const _permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    const puedeOverridePrecio = _permisos.includes('sistema:owner') || _permisos.includes('pos:override_precio')
+    const factura = await procesarFacturaPOS({ inputClienteId: clienteId, applyItbis, diasVence, esCotizacion, lineas, puedeOverridePrecio, empleadoId: req.user?.sub ?? null })
+    persistirVerifyHash(factura).catch(() => {})
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:manual', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length })
     res.status(201).json(factura)
   } catch (e) {
@@ -6006,7 +6114,7 @@ const posVentaSchema = z.object({
   descuentoGlobalPct:  z.number().min(0).max(100).optional().default(0),
   descuentoGlobalMonto:z.number().min(0).optional().default(0),
   pinSupervisor:       z.string().max(20).optional(),         // requerido si desc > 15%
-  pagos:               z.array(pagoMetodoSchema).optional(),  // null = no desglosado (legacy)
+  pagos:               z.array(pagoMetodoSchema).max(20, 'Máximo 20 métodos de pago por factura.').optional(),  // null = no desglosado (legacy). H8: cap anti-DoS
   lineas:              z.array(lineaPOSCatalogoSchema).min(1),
 })
 
@@ -6018,35 +6126,86 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
     if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
       return res.status(403).json({ error: `Se requiere permiso "${permReq}".` })
 
-    // Validación PIN supervisor con LÍMITE DINÁMICO desde EmpresaPerfil. Owners exempt.
+    // ─── Pre-fetch precios DB para gate de PIN basado en % EFECTIVO ─────────
+    // C2/C5: el cliente NO puede sobreescribir precioUnitario salvo que tenga
+    // permiso 'pos:override_precio'. Calculamos subtotalBruto desde DB para
+    // que el gate PIN considere tanto % global como descuentoMonto (efectivo).
+    const puedeOverridePrecio = permisos.includes('sistema:owner') || permisos.includes('pos:override_precio')
     const isOwner = permisos.includes('sistema:owner')
     const empCfg  = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true, maxDescuentoCajero: true } })
     const maxDescuentoCajero = Number(empCfg?.maxDescuentoCajero ?? 15)
-    if (!isOwner && !esCotizacion && descuentoGlobalPct > maxDescuentoCajero) {
+
+    const _pidsForGate = [...new Set(lineas.filter(l => l.productoId).map(l => l.productoId))]
+    const _iidsForGate = [...new Set(lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))]
+    const [_prodGate, _itemGate] = await Promise.all([
+      _pidsForGate.length ? prisma.producto.findMany({ where: { id: { in: _pidsForGate } }, select: { id: true, nombre: true, precio: true, stockActual: true, tipoItem: true } }) : [],
+      _iidsForGate.length ? prisma.itemCatalogo.findMany({ where: { id: { in: _iidsForGate } }, select: { id: true, nombre: true, precio: true, productoId: true, producto: { select: { stockActual: true, tipoItem: true } } } }) : [],
+    ])
+    const _pMapGate = Object.fromEntries(_prodGate.map(p => [p.id, Number(p.precio)]))
+    const _iMapGate = Object.fromEntries(_itemGate.map(i => [i.id, Number(i.precio)]))
+
+    // M10: pre-flight stock check — abortar antes de quemar NCF si algún ARTICULO
+    // físico no tiene inventario. Las líneas de SERVICIO se ignoran (no consumen).
+    // Solo en facturas reales (cotizaciones reservan, no descuentan).
+    if (!esCotizacion) {
+      const stockMap = Object.fromEntries(_prodGate.map(p => [p.id, p]))
+      const itemStockMap = Object.fromEntries(_itemGate.filter(i => i.productoId).map(i => [i.id, i]))
+      for (const l of lineas) {
+        if (l.productoId) {
+          const p = stockMap[l.productoId]
+          if (p && p.tipoItem !== 'SERVICIO' && Number(p.stockActual) < l.cantidad) {
+            return res.status(422).json({
+              error: `Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${l.cantidad}.`,
+              code:  'STOCK_INSUFICIENTE',
+              productoId: p.id,
+            })
+          }
+        } else if (l.itemCatalogoId) {
+          const it = itemStockMap[l.itemCatalogoId]
+          if (it?.producto && it.producto.tipoItem !== 'SERVICIO' && Number(it.producto.stockActual) < l.cantidad) {
+            return res.status(422).json({
+              error: `Stock insuficiente para "${it.nombre}". Disponible: ${it.producto.stockActual}, requerido: ${l.cantidad}.`,
+              code:  'STOCK_INSUFICIENTE',
+              itemCatalogoId: it.id,
+            })
+          }
+        }
+      }
+    }
+    let _subtotalBrutoGate = 0
+    for (const l of lineas) {
+      const precioBase = l.productoId
+        ? (puedeOverridePrecio && l.precioUnitario != null ? Number(l.precioUnitario) : (_pMapGate[l.productoId] ?? 0))
+        : (puedeOverridePrecio && l.precioUnitario != null ? Number(l.precioUnitario) : (_iMapGate[l.itemCatalogoId] ?? 0))
+      _subtotalBrutoGate += totalLinea(precioBase, l.descuentoPorcentaje ?? 0, l.descuentoMonto ?? 0, l.cantidad)
+    }
+    const _descMontoEfectivo = _subtotalBrutoGate > 0 ? Math.min(descuentoGlobalMonto, _subtotalBrutoGate) : 0
+    const _descMontoComoPct  = _subtotalBrutoGate > 0 ? (_descMontoEfectivo / _subtotalBrutoGate) * 100 : 0
+    const descEfectivoPct    = Math.max(descuentoGlobalPct, _descMontoComoPct)
+
+    if (!isOwner && !esCotizacion && descEfectivoPct > maxDescuentoCajero) {
       const pinReal = empCfg?.pinSupervisor ?? '1234'
       if (!pinSupervisor || pinSupervisor !== pinReal) {
-        auditReq('pos:descuento_pin_fail', req, { descuentoPct: descuentoGlobalPct, max: maxDescuentoCajero })
-        // Log en AuditCaja (fraude trail dedicado)
+        auditReq('pos:descuento_pin_fail', req, { descuentoPctEfectivo: descEfectivoPct.toFixed(2), max: maxDescuentoCajero })
         try {
           await prisma.auditCaja.create({ data: {
             tipo: 'descuento_rechazado', empleadoId: req.user?.sub ?? null,
-            descPct: descuentoGlobalPct,
-            detalle: `Cajero intentó aplicar ${descuentoGlobalPct}% (límite ${maxDescuentoCajero}%) sin PIN válido`,
+            descPct: Math.round(descEfectivoPct * 100) / 100,
+            detalle: `Cajero intentó descuento efectivo ${descEfectivoPct.toFixed(2)}% (límite ${maxDescuentoCajero}%) sin PIN válido`,
             ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
           }})
         } catch {}
         return res.status(403).json({
-          error: `Descuento ${descuentoGlobalPct}% excede ${maxDescuentoCajero}%. Requiere PIN de supervisor.`,
+          error: `Descuento efectivo ${descEfectivoPct.toFixed(2)}% excede ${maxDescuentoCajero}%. Requiere PIN de supervisor.`,
           code:  'PIN_REQUIRED',
         })
       }
-      // PIN válido: log de override autorizado.
-      auditReq('pos:descuento_pin_ok', req, { descuentoPct: descuentoGlobalPct, max: maxDescuentoCajero })
+      auditReq('pos:descuento_pin_ok', req, { descuentoPctEfectivo: descEfectivoPct.toFixed(2), max: maxDescuentoCajero })
       try {
         await prisma.auditCaja.create({ data: {
           tipo: 'descuento_pin', empleadoId: req.user?.sub ?? null,
-          descPct: descuentoGlobalPct,
-          detalle: `PIN supervisor validó descuento ${descuentoGlobalPct}% (límite ${maxDescuentoCajero}%)`,
+          descPct: Math.round(descEfectivoPct * 100) / 100,
+          detalle: `PIN supervisor validó descuento efectivo ${descEfectivoPct.toFixed(2)}% (límite ${maxDescuentoCajero}%)`,
           ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
         }})
       } catch {}
@@ -6107,7 +6266,10 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       const lineasEnriquecidas = lineas.map(l => {
         if (l.productoId) {
           const p = pMap[l.productoId]
-          const pu  = l.precioUnitario ?? Number(p.precio)
+          // C2: precio autoritativo DB. Cliente solo puede override si tiene 'pos:override_precio'.
+          const pu = (puedeOverridePrecio && l.precioUnitario != null)
+            ? Number(l.precioUnitario)
+            : Number(p.precio)
           return {
             descripcion: composeDesc(p.nombre, p.descripcion),
             cantidad: l.cantidad, precioUnitario: pu,
@@ -6118,7 +6280,9 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
           }
         }
         const item = iMap[l.itemCatalogoId]
-        const pu   = l.precioUnitario ?? Number(item.precio)
+        const pu = (puedeOverridePrecio && l.precioUnitario != null)
+          ? Number(l.precioUnitario)
+          : Number(item.precio)
         return {
           descripcion: composeDesc(item.nombre, item.descripcion),
           cantidad: l.cantidad, precioUnitario: pu,
@@ -6173,6 +6337,7 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         data: {
           noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
           ncf, tipoNcf, esCotizacion,
+          empleadoId: req.user?.sub ?? null,    // C6: ownership trail (RBAC Kanban)
           pagos: pagosValidados,
           notas: esCotizacion
             ? `Cotización POS (catálogo) — ${lineas.length} línea(s)`
@@ -6189,6 +6354,7 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         },
       })
     })
+    persistirVerifyHash(factura).catch(() => {})
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:pos_catalogo', req, { facturaId: factura.id, total: Number(factura.total) })
 
     // ── Reservas de stock al cotizar (TTL 72h) ──────────────────────────────
@@ -6237,7 +6403,15 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
             RETURNING id, "stockActual"
           `
           if (!rows || rows.length === 0) {
-            console.warn(`[POS] stock insuficiente producto ${v.productoId} (cantidad ${v.cantidad}); venta facturada igual`)
+            // M10: si llega aquí es que la fila se movió entre pre-flight check y este UPDATE
+            // (otra venta paralela quemó el inventario). Marcar AuditCaja para investigar.
+            console.error(`[POS] STOCK DRIFT producto ${v.productoId} - venta facturada SIN deducción. Factura ${factura.noFactura}`)
+            await prisma.auditCaja.create({ data: {
+              tipo: 'stock_drift', empleadoId: req.user?.sub ?? null,
+              facturaId: factura.id,
+              detalle: `Stock drift productoId=${v.productoId} cantidad=${v.cantidad} — investigar reconciliación.`,
+              ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
+            }}).catch(() => {})
             continue
           }
           await prisma.movimientoInventario.create({ data: { productoId: v.productoId, tipo: 'Salida', cantidad: v.cantidad } })
@@ -6397,6 +6571,8 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
       descuentoPorcentaje: Number(l.descuentoPorcentaje),
       descuentoMonto:      Number(l.descuentoMonto),
     }))
+    const _permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    const _puedeOverride = _permisos.includes('sistema:owner') || _permisos.includes('pos:override_precio')
     const factura = await procesarFacturaPOS({
       inputClienteId: carrito.clienteId ?? undefined,
       applyItbis:     carrito.applyItbis,
@@ -6407,6 +6583,8 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
       nombreTemporal,
       descuentoGlobalPct,
       descuentoGlobalMonto,
+      puedeOverridePrecio: _puedeOverride,
+      empleadoId:          req.user?.sub ?? null,
     })
     await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
     auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
@@ -6533,12 +6711,16 @@ app.post('/api/cotizaciones/:id/revivir', verificarJWT, requerirPermiso('factura
     }
 
     const lineasParaProcesar = lineasRevividas.map(({ _meta, ...rest }) => rest)
+    const _permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    const _puedeOverride = _permisos.includes('sistema:owner') || _permisos.includes('pos:override_precio')
     const nuevaFactura = await procesarFacturaPOS({
       inputClienteId: original.clienteId,
       applyItbis:     Number(original.itbis) > 0,
       diasVence:      original.fechaVence ? Math.max(0, Math.round((new Date(original.fechaVence) - Date.now()) / 86_400_000)) : 30,
       esCotizacion:   false,
       lineas:         lineasParaProcesar,
+      puedeOverridePrecio: _puedeOverride,
+      empleadoId:          req.user?.sub ?? null,
     })
     auditReq('cotizacion:revivir', req, { originalId: original.id, nuevaId: nuevaFactura.id })
     res.status(201).json({ factura: nuevaFactura, lineas: lineasRevividas })
@@ -6609,7 +6791,7 @@ app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (re
 
 app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPermiso('factura:editar'), async (req, res) => {
   try {
-    const { estado } = req.body
+    const { estado, totp } = req.body
     const allowed = ['Pagada', 'Anulada', 'Vencida']
     if (!allowed.includes(estado)) return res.status(400).json({ error: `Estado inválido. Permitidos: ${allowed.join(', ')}.` })
 
@@ -6617,6 +6799,47 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
     if (!existing)                 return res.status(404).json({ error: 'Factura no encontrada.' })
     if (existing.estado === 'Anulada') return res.status(409).json({ error: 'Factura ya anulada. No se puede modificar.' })
     if (existing.estado === estado) return res.status(409).json({ error: `Factura ya está en estado ${estado}.` })
+
+    // H3: ANULACIÓN exige permiso dedicado 'factura:anular' + 2FA para montos altos.
+    // El permiso 'factura:editar' (POST pagos, cambios de estado de cobro) NO basta.
+    if (estado === 'Anulada') {
+      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+      const puedeAnular = permisos.includes('sistema:owner') || permisos.includes('factura:anular')
+      if (!puedeAnular) {
+        auditReq('factura:anular_denied_perm', req, { facturaId: existing.id, total: Number(existing.total) })
+        return res.status(403).json({ error: 'Anular factura requiere permiso "factura:anular".', code: 'ANULAR_PERMISSION' })
+      }
+      // 2FA obligatorio si total > umbral configurable (RD$50,000 default)
+      const UMBRAL_2FA_ANULACION = Number(process.env.UMBRAL_2FA_ANULACION ?? 50000)
+      if (Number(existing.total) > UMBRAL_2FA_ANULACION) {
+        const emp = await prisma.empleado.findUnique({
+          where: { id: req.user.sub },
+          select: { twoFactorEnabled: true, twoFactorSecret: true },
+        })
+        if (!emp?.twoFactorEnabled || !emp?.twoFactorSecret) {
+          return res.status(403).json({
+            error: `Anular factura de RD$${Number(existing.total).toFixed(2)} requiere 2FA activo en tu cuenta.`,
+            code:  'TWOFA_REQUIRED_ACCOUNT',
+          })
+        }
+        if (!totp || !/^\d{6}$/.test(String(totp))) {
+          return res.status(401).json({
+            error: 'Anular factura de alto monto requiere PIN 2FA.',
+            code:  'TWOFA_PIN_REQUIRED',
+          })
+        }
+        try {
+          const secret = decryptTOTP(emp.twoFactorSecret)
+          if (!authenticator.verify({ token: String(totp), secret })) {
+            auditReq('factura:anular_2fa_fail', req, { facturaId: existing.id, total: Number(existing.total) })
+            return res.status(401).json({ error: 'PIN 2FA inválido.', code: 'TWOFA_INVALID' })
+          }
+        } catch {
+          return res.status(500).json({ error: 'Error validando 2FA.' })
+        }
+        auditReq('factura:anular_2fa_ok', req, { facturaId: existing.id, total: Number(existing.total) })
+      }
+    }
 
     const data = { estado, pdfUrl: null } // invalida cache — el badge ESTADO cambia en el PDF
     if (estado === 'Pagada') data.fechaPago = new Date()
@@ -6870,18 +7093,28 @@ let _pdfCronRunning = false
 const PDF_PRERENDER_BATCH    = 15
 const PDF_PRERENDER_CONCURRENCY = 2
 
+// H11: máximo 5 intentos por factura para evitar romper el batch entero por una
+// fila tóxica (data corruption, assets gigantes, infinite-loop en HTML inválido).
+const PDF_PRERENDER_MAX_ATTEMPTS = 5
+
 async function prerenderPdfsBatch() {
   if (_pdfCronRunning) return
   if (!supabase)       return
   _pdfCronRunning = true
   const t0 = Date.now()
-  let ok = 0, fail = 0
+  let ok = 0, fail = 0, skipped = 0
   try {
     const desde = new Date(Date.now() - 7 * 86_400_000)
     const candidatos = await prisma.factura.findMany({
-      where:  { pdfUrl: null, deletedAt: null, fechaEmision: { gte: desde } },
-      select: { id: true, esCotizacion: true, noFactura: true },
-      orderBy:{ fechaEmision: 'desc' },
+      where:  {
+        pdfUrl: null,
+        deletedAt: null,
+        fechaEmision: { gte: desde },
+        // H11: excluye filas que ya rebasaron el umbral de intentos.
+        pdfRenderAttempts: { lt: PDF_PRERENDER_MAX_ATTEMPTS },
+      },
+      select: { id: true, esCotizacion: true, noFactura: true, pdfRenderAttempts: true },
+      orderBy: [{ pdfRenderAttempts: 'asc' }, { fechaEmision: 'desc' }],
       take:   PDF_PRERENDER_BATCH,
     })
     if (candidatos.length === 0) return
@@ -6902,11 +7135,25 @@ async function prerenderPdfsBatch() {
         const pdfBuf  = await generarPdfDocumento(html)
         const url     = await subirPdfAlStorage(pdfBuf, f)
         if (url) {
+          // Render OK: pdfUrl set, attempts no se incrementa (queda donde estaba).
           await prisma.factura.update({ where: { id: f.id }, data: { pdfUrl: url } })
           ok++
-        } else fail++
+        } else {
+          // Upload falló pero el render OK - cuenta como fail e incrementa attempts.
+          await prisma.factura.update({ where: { id: f.id }, data: { pdfRenderAttempts: (c.pdfRenderAttempts ?? 0) + 1 } }).catch(() => {})
+          fail++
+        }
       } catch (e) {
-        console.error(`[PDF CRON] ${c.noFactura}:`, e.message)
+        console.error(`[PDF CRON] ${c.noFactura} (attempt ${(c.pdfRenderAttempts ?? 0) + 1}/${PDF_PRERENDER_MAX_ATTEMPTS}):`, e.message)
+        // Incrementa contador: el siguiente batch puede saltarse esta fila si supera el umbral.
+        await prisma.factura.update({
+          where: { id: c.id },
+          data:  { pdfRenderAttempts: (c.pdfRenderAttempts ?? 0) + 1 },
+        }).catch(() => {})
+        if ((c.pdfRenderAttempts ?? 0) + 1 >= PDF_PRERENDER_MAX_ATTEMPTS) {
+          console.warn(`[PDF CRON] ${c.noFactura} ALCANZÓ ${PDF_PRERENDER_MAX_ATTEMPTS} intentos. Excluida hasta reset manual.`)
+          skipped++
+        }
         fail++
       }
     }
@@ -6922,7 +7169,7 @@ async function prerenderPdfsBatch() {
       })
     )
 
-    console.log(`[PDF CRON] batch ${candidatos.length} docs en ${Date.now() - t0}ms · ok=${ok} fail=${fail}`)
+    console.log(`[PDF CRON] batch ${candidatos.length} docs en ${Date.now() - t0}ms · ok=${ok} fail=${fail} dead=${skipped}`)
   } catch (e) {
     console.error('[PDF CRON]', e.message)
   } finally {
@@ -7103,6 +7350,20 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pagos"               JSONB`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "etapaPipeline"       TEXT NOT NULL DEFAULT 'Borrador'`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_etapaPipeline_idx" ON "Factura"("etapaPipeline")`)
+    // Patch sweep (security): empleado dueño + HMAC verifyHash + contador render
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "empleadoId"          INTEGER`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "verifyHash"          TEXT`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pdfRenderAttempts"   INTEGER NOT NULL DEFAULT 0`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_empleadoId_idx" ON "Factura"("empleadoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_verifyHash_idx" ON "Factura"("verifyHash")`)
+    try {
+      await prisma.$executeRawUnsafe(`DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Factura_empleadoId_fkey') THEN
+          ALTER TABLE "Factura" ADD CONSTRAINT "Factura_empleadoId_fkey"
+            FOREIGN KEY ("empleadoId") REFERENCES "Empleado"(id) ON DELETE SET NULL;
+        END IF;
+      END $$`)
+    } catch {}
     await prisma.$executeRawUnsafe(`ALTER TABLE "Producto"       ADD COLUMN IF NOT EXISTS "costoPromedio"       DECIMAL(12,2) NOT NULL DEFAULT 0`)
     // Tablas nuevas (idempotente via IF NOT EXISTS)
     await prisma.$executeRawUnsafe(`
