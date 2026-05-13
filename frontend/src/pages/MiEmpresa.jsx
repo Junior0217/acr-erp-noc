@@ -191,6 +191,29 @@ export default function MiEmpresa() {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{ASSETS.map(renderAsset)}</div>
         </section>
 
+        <section className="bg-slate-800/40 border border-amber-700/30 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
+            <Lock size={15} className="text-amber-400" />
+            <h3 className="text-xs font-bold text-amber-400 uppercase tracking-widest">PIN de Supervisor (POS)</h3>
+            <span className="ml-auto text-[10px] text-slate-500">Requerido para descuentos &gt; 15%</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className={LABEL}>PIN (4–8 dígitos)</label>
+              {canEdit ? (
+                <input type="password" inputMode="numeric" autoComplete="off" maxLength={8}
+                  value={form.pinSupervisor ?? ''}
+                  onChange={e => { setForm(f => ({ ...f, pinSupervisor: e.target.value.replace(/\D/g, '') })); setDirty(true) }}
+                  placeholder="••••"
+                  className={INPUT + ' font-mono tracking-[0.4em] text-center'} />
+              ) : (
+                <div className={READONLY + ' font-mono tracking-[0.4em] text-center'}>{'•'.repeat((form.pinSupervisor ?? '').length || 4)}</div>
+              )}
+              <p className="text-[10px] text-slate-600 mt-1">El cajero deberá ingresarlo si aplica un descuento global mayor al 15% en el POS.</p>
+            </div>
+          </div>
+        </section>
+
         <section className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
           <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
             <ScrollText size={15} className="text-blue-400" />

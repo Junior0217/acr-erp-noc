@@ -3322,6 +3322,8 @@ const empresaPatchSchema = z.object({
     firmaGerente: z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
   }).partial().optional(),
   eslogan:               z.string().max(200).optional().nullable(),
+  // PIN supervisor para autorizar descuentos POS > 15% (4-8 dígitos).
+  pinSupervisor:         z.string().min(4).max(8).regex(/^\d+$/, 'Solo dígitos.').optional(),
   // Condiciones comerciales por defecto — cada campo opcional, max 280 char.
   condicionesDefault:    z.object({
     validez:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
@@ -5083,14 +5085,21 @@ app.get('/api/catalogo', verificarJWT, async (req, res) => {
       include: { producto: { select: { id: true, sku: true, stockActual: true, stockMinimo: true, imagenUrl: true, descripcion: true } } },
     })
     // Resuelve campos efectivos: imagen y stock del Producto físico ganan si están atados.
-    const enriched = items.map(it => ({
-      ...it,
-      imagenUrl: it.imagenUrl ?? it.producto?.imagenUrl ?? null,
-      // stock efectivo: si hay producto vinculado, gana el stockActual del inventario real
-      stock: it.producto ? it.producto.stockActual : it.stock,
-      stockSource: it.producto ? 'inventario' : (it.stock != null ? 'catalogo' : null),
-      sku: it.producto?.sku ?? null,
-    }))
+    const enriched = items.map(it => {
+      const pref = CODIGO_PREFIJO[it.tipo] ?? 'ITM'
+      // Si el item no tiene `codigo` (legacy pre-rollout), genera uno estable basado
+      // en el UUID. NO chocará con códigos seq nuevos porque incluye hex (no decimales).
+      const codigoFallback = `${pref}-${String(it.id ?? '').replace(/-/g, '').slice(0, 6).toUpperCase()}`
+      return {
+        ...it,
+        codigo:     it.codigo ?? codigoFallback,
+        imagenUrl:  it.imagenUrl ?? it.producto?.imagenUrl ?? null,
+        stock:      it.producto ? it.producto.stockActual : it.stock,
+        stockSource: it.producto ? 'inventario' : (it.stock != null ? 'catalogo' : null),
+        // SKU del producto físico, sino el código corto del catálogo.
+        sku:        it.producto?.sku ?? null,
+      }
+    })
     const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     const canSeeCosts = permisos.includes('sistema:owner') || permisos.includes('catalogo:ver_costos')
     const data = canSeeCosts ? enriched : enriched.map(({ costo, ...rest }) => rest)
@@ -5098,10 +5107,35 @@ app.get('/api/catalogo', verificarJWT, async (req, res) => {
   } catch (e) { console.error('[GET /api/catalogo]', e.code, e.message); res.status(500).json({ error: 'Error interno.' }) }
 })
 
+// Prefijo por tipo para codigo legible. Lookup constante.
+const CODIGO_PREFIJO = { Recurrente: 'REC', VentaUnica: 'ART', Servicio: 'SRV' }
+
+// Asigna codigo incremental único por tipo (SRV-0001, ART-0001, REC-0001).
+// Usa la query sobre el último codigo del mismo prefijo + 1. Sin SEQUENCE
+// dedicado para no tocar más DDL — el UNIQUE INDEX protege de race conditions
+// y reintenta si choca.
+async function generarCodigoCatalogo(tipo) {
+  const pref = CODIGO_PREFIJO[tipo] ?? 'ITM'
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const ultimo = await prisma.itemCatalogo.findFirst({
+      where:   { codigo: { startsWith: `${pref}-` } },
+      orderBy: { codigo: 'desc' },
+      select:  { codigo: true },
+    })
+    let n = 1
+    if (ultimo?.codigo) {
+      const m = ultimo.codigo.match(/^[A-Z]+-(\d+)$/)
+      if (m) n = parseInt(m[1], 10) + 1
+    }
+    return `${pref}-${String(n + attempt).padStart(4, '0')}`
+  }
+}
+
 app.post('/api/catalogo', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = itemCatalogoSchema.parse(req.body)
-    const item = await prisma.itemCatalogo.create({ data })
+    const codigo = await generarCodigoCatalogo(data.tipo)
+    const item = await prisma.itemCatalogo.create({ data: { ...data, codigo } })
     res.status(201).json(item)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
@@ -5643,6 +5677,12 @@ const lineaPOSCatalogoSchema = z.object({
   descuentoMonto:      z.number().min(0).optional().default(0),
 })
 
+const pagoMetodoSchema = z.object({
+  metodo: z.enum(['Efectivo', 'Transferencia', 'Tarjeta', 'Cheque', 'Otro']),
+  monto:  z.number().positive(),
+  refer:  z.string().max(60).optional().nullable(),
+})
+
 const posVentaSchema = z.object({
   clienteId:           z.string().uuid().optional(),
   nombreTemporal:      z.string().max(120).optional(),
@@ -5652,16 +5692,36 @@ const posVentaSchema = z.object({
   esCotizacion:        z.boolean().optional().default(false),
   descuentoGlobalPct:  z.number().min(0).max(100).optional().default(0),
   descuentoGlobalMonto:z.number().min(0).optional().default(0),
+  pinSupervisor:       z.string().max(20).optional(),         // requerido si desc > 15%
+  pagos:               z.array(pagoMetodoSchema).optional(),  // null = no desglosado (legacy)
   lineas:              z.array(lineaPOSCatalogoSchema).min(1),
 })
 
+const DESCUENTO_LIMITE_PIN = 15  // porcentaje
+
 app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
   try {
-    const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, lineas } = posVentaSchema.parse(req.body)
+    const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas } = posVentaSchema.parse(req.body)
     const permReq = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
     const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
       return res.status(403).json({ error: `Se requiere permiso "${permReq}".` })
+
+    // Validación PIN supervisor: si el cajero aplicó descuento global > 15%
+    // exige el PIN configurado en EmpresaPerfil. Owners se saltan el check.
+    const isOwner = permisos.includes('sistema:owner')
+    if (!isOwner && !esCotizacion && descuentoGlobalPct > DESCUENTO_LIMITE_PIN) {
+      const emp = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true } })
+      const pinReal = emp?.pinSupervisor ?? '1234'
+      if (!pinSupervisor || pinSupervisor !== pinReal) {
+        auditReq('pos:descuento_pin_fail', req, { descuentoPct: descuentoGlobalPct })
+        return res.status(403).json({
+          error: `Descuento ${descuentoGlobalPct}% excede ${DESCUENTO_LIMITE_PIN}%. Requiere PIN de supervisor.`,
+          code:  'PIN_REQUIRED',
+        })
+      }
+      auditReq('pos:descuento_pin_ok', req, { descuentoPct: descuentoGlobalPct })
+    }
 
     const factura = await prisma.$transaction(async (tx) => {
       // 1. Resolve client
@@ -5727,11 +5787,22 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         estado    = 'Emitida'
       }
 
+      // Validación cobro mixto: la suma de pagos debe igualar total (±0.01 tolerance).
+      let pagosValidados = null
+      if (!esCotizacion && Array.isArray(pagos) && pagos.length > 0) {
+        const suma = pagos.reduce((s, p) => s + Number(p.monto), 0)
+        if (Math.abs(suma - total) > 0.01) {
+          throw Object.assign(new Error(`Suma de pagos (RD$ ${suma.toFixed(2)}) no coincide con total (RD$ ${total.toFixed(2)}).`), { status: 400 })
+        }
+        pagosValidados = pagos.map(p => ({ metodo: p.metodo, monto: Number(p.monto), refer: p.refer ?? null }))
+      }
+
       // 5. Create Factura (no productoId — catalog items don't deduct stock)
       return tx.factura.create({
         data: {
           noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
           ncf, tipoNcf, esCotizacion,
+          pagos: pagosValidados,
           notas: esCotizacion
             ? `Cotización POS (catálogo) — ${lineas.length} línea(s)`
             : nombreTemporal
@@ -6499,6 +6570,10 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "Producto"       ADD COLUMN IF NOT EXISTS "imagenUrl"           TEXT`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo"   ADD COLUMN IF NOT EXISTS "imagenUrl"           TEXT`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo"   ADD COLUMN IF NOT EXISTS "productoId"          INTEGER`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo"   ADD COLUMN IF NOT EXISTS "codigo"              TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ItemCatalogo_codigo_key" ON "ItemCatalogo"("codigo")`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "pinSupervisor"       TEXT NOT NULL DEFAULT '1234'`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pagos"               JSONB`)
     // FK opcional + índice (idempotente via catalog lookup)
     try {
       await prisma.$executeRawUnsafe(`DO $$ BEGIN
@@ -6512,6 +6587,37 @@ async function ensureSchemaColumns() {
     console.log('[DB] Schema columns verified (terms + cache + snapshot + pos images + catalog->producto link).')
   } catch (e) {
     console.error('[DB] ensureSchemaColumns FAILED:', e.message)
+  }
+}
+
+// Crea los buckets de Storage si no existen. Idempotente — la API responde con
+// "BucketAlreadyExists" que tratamos como éxito. Resuelve el 502 "Bucket not found"
+// que aparecía cuando el bucket no estaba creado manualmente en Supabase.
+async function ensureStorageBuckets() {
+  if (!supabase) { console.log('[STORAGE] supabase no configurado — skip ensureStorageBuckets.'); return }
+  const buckets = [
+    { name: process.env.SUPABASE_BUCKET            ?? 'empresa-assets', public: true, fileSizeLimit: 5 * 1024 * 1024 },
+    { name: process.env.SUPABASE_INVENTORY_BUCKET  ?? 'inventario-img', public: true, fileSizeLimit: 5 * 1024 * 1024 },
+    { name: process.env.SUPABASE_PDF_BUCKET        ?? 'documentos-pdf', public: true, fileSizeLimit: 20 * 1024 * 1024 },
+  ]
+  for (const b of buckets) {
+    try {
+      const { error } = await supabase.storage.createBucket(b.name, {
+        public:          b.public,
+        fileSizeLimit:   b.fileSizeLimit,
+        allowedMimeTypes: undefined, // se valida en el endpoint (magic bytes)
+      })
+      if (!error) { console.log(`[STORAGE] bucket "${b.name}" creado (public=${b.public}).`); continue }
+      // Idempotencia: si ya existe, Supabase devuelve esto (varía el shape).
+      const msg = String(error.message ?? '').toLowerCase()
+      if (msg.includes('already exists') || msg.includes('duplicate')) {
+        console.log(`[STORAGE] bucket "${b.name}" ya existe.`)
+      } else {
+        console.error(`[STORAGE] no se pudo crear "${b.name}":`, error.message)
+      }
+    } catch (e) {
+      console.error(`[STORAGE] excepción creando "${b.name}":`, e.message)
+    }
   }
 }
 
@@ -6553,6 +6659,7 @@ async function startServer() {
     console.log('[DB] Prisma connected to Supabase successfully.');
     await ensureSchemaColumns();
     await ensureRowLevelSecurity();
+    await ensureStorageBuckets();
     await seedNomenclaturas();
   } catch (err) {
     console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);

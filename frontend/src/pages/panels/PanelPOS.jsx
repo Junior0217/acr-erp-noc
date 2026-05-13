@@ -433,11 +433,8 @@ function CartLine({ linea, onChange, onRemove }) {
 // ── PanelPOS ──────────────────────────────────────────────────────────────────
 export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaCreada }) {
   const { tienePermiso } = useAuth()
-  const { setPosItemsCount } = useCart()
-  const [cart, setCart]             = useState([])
-  // Sincroniza el badge de la navbar con el carrito local del POS.
-  useEffect(() => { setPosItemsCount(cart.reduce((s, l) => s + l.cantidad, 0)) }, [cart, setPosItemsCount])
-  useEffect(() => () => setPosItemsCount(0), [setPosItemsCount])
+  // Carrito persistido en localStorage vía CartContext — sobrevive cambios de tab.
+  const { posCart: cart, posAddItem, posUpdateLine, posRemoveLine, posClear } = useCart()
   const [cliente, setCliente]       = useState(null)
   const [nombreWalkin, setNombreWalkin] = useState('')
   const [applyItbis, setApplyItbis] = useState(true)
@@ -462,34 +459,24 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const canDescuento = tienePermiso('pos:descuentos') || tienePermiso('sistema:owner')
 
   function addItem(item, qty = 1) {
-    setCart(prev => {
-      const idx = prev.findIndex(l => l.itemCatalogoId === item.id)
-      if (idx >= 0) {
-        const next = [...prev]
-        next[idx] = { ...next[idx], cantidad: next[idx].cantidad + qty }
-        return next
-      }
-      return [...prev, { itemCatalogoId: item.id, nombre: item.nombre, cantidad: qty, precioUnitario: Number(item.precio), descuentoPorcentaje: 0, descuentoMonto: 0 }]
-    })
+    posAddItem(item, qty)
     toast.success(`${item.nombre} × ${qty}`, { duration: 1500 })
   }
+  function updateLine(idx, changes) { posUpdateLine(idx, changes) }
+  function removeLine(idx)          { posRemoveLine(idx) }
 
-  function updateLine(idx, changes) {
-    setCart(prev => prev.map((l, i) => i === idx ? { ...l, ...changes } : l))
-  }
-
-  function removeLine(idx) {
-    setCart(prev => prev.filter((_, i) => i !== idx))
-  }
-
-  const efectivoUnitario = (pu, pct, mon) => Math.max(0, pu * (1 - pct / 100) - mon)
-  const subtotalBruto = cart.reduce((s, l) => s + efectivoUnitario(l.precioUnitario, l.descuentoPorcentaje ?? 0, l.descuentoMonto ?? 0) * l.cantidad, 0)
+  const efectivoUnitario = (pu, pct, mon) => Math.max(0, pu * (1 - (pct ?? 0) / 100) - (mon ?? 0))
+  const subtotalBruto = cart.reduce((s, l) => s + efectivoUnitario(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto) * l.cantidad, 0)
   const globalDesc    = descGlobalPct > 0 ? subtotalBruto * (descGlobalPct / 100) : Math.min(descGlobalMonto, subtotalBruto)
   const subtotal      = Math.round((subtotalBruto - globalDesc) * 100) / 100
   const itbisAmt      = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
   const total         = Math.round((subtotal + itbisAmt) * 100) / 100
+  // Trigger del PIN: descuento global > 15% requiere autorización supervisor.
+  const necesitaPIN  = descGlobalPct > 15
+  const [showCheckout, setShowCheckout] = useState(false)
 
-  async function submit(esCotizacion) {
+  async function submit(esCotizacion, opts = {}) {
+    const { pagos = null, pinSupervisor = null } = opts
     if (!cart.length) { toast.error('El carrito está vacío.'); return }
     const requiredPerm = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
     if (!tienePermiso(requiredPerm) && !tienePermiso('sistema:owner')) {
@@ -505,6 +492,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         esCotizacion,
         descuentoGlobalPct:   descGlobalPct,
         descuentoGlobalMonto: descGlobalMonto,
+        ...(pinSupervisor ? { pinSupervisor } : {}),
+        ...(pagos ? { pagos } : {}),
         lineas: cart.map(l => ({
           itemCatalogoId:      l.itemCatalogoId,
           cantidad:            l.cantidad,
@@ -515,14 +504,19 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       }
       const r = await apiFetch('/api/pos/venta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
       const j = await r.json()
-      if (!r.ok) { toast.error(j.error ?? 'Error.'); return }
+      if (!r.ok) {
+        if (j.code === 'PIN_REQUIRED') { toast.error('PIN supervisor inválido o faltante.'); return { needPin: true } }
+        toast.error(j.error ?? 'Error.'); return
+      }
       toast.success(esCotizacion ? `Cotización ${j.noFactura} guardada.` : `Factura ${j.noFactura} emitida.`)
       if (!esCotizacion) setLastFacturaId(j.id)
-      setCart([])
+      posClear()
       setCliente(null)
       setNombreWalkin('')
       setDescGlobalPct(0)
       setDescGlobalMonto(0)
+      setShowCheckout(false)
+      return { ok: true }
     } finally { setSubmitting(false) }
   }
 
@@ -626,12 +620,126 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
             </button>
           )}
           {canFacturar && (
-            <button onClick={() => submit(false)} disabled={submitting || !cart.length}
+            <button onClick={() => setShowCheckout(true)} disabled={submitting || !cart.length}
               className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 border border-blue-500 text-white text-sm font-bold transition-all disabled:opacity-40 flex items-center justify-center gap-2">
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <ShoppingBag size={14} />}
-              Generar Factura
+              Cobrar / Facturar
             </button>
           )}
+        </div>
+      </div>
+
+      {showCheckout && (
+        <CheckoutModal
+          total={total}
+          necesitaPIN={necesitaPIN}
+          descuentoPct={descGlobalPct}
+          submitting={submitting}
+          onClose={() => setShowCheckout(false)}
+          onSubmit={(pagos, pinSupervisor) => submit(false, { pagos, pinSupervisor })}
+        />
+      )}
+    </div>
+  )
+}
+
+// ── CheckoutModal: cobro mixto + PIN supervisor ──────────────────────────────
+function CheckoutModal({ total, necesitaPIN, descuentoPct, submitting, onClose, onSubmit }) {
+  const [pagos, setPagos] = useState([{ metodo: 'Efectivo', monto: total, refer: '' }])
+  const [pinSupervisor, setPinSupervisor] = useState('')
+  const [showPin, setShowPin] = useState(false)
+  const sumaPagos = pagos.reduce((s, p) => s + (Number(p.monto) || 0), 0)
+  const diff = Math.round((total - sumaPagos) * 100) / 100
+  const sumaOk = Math.abs(diff) < 0.01
+  const puedeFacturar = sumaOk && (!necesitaPIN || pinSupervisor.trim().length >= 4)
+
+  function addPago()        { setPagos(p => [...p, { metodo: 'Transferencia', monto: Math.max(diff, 0), refer: '' }]) }
+  function removePago(i)    { setPagos(p => p.filter((_, idx) => idx !== i)) }
+  function updatePago(i, c) { setPagos(p => p.map((row, idx) => idx === i ? { ...row, ...c } : row)) }
+
+  async function confirmar() {
+    const r = await onSubmit(pagos.map(p => ({ ...p, monto: Number(p.monto) })), pinSupervisor || null)
+    if (r?.needPin) { setShowPin(true); setPinSupervisor('') }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+        <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
+          <div>
+            <h2 className="text-sm font-bold text-slate-100 uppercase tracking-wider">Cobro / Facturar</h2>
+            <p className="text-[10px] text-slate-500 font-mono mt-0.5">Total: RD$ {fmt(total)}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
+        </div>
+
+        <div className="p-5 space-y-4 overflow-y-auto">
+          {necesitaPIN && (
+            <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-900/20 border border-amber-700/40 text-xs text-amber-300">
+              <span className="w-1.5 h-1.5 rounded-full mt-1.5 bg-amber-400 flex-shrink-0" />
+              <span>Descuento <strong>{descuentoPct}%</strong> excede el límite (15%). Requiere PIN de supervisor para autorizar.</span>
+            </div>
+          )}
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Métodos de pago</p>
+              <button onClick={addPago} className="text-[10px] text-blue-400 hover:text-blue-300 flex items-center gap-1">
+                <Plus size={11} /> Agregar
+              </button>
+            </div>
+            <div className="space-y-2">
+              {pagos.map((p, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <select value={p.metodo} onChange={e => updatePago(i, { metodo: e.target.value })}
+                    className="flex-shrink-0 w-32 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-blue-500">
+                    {['Efectivo','Transferencia','Tarjeta','Cheque','Otro'].map(m => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                  <input type="number" min="0" step="0.01" value={p.monto}
+                    onChange={e => updatePago(i, { monto: e.target.value })}
+                    className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500" />
+                  <input type="text" placeholder="Ref" value={p.refer}
+                    onChange={e => updatePago(i, { refer: e.target.value })}
+                    className="w-20 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[10px] text-slate-100 focus:outline-none focus:border-blue-500" />
+                  {pagos.length > 1 && (
+                    <button onClick={() => removePago(i)} className="text-slate-600 hover:text-red-400"><Trash2 size={12} /></button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="bg-slate-800/60 border border-slate-700 rounded-lg p-3 space-y-1">
+            <div className="flex justify-between text-xs"><span className="text-slate-500">Total a cobrar</span><span className="font-mono font-bold text-slate-100">RD$ {fmt(total)}</span></div>
+            <div className="flex justify-between text-xs"><span className="text-slate-500">Cubierto por pagos</span><span className="font-mono text-slate-200">RD$ {fmt(sumaPagos)}</span></div>
+            <div className={`flex justify-between text-xs pt-1 border-t border-slate-700 ${sumaOk ? 'text-emerald-400' : Math.abs(diff) > 0 ? 'text-red-400' : 'text-slate-400'}`}>
+              <span>{diff > 0 ? 'Falta' : diff < 0 ? 'Excede' : 'Cuadrado ✓'}</span>
+              <span className="font-mono font-bold">RD$ {fmt(Math.abs(diff))}</span>
+            </div>
+          </div>
+
+          {necesitaPIN && (
+            <div>
+              <label className="text-[10px] font-bold text-slate-500 uppercase tracking-widest block mb-1">PIN de Supervisor</label>
+              <input type="password" inputMode="numeric" autoComplete="off" maxLength={8}
+                value={pinSupervisor} onChange={e => setPinSupervisor(e.target.value.replace(/\D/g, ''))}
+                placeholder="••••"
+                className="w-full bg-slate-800 border border-amber-700/40 rounded-lg px-3 py-2 text-sm font-mono text-center tracking-[0.4em] text-slate-100 focus:outline-none focus:border-amber-500" />
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-end gap-2 px-5 py-4 border-t border-slate-800">
+          <button onClick={onClose}
+            className="px-4 py-2 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            Cancelar
+          </button>
+          <button onClick={confirmar} disabled={!puedeFacturar || submitting}
+            className="flex items-center gap-1.5 px-5 py-2 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 shadow-md shadow-blue-600/30">
+            {submitting ? <Loader2 size={12} className="animate-spin" /> : <ShoppingBag size={12} />}
+            Emitir Factura
+          </button>
         </div>
       </div>
     </div>

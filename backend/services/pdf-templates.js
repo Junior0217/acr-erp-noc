@@ -56,14 +56,13 @@ function mdToHtml(s) {
 //   - Si llega `detalle` separado (legacy), pasa entero a desc-sub.
 function parseDescripcionEstructurada(descRaw, detalleRaw) {
   if (!descRaw && !detalleRaw) return { main: '', sub: '' }
-
   if (!descRaw) return { main: escape(detalleRaw), sub: '' }
 
   const text = String(descRaw).trim()
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
   if (lines.length === 0) return { main: '', sub: '' }
 
-  // Detección título: **bold** completo en línea 1 o '# heading'
+  // Detección título explícito: **bold** completo o '# heading'.
   let main = ''
   let rest = []
   const first = lines[0]
@@ -73,26 +72,39 @@ function parseDescripcionEstructurada(descRaw, detalleRaw) {
     main = (mBold ? mBold[1] : mHead[1]).trim()
     rest = lines.slice(1)
   } else {
-    main = first
-    rest = lines.slice(1)
+    // Smart mode: si NO hay markdown explícito pero hay múltiples líneas, asume
+    // que la 1ra línea es título y el resto son detalles. Si todas las líneas
+    // empiezan con guion/asterisco/bullet, ahí la 1ra ES un bullet y NO hay título.
+    const allBullets = lines.every(l => /^[-*•·]\s+/.test(l) || /^\d+\.\s+/.test(l))
+    if (allBullets) {
+      // Lista pura sin título — la línea 1 va al sub como primer bullet.
+      main = '' // sin título → main vacío; el caller mostrará solo desc-sub
+      rest = lines
+    } else {
+      main = first
+      rest = lines.slice(1)
+    }
   }
 
-  // Bullets: aplanar a "X · Y · Z" para reducir altura vertical de la fila.
+  // Detecta bullets en cualquier formato común; el resto cae a "otros".
   const bullets = []
   const otros = []
   for (const l of rest) {
-    const mBullet = l.match(/^[-*•]\s+(.+)$/) || l.match(/^\d+\.\s+(.+)$/)
-    if (mBullet) bullets.push(mBullet[1].trim())
+    const m = l.match(/^[-*•·]\s+(.+)$/) || l.match(/^\d+\.\s+(.+)$/)
+    if (m) bullets.push(m[1].trim())
     else if (l) otros.push(l)
   }
-  // Si llegó un `detalle` separado, prepéndalo al sub.
   if (detalleRaw && String(detalleRaw).trim()) otros.unshift(String(detalleRaw).trim())
 
+  // Construye sub: junta otros + bullets con separador ` · ` para densidad vertical.
   const subPieces = []
-  if (otros.length)  subPieces.push(otros.join(' '))
+  if (otros.length)   subPieces.push(otros.join(' '))
   if (bullets.length) subPieces.push(bullets.join(' · '))
+
+  // Si no hay título explícito y main quedó vacío, deja vacío main para que la
+  // celda solo muestre desc-sub (lista pura sin jerarquía).
   return {
-    main: mdToHtml(main),
+    main: main ? mdToHtml(main) : '',
     sub:  subPieces.length ? mdToHtml(subPieces.join(' · ')) : '',
   }
 }
@@ -476,7 +488,7 @@ function renderDocumento(opts) {
     return `<tr>
       <td class="num center">${String(idx + 1).padStart(2, '0')}</td>
       <td>
-        <div class="desc-main">${main}</div>
+        ${main     ? `<div class="desc-main">${main}</div>` : ''}
         ${sub      ? `<div class="desc-sub">${sub}</div>` : ''}
         ${it.sku   ? `<div class="sku mono">SKU: ${escape(it.sku)}</div>` : ''}
       </td>

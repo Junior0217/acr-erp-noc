@@ -10,10 +10,46 @@ export function CartProvider({ children }) {
   const [carrito, setCarrito] = useState(null)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
-  // Mini-state para reflejar el carrito LOCAL del POS (PanelPOS mantiene su propio
-  // estado para vender ItemCatalogo, no Productos físicos directos). El badge
-  // de la navbar lo lee para que siempre muestre lo que el cajero tiene en pantalla.
-  const [posItemsCount, setPosItemsCount] = useState(0)
+
+  // ─── Carrito POS persistente (localStorage) ────────────────────────────────
+  // El POS vende ItemCatalogo (no Producto físico directo). Antes se guardaba en
+  // useState local de PanelPOS y se evaporaba al cambiar de tab. Ahora vive aquí,
+  // se hidrata desde localStorage y sobrevive a navegación + refresh.
+  const POS_CART_KEY = 'acr_pos_cart'
+  const [posCart, setPosCart] = useState(() => {
+    try { const raw = localStorage.getItem(POS_CART_KEY); return raw ? JSON.parse(raw) : [] }
+    catch { return [] }
+  })
+  // Persiste cada cambio (debounced no necesario — operaciones del POS son lentas).
+  useEffect(() => {
+    try { localStorage.setItem(POS_CART_KEY, JSON.stringify(posCart)) } catch {}
+  }, [posCart])
+
+  const posItemsCount = posCart.reduce((s, l) => s + (l.cantidad ?? 0), 0)
+
+  function posAddItem(item, qty = 1) {
+    setPosCart(prev => {
+      const idx = prev.findIndex(l => l.itemCatalogoId === item.id)
+      if (idx >= 0) {
+        const next = [...prev]
+        next[idx] = { ...next[idx], cantidad: next[idx].cantidad + qty }
+        return next
+      }
+      return [...prev, {
+        itemCatalogoId: item.id,
+        nombre:         item.nombre,
+        cantidad:       qty,
+        precioUnitario: Number(item.precio),
+        descuentoPorcentaje: 0,
+        descuentoMonto:      0,
+        imagenUrl:      item.imagenUrl ?? null,
+        codigo:         item.codigo ?? item.sku ?? null,
+      }]
+    })
+  }
+  function posUpdateLine(idx, changes) { setPosCart(prev => prev.map((l, i) => i === idx ? { ...l, ...changes } : l)) }
+  function posRemoveLine(idx)          { setPosCart(prev => prev.filter((_, i) => i !== idx)) }
+  function posClear()                  { setPosCart([]) }
 
   const fetchCarrito = useCallback(async () => {
     if (!user) { setCarrito(null); return }
@@ -106,7 +142,7 @@ export function CartProvider({ children }) {
   return (
     <CartCtx.Provider value={{
       carrito, open, setOpen, loading, totalItems,
-      posItemsCount, setPosItemsCount,
+      posCart, posItemsCount, posAddItem, posUpdateLine, posRemoveLine, posClear,
       fetchCarrito, addItem, updateItem, removeItem, clearCart, updateCartMeta, checkout,
     }}>
       {children}

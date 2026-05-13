@@ -394,6 +394,7 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700/70 bg-slate-800/60">
+                <th className={TH}>Código</th>
                 <th className={TH}>Nombre</th>
                 <th className={TH}>Tipo</th>
                 <th className={TH}>Categoría</th>
@@ -407,19 +408,33 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12">
+                <tr><td colSpan={7 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : itemsFiltrados.length === 0 ? (
-                <tr><td colSpan={6 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={7 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay items en el catálogo.
                 </td></tr>
               ) : itemsFiltrados.map(item => {
                 const precio = Number(item.precio)
                 const costo  = Number(item.costo)
                 const margen = precio > 0 ? Math.round(((precio - costo) / precio) * 100) : 0
+                // Badge color por prefijo: SRV=azul, ART=ámbar, REC=violeta
+                const codBg = item.sku ? 'bg-emerald-600/15 text-emerald-300 border-emerald-600/30'
+                  : item.codigo?.startsWith('SRV') ? 'bg-blue-600/15 text-blue-300 border-blue-600/30'
+                  : item.codigo?.startsWith('ART') ? 'bg-amber-600/15 text-amber-300 border-amber-600/30'
+                  : item.codigo?.startsWith('REC') ? 'bg-violet-600/15 text-violet-300 border-violet-600/30'
+                  : 'bg-slate-700/40 text-slate-400 border-slate-700'
                 return (
                   <tr key={item.id} className="hover:bg-slate-800/50 transition-colors">
+                    <td className="px-4 py-3 whitespace-nowrap">
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${codBg}`}>
+                        {item.sku ?? item.codigo ?? '—'}
+                      </span>
+                      {item.sku && item.codigo && (
+                        <div className="text-[9px] text-slate-600 font-mono mt-0.5">{item.codigo}</div>
+                      )}
+                    </td>
                     <td className="px-4 py-3">
                       <div className="font-medium text-slate-100 whitespace-nowrap">{item.nombre}</div>
                       {item.descripcion && (

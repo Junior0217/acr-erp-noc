@@ -475,6 +475,10 @@ model Prospecto {
 
 model ItemCatalogo {
   id          String              @id @default(uuid())
+  // Código corto autogenerado (SRV-0001, ART-0001, REC-0001). Derivado del
+  // tipo + nextval de secuencia. Visible en POS y PDF como identificador
+  // humano-friendly cuando el item NO está vinculado a un Producto físico (SKU).
+  codigo      String?             @unique
   nombre      String
   descripcion String?
   // URL de imagen (Supabase Storage). Si está atado a un Producto físico,
@@ -583,6 +587,9 @@ model Factura {
   // URL pública del PDF cacheado en Supabase Storage. Null = nunca generado o
   // invalidado (factura editada). Cuando existe, /pdf hace redirect 302 — cero CPU.
   pdfUrl       String?
+  // Desglose de cobro mixto. Shape: [{ metodo: 'Efectivo'|'Transferencia'|'Tarjeta'|'Cheque', monto: number, refer: string? }]
+  // Suma debe igualar total (validado en POST). Null = no se desglosó (factura legacy).
+  pagos        Json?
   // Snapshot fiscal inmutable: foto del estado de la factura al momento de
   // emitirse (empresa.razonSocial, empresa.rnc, empresa.assets, cliente.*,
   // items con SKU/precio/descripcion del momento). Si la empresa cambia de
@@ -701,6 +708,10 @@ model EmpresaPerfil {
   // Shape: { validez, pago, entrega, garantia, notasFooter }
   // Cada factura puede sobreescribirlas en Factura.condiciones.
   condicionesDefault    Json      @default("{}")
+  // PIN del supervisor (4-8 dígitos). Requerido cuando un cajero aplica
+  // descuento global > 15% en POS. Hash bcrypt si nunca se setea queda en
+  // texto plano '1234' como bootstrap inicial.
+  pinSupervisor         String    @default("1234")
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 }
