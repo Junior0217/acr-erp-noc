@@ -3,8 +3,12 @@ import { toast } from 'sonner'
 import {
   RefreshCw, Loader2, FileText, RotateCcw, AlertTriangle,
   Search, X, Printer, CheckSquare, Square, FileArchive, Plus, ScrollText,
-  Edit3, Save, Table2, LayoutGrid, ChevronRight,
+  Edit3, Save, Table2, LayoutGrid, GripVertical,
 } from 'lucide-react'
+import {
+  DndContext, useDraggable, useDroppable, DragOverlay,
+  PointerSensor, useSensor, useSensors,
+} from '@dnd-kit/core'
 import { apiFetch } from '../../utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '../../utils/pdf'
 import { useCart } from '../../contexts/CartContext'
@@ -35,62 +39,115 @@ const KANBAN_COLORS = {
   red:     { bg: 'bg-red-900/15',     border: 'border-red-700/30',  text: 'text-red-400'     },
 }
 
-function KanbanCotizaciones({ rows, loading, onMove, onOpen, onPDF }) {
-  const grouped = KANBAN_ETAPAS.reduce((acc, e) => { acc[e.id] = []; return acc }, {})
-  for (const r of rows) {
-    const k = r.etapaPipeline ?? 'Borrador'
-    if (grouped[k]) grouped[k].push(r); else grouped.Borrador.push(r)
-  }
+// Card draggable individual
+function KanbanCard({ cot, onOpen, onPDF }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id: cot.id, data: { cot } })
+  const style = transform
+    ? { transform: `translate3d(${transform.x}px, ${transform.y}px, 0)`, zIndex: 50 }
+    : undefined
   return (
-    <div className="overflow-x-auto p-3">
-      <div className="flex gap-3 min-w-[1200px]">
-        {KANBAN_ETAPAS.map(et => {
-          const c = KANBAN_COLORS[et.color]
-          const items = grouped[et.id]
-          const total = items.reduce((s, x) => s + Number(x.total || 0), 0)
-          return (
-            <div key={et.id} className={`flex-1 min-w-[200px] rounded-xl border ${c.border} ${c.bg} p-2.5 flex flex-col gap-2`}>
-              <div className="flex items-center justify-between px-1">
-                <div>
-                  <p className={`text-xs font-bold uppercase tracking-widest ${c.text}`}>{et.label}</p>
-                  <p className="text-[10px] text-slate-500 font-mono">{items.length} · RD$ {total.toLocaleString('es-DO', { minimumFractionDigits: 0 })}</p>
-                </div>
-              </div>
-              <div className="flex-1 overflow-y-auto space-y-2 min-h-[120px]">
-                {loading && items.length === 0 ? (
-                  <div className="flex justify-center py-4"><Loader2 size={14} className="animate-spin text-slate-500" /></div>
-                ) : items.length === 0 ? (
-                  <p className="text-[10px] text-slate-700 italic text-center py-3">— vacío —</p>
-                ) : items.map(c => (
-                  <div key={c.id} className="bg-slate-900/70 border border-slate-700/60 rounded-lg p-2.5 hover:border-blue-600/40 transition-colors group">
-                    <div className="flex items-start justify-between gap-1 mb-1">
-                      <button onClick={() => onOpen(c)} className="text-xs font-mono font-bold text-slate-200 hover:text-blue-300 truncate flex-1 text-left">
-                        {c.noFactura}
-                      </button>
-                      <button onClick={() => onPDF(c)} className="text-slate-600 hover:text-blue-400 flex-shrink-0" title="PDF">
-                        <Printer size={11} />
-                      </button>
-                    </div>
-                    <p className="text-[10px] text-slate-400 truncate">{c.cliente?.razonSocial ?? 'Consumidor Final'}</p>
-                    <p className="text-[10px] font-mono font-bold text-emerald-400 mt-1">RD$ {Number(c.total).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</p>
-                    {/* Move-to dropdown */}
-                    <div className="flex flex-wrap gap-1 mt-2">
-                      {KANBAN_ETAPAS.filter(x => x.id !== et.id).map(target => (
-                        <button key={target.id} onClick={() => onMove(c.id, target.id)}
-                          title={`Mover a ${target.label}`}
-                          className={`px-1.5 py-0.5 rounded text-[9px] font-semibold border opacity-40 hover:opacity-100 transition-opacity ${KANBAN_COLORS[target.color].text} ${KANBAN_COLORS[target.color].border}`}>
-                          <ChevronRight size={9} className="inline" />{target.label}
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )
-        })}
+    <div ref={setNodeRef} style={style}
+      className={`bg-slate-900/80 border border-slate-700/60 rounded-lg p-2.5 transition-colors hover:border-blue-600/40 ${isDragging ? 'opacity-30 shadow-2xl' : ''}`}>
+      <div className="flex items-start gap-1 mb-1">
+        <span {...attributes} {...listeners}
+          className="text-slate-600 hover:text-slate-300 cursor-grab active:cursor-grabbing flex-shrink-0 mt-0.5"
+          title="Arrastrar">
+          <GripVertical size={12} />
+        </span>
+        <button onClick={() => onOpen(cot)}
+          className="text-xs font-mono font-bold text-slate-200 hover:text-blue-300 truncate flex-1 text-left">
+          {cot.noFactura}
+        </button>
+        <button onClick={() => onPDF(cot)} className="text-slate-600 hover:text-blue-400 flex-shrink-0" title="PDF">
+          <Printer size={11} />
+        </button>
+      </div>
+      <p className="text-[10px] text-slate-400 truncate ml-4">{cot.cliente?.razonSocial ?? 'Consumidor Final'}</p>
+      <p className="text-[10px] font-mono font-bold text-emerald-400 mt-1 ml-4">RD$ {Number(cot.total).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</p>
+    </div>
+  )
+}
+
+// Columna droppable
+function KanbanColumn({ etapa, items, loading, onOpen, onPDF }) {
+  const c = KANBAN_COLORS[etapa.color]
+  const { setNodeRef, isOver } = useDroppable({ id: etapa.id, data: { etapa: etapa.id } })
+  const total = items.reduce((s, x) => s + Number(x.total || 0), 0)
+  return (
+    <div ref={setNodeRef}
+      className={`flex-1 min-w-[200px] rounded-xl border ${c.border} ${c.bg} p-2.5 flex flex-col gap-2 transition-all ${isOver ? 'ring-2 ring-blue-500/60 scale-[1.01]' : ''}`}>
+      <div className="flex items-center justify-between px-1">
+        <div>
+          <p className={`text-xs font-bold uppercase tracking-widest ${c.text}`}>{etapa.label}</p>
+          <p className="text-[10px] text-slate-500 font-mono">{items.length} · RD$ {total.toLocaleString('es-DO', { minimumFractionDigits: 0 })}</p>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto space-y-2 min-h-[120px]">
+        {loading && items.length === 0 ? (
+          <div className="flex justify-center py-4"><Loader2 size={14} className="animate-spin text-slate-500" /></div>
+        ) : items.length === 0 ? (
+          <p className="text-[10px] text-slate-700 italic text-center py-3">— vacío —</p>
+        ) : items.map(cot => (
+          <KanbanCard key={cot.id} cot={cot} onOpen={onOpen} onPDF={onPDF} />
+        ))}
       </div>
     </div>
+  )
+}
+
+function KanbanCotizaciones({ rows, loading, onMove, onOpen, onPDF }) {
+  // Sensor: empieza a draggar tras 6px de movimiento (evita confundir con click).
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }))
+  const [activeId, setActiveId] = useState(null)
+
+  // Agrupa en memoria + permite override optimista durante el drag.
+  const [optimistic, setOptimistic] = useState({}) // { cotId: 'NuevaEtapa' }
+  const effEtapa = r => optimistic[r.id] ?? r.etapaPipeline ?? 'Borrador'
+
+  const grouped = KANBAN_ETAPAS.reduce((acc, e) => { acc[e.id] = []; return acc }, {})
+  for (const r of rows) {
+    const k = effEtapa(r)
+    ;(grouped[k] ?? grouped.Borrador).push(r)
+  }
+  const activeCot = activeId ? rows.find(r => r.id === activeId) : null
+
+  function handleDragEnd(ev) {
+    setActiveId(null)
+    if (!ev.over) return
+    const cotId = ev.active.id
+    const target = ev.over.id
+    const cot = rows.find(r => r.id === cotId)
+    if (!cot || (cot.etapaPipeline ?? 'Borrador') === target) return
+    setOptimistic(o => ({ ...o, [cotId]: target }))
+    onMove(cotId, target).then(ok => {
+      // Si server falla, revierte
+      if (ok === false) setOptimistic(o => { const n = { ...o }; delete n[cotId]; return n })
+    }).catch(() => setOptimistic(o => { const n = { ...o }; delete n[cotId]; return n }))
+  }
+
+  return (
+    <DndContext sensors={sensors}
+      onDragStart={ev => setActiveId(ev.active.id)}
+      onDragEnd={handleDragEnd}
+      onDragCancel={() => setActiveId(null)}>
+      <div className="overflow-x-auto p-3">
+        <div className="flex gap-3 min-w-[1200px]">
+          {KANBAN_ETAPAS.map(et => (
+            <KanbanColumn key={et.id} etapa={et} items={grouped[et.id]}
+              loading={loading} onOpen={onOpen} onPDF={onPDF} />
+          ))}
+        </div>
+      </div>
+      <DragOverlay>
+        {activeCot && (
+          <div className="bg-slate-900 border-2 border-blue-500 rounded-lg p-2.5 shadow-2xl shadow-blue-600/40 cursor-grabbing">
+            <p className="text-xs font-mono font-bold text-blue-300">{activeCot.noFactura}</p>
+            <p className="text-[10px] text-slate-400 truncate">{activeCot.cliente?.razonSocial ?? 'Consumidor Final'}</p>
+            <p className="text-[10px] font-mono font-bold text-emerald-400 mt-1">RD$ {Number(activeCot.total).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</p>
+          </div>
+        )}
+      </DragOverlay>
+    </DndContext>
   )
 }
 
@@ -432,10 +489,11 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
   async function moverEtapa(cotId, nuevaEtapa) {
     try {
       const r = await apiFetch(`/api/cotizaciones/${cotId}/etapa`, { method: 'PATCH', body: JSON.stringify({ etapa: nuevaEtapa }) })
-      if (!r.ok) { const j = await r.json().catch(() => ({})); toast.error(j.error ?? 'Error.'); return }
-      toast.success(`Movida a "${nuevaEtapa}"`)
+      if (!r.ok) { const j = await r.json().catch(() => ({})); toast.error(j.error ?? 'Error.'); return false }
+      toast.success(`Movida a "${nuevaEtapa}"`, { duration: 1500 })
       fetch_(offset)
-    } catch { toast.error('Error de red.') }
+      return true
+    } catch { toast.error('Error de red.'); return false }
   }
 
   const [drawer, setDrawer] = useState({ open: false, blob: null, blobUrl: null, filename: null, title: null, subtitle: null, loading: false })

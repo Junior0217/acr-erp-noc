@@ -3133,6 +3133,64 @@ app.post('/api/pdf/bulk',
   }
 )
 
+// ─── Bundles cross-sell ──────────────────────────────────────────────────────
+// Lookup rápido: dado un producto, devuelve sugerencias ordenadas por score.
+app.get('/api/productos/:id/bundles', verificarJWT, async (req, res) => {
+  try {
+    const pid = parseInt(req.params.id, 10)
+    if (!pid) return res.json({ data: [] })
+    const bundles = await prisma.productoBundle.findMany({
+      where:   { padreId: pid },
+      orderBy: { score: 'desc' },
+      include: { hijo: { select: { id: true, sku: true, nombre: true, precio: true, stockActual: true, imagenUrl: true } } },
+      take:    8,
+    })
+    res.json({ data: bundles.map(b => ({ ...b.hijo, score: b.score, motivo: b.motivo })) })
+  } catch (e) {
+    console.error('[GET bundles]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// Variante para item de catálogo: si está vinculado a un producto físico,
+// retorna los bundles de ese producto. Sino vacío.
+app.get('/api/catalogo/:id/bundles', verificarJWT, async (req, res) => {
+  try {
+    if (!validUUID(req.params.id)) return res.json({ data: [] })
+    const item = await prisma.itemCatalogo.findUnique({
+      where: { id: req.params.id }, select: { productoId: true },
+    })
+    if (!item?.productoId) return res.json({ data: [] })
+    const bundles = await prisma.productoBundle.findMany({
+      where:   { padreId: item.productoId },
+      orderBy: { score: 'desc' },
+      include: { hijo: { select: { id: true, sku: true, nombre: true, precio: true, stockActual: true, imagenUrl: true } } },
+      take:    8,
+    })
+    res.json({ data: bundles.map(b => ({ ...b.hijo, score: b.score, motivo: b.motivo })) })
+  } catch (e) {
+    console.error('[GET catalogo bundles]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── Series disponibles para un producto (captura en POS) ────────────────────
+app.get('/api/productos/:id/series', verificarJWT, async (req, res) => {
+  try {
+    const pid = parseInt(req.params.id, 10)
+    if (!pid) return res.json({ data: [] })
+    const series = await prisma.productoSerial.findMany({
+      where:   { productoId: pid, estado: 'Disponible' },
+      orderBy: { createdAt: 'asc' },
+      select:  { id: true, serie: true, ubicacion: true, garantiaHasta: true },
+    })
+    res.json({ data: series })
+  } catch (e) {
+    console.error('[GET series]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // Mover cotización entre etapas del pipeline (Kanban).
 app.patch('/api/cotizaciones/:id/etapa',
   verificarJWT,
@@ -5124,19 +5182,34 @@ app.get('/api/catalogo', verificarJWT, async (req, res) => {
       where, orderBy: [{ categoria: 'asc' }, { nombre: 'asc' }],
       include: { producto: { select: { id: true, sku: true, stockActual: true, stockMinimo: true, imagenUrl: true, descripcion: true } } },
     })
+    // Reservas activas (no liberadas, sin expirar) por producto — resta del stock efectivo.
+    const prodIds = items.map(it => it.producto?.id).filter(Boolean)
+    const reservas = prodIds.length > 0
+      ? await prisma.reservaInventario.groupBy({
+          by:   ['productoId'],
+          _sum: { cantidad: true },
+          where:{ productoId: { in: prodIds }, liberada: false, expiraEn: { gt: new Date() } },
+        })
+      : []
+    const reservMap = Object.fromEntries(reservas.map(r => [r.productoId, r._sum.cantidad ?? 0]))
     // Resuelve campos efectivos: imagen y stock del Producto físico ganan si están atados.
     const enriched = items.map(it => {
       const pref = CODIGO_PREFIJO[it.tipo] ?? 'ITM'
       // Si el item no tiene `codigo` (legacy pre-rollout), genera uno estable basado
       // en el UUID. NO chocará con códigos seq nuevos porque incluye hex (no decimales).
       const codigoFallback = `${pref}-${String(it.id ?? '').replace(/-/g, '').slice(0, 6).toUpperCase()}`
+      // Resta reservas activas al stock del producto físico.
+      const reservadas = it.producto ? (reservMap[it.producto.id] ?? 0) : 0
+      const stockBase  = it.producto ? it.producto.stockActual : it.stock
+      const stockEff   = stockBase != null ? Math.max(0, stockBase - reservadas) : null
       return {
         ...it,
         codigo:     it.codigo ?? codigoFallback,
         imagenUrl:  it.imagenUrl ?? it.producto?.imagenUrl ?? null,
-        stock:      it.producto ? it.producto.stockActual : it.stock,
+        stock:      stockEff,
+        stockReservado: reservadas,
+        stockFisico:    stockBase,
         stockSource: it.producto ? 'inventario' : (it.stock != null ? 'catalogo' : null),
-        // SKU del producto físico, sino el código corto del catálogo.
         sku:        it.producto?.sku ?? null,
       }
     })
@@ -5874,6 +5947,34 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       })
     })
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:pos_catalogo', req, { facturaId: factura.id, total: Number(factura.total) })
+
+    // ── Reservas de stock al cotizar (TTL 72h) ──────────────────────────────
+    // Para cada línea cuyo ItemCatalogo está vinculado a un Producto físico,
+    // crea registro en ReservaInventario. Al listar /api/catalogo, el stock
+    // efectivo será stockActual - SUM(reservas activas) → evita doble venta.
+    if (esCotizacion) {
+      try {
+        const ids = [...new Set(lineas.map(l => l.itemCatalogoId))]
+        const itemsLink = await prisma.itemCatalogo.findMany({
+          where: { id: { in: ids } }, select: { id: true, productoId: true },
+        })
+        const linkMap = Object.fromEntries(itemsLink.map(i => [i.id, i.productoId]))
+        const exp = new Date(Date.now() + 72 * 3600_000)
+        const reservas = lineas
+          .map(l => ({ productoId: linkMap[l.itemCatalogoId], cantidad: l.cantidad }))
+          .filter(r => r.productoId)
+        if (reservas.length > 0) {
+          await prisma.reservaInventario.createMany({
+            data: reservas.map(r => ({
+              productoId: r.productoId, cantidad: r.cantidad,
+              facturaId: factura.id, expiraEn: exp,
+              motivo: `Cotización ${factura.noFactura}`,
+            })),
+          })
+        }
+      } catch (e) { console.error('[RESERVA]', e.message) }
+    }
+
     // AuditCaja: log venta concretada (no cotización) para fraud trail.
     if (!esCotizacion) {
       try {
@@ -6787,6 +6888,14 @@ async function startServer() {
     await ensureSchemaColumns();
     await ensureRowLevelSecurity();
     await ensureStorageBuckets();
+    // Libera reservas expiradas (TTL 72h por default). Idempotente.
+    try {
+      const r = await prisma.reservaInventario.updateMany({
+        where: { liberada: false, expiraEn: { lt: new Date() } },
+        data:  { liberada: true },
+      })
+      if (r.count > 0) console.log(`[RESERVA] ${r.count} reservas expiradas liberadas`)
+    } catch {}
     await seedNomenclaturas();
   } catch (err) {
     console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);

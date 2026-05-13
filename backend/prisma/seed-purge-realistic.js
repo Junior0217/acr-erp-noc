@@ -319,6 +319,186 @@ async function seedBundles(productos) {
   console.log(`   ✅ ${n} bundles cross-sell`)
 }
 
+async function ensureClientes() {
+  console.log('👥 Clientes (idempotente)...')
+  const lista = [
+    { noCliente: 'CLI-001', razonSocial: 'ServiCorp, S.R.L.', rnc: '101123456', tipoEmpresa: 'SRL', tipoCliente: 'Corporativo', nombreContacto: 'Luis', apellidoContacto: 'Fernández', telefonoPrincipal: '8094561234', email: 'ti@servicorp.do', direccion: 'Av. Winston Churchill #45', sector: 'Piantini', provincia: 'Santo Domingo', itbis: true, tipoNcf: 'Crédito Fiscal', limiteCredito: 150000, activo: true },
+    { noCliente: 'CLI-002', razonSocial: 'Pedro Antonio Martínez', tipoEmpresa: 'Persona Física', tipoCliente: 'Residencial', cedula: '00112345678', nombreContacto: 'Pedro', apellidoContacto: 'Martínez', telefonoPrincipal: '8297651234', email: 'pedro.mtz@gmail.com', direccion: 'C/ Josefa #12', sector: 'Los Prados', provincia: 'Santo Domingo', itbis: false, tipoNcf: 'Consumidor Final', activo: true },
+    { noCliente: 'CLI-003', razonSocial: 'Lucía M. Jiménez', tipoEmpresa: 'Persona Física', tipoCliente: 'Residencial', cedula: '00123456789', nombreContacto: 'Lucía', apellidoContacto: 'Jiménez', telefonoPrincipal: '8499871234', email: 'lucia.jimenez@gmail.com', direccion: 'Res. Las Américas, Bl. C', sector: 'Las Américas', provincia: 'Santo Domingo', itbis: false, tipoNcf: 'Consumidor Final', activo: true },
+    { noCliente: 'CLI-004', razonSocial: 'Carlos Tejeda Vargas', tipoEmpresa: 'Persona Física', tipoCliente: 'Residencial', cedula: '00134567890', nombreContacto: 'Carlos', apellidoContacto: 'Tejeda', telefonoPrincipal: '8093452345', email: 'ctejeda@hotmail.com', direccion: 'Av. Independencia #220', sector: 'San Carlos', provincia: 'Santo Domingo', itbis: false, tipoNcf: 'Consumidor Final', activo: true },
+    { noCliente: 'CLI-005', razonSocial: 'Distribuidora La Esperanza', rnc: '131987654', tipoEmpresa: 'SRL', tipoCliente: 'PYME', nombreContacto: 'Mariana', apellidoContacto: 'Polanco', telefonoPrincipal: '8095552233', email: 'compras@laesperanza.do', direccion: 'C/ El Conde #102', sector: 'Zona Colonial', provincia: 'Distrito Nacional', itbis: true, tipoNcf: 'Crédito Fiscal', limiteCredito: 75000, activo: true },
+  ]
+  const map = {}
+  for (const c of lista) {
+    const cli = await prisma.cliente.upsert({
+      where: { noCliente: c.noCliente }, update: { activo: true },
+      create: c,
+    })
+    map[c.noCliente] = cli
+  }
+  console.log(`   ✅ ${lista.length} clientes`)
+  return map
+}
+
+async function seedKardex(productos) {
+  console.log('📊 Kardex inicial (Entradas para justificar stockActual)...')
+  let n = 0
+  for (const sku of Object.keys(productos)) {
+    const p = productos[sku]
+    if (p.stockActual > 0) {
+      await prisma.movimientoInventario.create({
+        data: { productoId: p.id, tipo: 'Entrada', cantidad: p.stockActual, fecha: new Date(Date.now() - 30 * 86_400_000) },
+      })
+      n++
+    }
+  }
+  console.log(`   ✅ ${n} entradas de kardex`)
+}
+
+async function seedCotizaciones(clientes) {
+  console.log('📝 Cotizaciones distribuidas en Kanban...')
+  const items = await prisma.itemCatalogo.findMany({ orderBy: { codigo: 'asc' } })
+  if (items.length === 0) { console.log('   ⚠ Sin items, skip'); return }
+  const itemCCTV = items.find(i => i.codigo === 'SRV-0001') || items[0]
+  const itemRed  = items.find(i => i.codigo === 'SRV-0002') || items[1] || items[0]
+  const itemWisp = items.find(i => i.codigo === 'REC-0001') || items[0]
+
+  const cliArr = Object.values(clientes)
+  const samples = [
+    { cli: cliArr[0], etapa: 'Borrador',    itm: itemCCTV, qty: 1, dias: 1  },
+    { cli: cliArr[1], etapa: 'Enviada',     itm: itemRed,  qty: 1, dias: 3  },
+    { cli: cliArr[2], etapa: 'Negociacion', itm: itemCCTV, qty: 1, dias: 5  },
+    { cli: cliArr[3], etapa: 'Negociacion', itm: itemWisp, qty: 1, dias: 7  },
+    { cli: cliArr[4], etapa: 'Aceptada',    itm: itemCCTV, qty: 1, dias: 8  },
+    { cli: cliArr[0], etapa: 'Aceptada',    itm: itemRed,  qty: 2, dias: 9  },
+    { cli: cliArr[1], etapa: 'Perdida',     itm: itemCCTV, qty: 1, dias: 15 },
+  ]
+  let n = 0
+  for (const s of samples) {
+    if (!s.cli) continue
+    const monto = Number(s.itm.precio) * s.qty
+    const itbis = Math.round(monto * 0.18 * 100) / 100
+    const total = Math.round((monto + itbis) * 100) / 100
+    const fecha = new Date(Date.now() - s.dias * 86_400_000)
+    const año = fecha.getFullYear()
+    const seq = String(1000 + n).padStart(4, '0')
+    await prisma.factura.create({
+      data: {
+        noFactura: `COT${año}-${seq}`,
+        clienteId: s.cli.id,
+        estado: 'Borrador', esCotizacion: true,
+        etapaPipeline: s.etapa,
+        subtotal: monto, itbis, total,
+        tipoNcf: 'Consumidor Final',
+        fechaEmision: fecha,
+        fechaVence: new Date(fecha.getTime() + 15 * 86_400_000),
+        notas: `Cotización demo · etapa ${s.etapa}`,
+        condicionesDefault: undefined,
+        lineas: { create: [{
+          descripcion: s.itm.nombre, cantidad: s.qty,
+          precioUnitario: Number(s.itm.precio),
+        }] },
+      },
+    })
+    n++
+  }
+  console.log(`   ✅ ${n} cotizaciones (${[...new Set(samples.map(s => s.etapa))].join(', ')})`)
+}
+
+async function seedFacturas(clientes) {
+  console.log('💰 Facturas reales (varios estados + NCF)...')
+  const items = await prisma.itemCatalogo.findMany({ orderBy: { codigo: 'asc' } })
+  if (items.length === 0) return
+  const cliArr = Object.values(clientes)
+
+  // Consume secuencias NCF
+  const ncfCfg = await prisma.configuracionNCF.findMany()
+  const nextNcf = async (tipo) => {
+    const cfg = ncfCfg.find(c => c.tipoNcf === tipo)
+    if (!cfg) return null
+    const seq = cfg.secuenciaActual
+    cfg.secuenciaActual += 1
+    await prisma.configuracionNCF.update({ where: { id: cfg.id }, data: { secuenciaActual: cfg.secuenciaActual } })
+    return `${cfg.prefijo}${String(seq).padStart(8, '0')}`
+  }
+
+  const samples = [
+    { cli: cliArr[0], itm: items[1], qty: 1, estado: 'Pagada',   tipoNcf: 'Crédito Fiscal',     dias: 25, applyItbis: true  },
+    { cli: cliArr[0], itm: items[0], qty: 1, estado: 'Emitida',  tipoNcf: 'Crédito Fiscal',     dias: 6,  applyItbis: true  },
+    { cli: cliArr[1], itm: items[2], qty: 1, estado: 'Pagada',   tipoNcf: 'Consumidor Final',   dias: 20, applyItbis: false },
+    { cli: cliArr[2], itm: items[5] || items[0], qty: 1, estado: 'Pagada',   tipoNcf: 'Consumidor Final',   dias: 12, applyItbis: false },
+    { cli: cliArr[3], itm: items[2], qty: 1, estado: 'Vencida',  tipoNcf: 'Consumidor Final',   dias: 45, applyItbis: false },
+    { cli: cliArr[4], itm: items[1], qty: 1, estado: 'Anulada',  tipoNcf: 'Crédito Fiscal',     dias: 10, applyItbis: true  },
+    { cli: cliArr[4], itm: items[0], qty: 1, estado: 'Emitida',  tipoNcf: 'Crédito Fiscal',     dias: 2,  applyItbis: true  },
+  ]
+  let n = 0
+  for (const s of samples) {
+    if (!s.cli || !s.itm) continue
+    const monto = Number(s.itm.precio) * s.qty
+    const itbis = s.applyItbis ? Math.round(monto * 0.18 * 100) / 100 : 0
+    const total = Math.round((monto + itbis) * 100) / 100
+    const fecha = new Date(Date.now() - s.dias * 86_400_000)
+    const año = fecha.getFullYear()
+    const ncf = await nextNcf(s.tipoNcf)
+    const seq = String(2000 + n).padStart(4, '0')
+    await prisma.factura.create({
+      data: {
+        noFactura: `FAC${año}-${seq}`,
+        clienteId: s.cli.id,
+        estado: s.estado, esCotizacion: false,
+        etapaPipeline: 'Convertida',
+        subtotal: monto, itbis, total,
+        ncf, tipoNcf: s.tipoNcf,
+        fechaEmision: fecha,
+        fechaVence: new Date(fecha.getTime() + 30 * 86_400_000),
+        fechaPago: s.estado === 'Pagada' ? new Date(fecha.getTime() + 7 * 86_400_000) : null,
+        notas: `Factura demo seed · ${s.estado}`,
+        lineas: { create: [{
+          descripcion: s.itm.nombre, cantidad: s.qty,
+          precioUnitario: Number(s.itm.precio),
+        }] },
+      },
+    })
+    n++
+  }
+  console.log(`   ✅ ${n} facturas`)
+}
+
+async function seedOTs(clientes) {
+  console.log('🔧 Órdenes de Trabajo...')
+  const cliArr = Object.values(clientes)
+  // Toma el primer empleado disponible como técnico genérico.
+  const tecnico = await prisma.empleado.findFirst()
+  const samples = [
+    { cli: cliArr[0], tipoOT: 'CCTV',           estado: 'Pendiente', notas: 'Instalación CCTV 16 cámaras' },
+    { cli: cliArr[1], tipoOT: 'ISP',            estado: 'EnProceso', notas: 'Migración WISP 25Mbps → 100Mbps' },
+    { cli: cliArr[2], tipoOT: 'Reparacion',     estado: 'Completada', notas: 'Reparación router MikroTik' },
+    { cli: cliArr[3], tipoOT: 'CercoElectrico', estado: 'Pendiente', notas: 'Cotizado cerco 4 zonas' },
+    { cli: cliArr[4], tipoOT: 'VentaDirecta',   estado: 'EnProceso', notas: 'Despacho switch + cableado' },
+  ]
+  let n = 0
+  for (let i = 0; i < samples.length; i++) {
+    const s = samples[i]
+    if (!s.cli) continue
+    const año = new Date().getFullYear()
+    await prisma.ordenTrabajo.create({
+      data: {
+        noOT: `OT${año}-${String(3000 + i).padStart(4, '0')}`,
+        clienteId: s.cli.id,
+        tecnicoId: tecnico?.id ?? null,
+        tipoOT:    s.tipoOT,
+        estado:    s.estado,
+        notasTecnicas: s.notas,
+        metadatos: {},
+        fechaVencimientoSLA: new Date(Date.now() + (s.estado === 'Pendiente' ? 7 : 0) * 86_400_000),
+        completadaEn: s.estado === 'Completada' ? new Date(Date.now() - 2 * 86_400_000) : null,
+      },
+    })
+    n++
+  }
+  console.log(`   ✅ ${n} órdenes de trabajo`)
+}
+
 async function main() {
   if (!CONFIRM) {
     console.error('⛔  ABORT — corre con CONFIRM_PURGE=1 (variable env) o --yes (flag).')
@@ -337,6 +517,11 @@ async function main() {
   const productos = await seedProductos(cats)
   await seedCatalogo(productos)
   await seedBundles(productos)
+  const clientes = await ensureClientes()
+  await seedKardex(productos)
+  await seedCotizaciones(clientes)
+  await seedFacturas(clientes)
+  await seedOTs(clientes)
   console.log(`───────────────────────────────────────────────`)
   console.log(`✅ SEED OK en ${Date.now() - t0}ms`)
   console.log(`   PIN supervisor inicial: ${process.env.PIN_INICIAL ?? '1234'}`)

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Package, ClipboardList, FileText, Settings2, ScrollText, ShoppingBag } from 'lucide-react'
+import { Package, ClipboardList, FileText, Settings2, ScrollText, ShoppingBag, Shield } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import PanelCatalogo      from './panels/PanelCatalogo'
 import PanelOrdenes       from './panels/PanelOrdenes'
@@ -8,6 +8,7 @@ import PanelFacturas      from './panels/PanelFacturas'
 import PanelNCF           from './panels/PanelNCF'
 import PanelCotizaciones  from './panels/PanelCotizaciones'
 import PanelPOS           from './panels/PanelPOS'
+import PanelAuditCaja     from './panels/PanelAuditCaja'
 
 export default function Ventas() {
   const [searchParams] = useSearchParams()
@@ -15,6 +16,7 @@ export default function Ventas() {
   const canEdit     = tienePermiso('catalogo:editar')
   const canSeeCosts = tienePermiso('catalogo:ver_costos')
   const canPOS      = tienePermiso('pos:ver') || tienePermiso('sistema:owner')
+  const isOwner     = tienePermiso('sistema:owner')
 
   const clienteIdInit     = searchParams.get('cliente') ?? ''
   const clienteNombreInit = searchParams.get('nombre')  ?? ''
@@ -44,6 +46,7 @@ export default function Ventas() {
     { key: 'facturas',      label: 'Facturas',        Icon: FileText,       show: true       },
     { key: 'cotizaciones',  label: 'Cotizaciones',    Icon: ScrollText,     show: true       },
     { key: 'pos',           label: 'POS',             Icon: ShoppingBag,    show: canPOS     },
+    { key: 'audit',         label: 'Auditoría',       Icon: Shield,         show: isOwner    },
     { key: 'ncf',           label: 'Config NCF',      Icon: Settings2,      show: true       },
   ].filter(t => t.show)
 
@@ -73,6 +76,7 @@ export default function Ventas() {
         {tab === 'facturas'     && <PanelFacturas highlightId={facturaHighlight} />}
         {tab === 'cotizaciones' && <PanelCotizaciones onIrPOS={() => setTab('pos')} canPOS={canPOS} />}
         {tab === 'pos'          && <PanelPOS preloadItems={posPreload} onClearPreload={() => setPosPreload([])} onFacturaCreada={onFacturaCreada} />}
+        {tab === 'audit'        && isOwner && <PanelAuditCaja />}
         {tab === 'ncf'          && <PanelNCF />}
       </div>
     </div>

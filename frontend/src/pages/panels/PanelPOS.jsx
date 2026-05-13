@@ -383,6 +383,79 @@ function CatalogSearch({ onAdd }) {
   )
 }
 
+// ── CrossSellBanner: lee bundles de los items del carrito ────────────────────
+function CrossSellBanner({ cart, onAdd }) {
+  const [sugerencias, setSugerencias] = useState([])
+  const [loading, setLoading] = useState(false)
+
+  useEffect(() => {
+    if (cart.length === 0) { setSugerencias([]); return }
+    let cancel = false
+    setLoading(true)
+    ;(async () => {
+      try {
+        // Junta bundles de cada item del carrito (dedupe por producto.id).
+        const ids = cart.map(l => l.itemCatalogoId).filter(Boolean).slice(0, 6)
+        const responses = await Promise.allSettled(
+          ids.map(id => apiFetch(`/api/catalogo/${id}/bundles`).then(r => r.ok ? r.json() : { data: [] }))
+        )
+        const all = []
+        const seen = new Set()
+        for (const r of responses) {
+          if (r.status !== 'fulfilled') continue
+          for (const b of (r.value.data ?? [])) {
+            if (seen.has(b.id)) continue
+            seen.add(b.id); all.push(b)
+          }
+        }
+        // Quita items ya en el carrito (por SKU).
+        const skusEnCarrito = new Set(cart.map(l => l.codigo).filter(Boolean))
+        const filtered = all.filter(b => !skusEnCarrito.has(b.sku))
+        if (!cancel) setSugerencias(filtered.slice(0, 6))
+      } catch {} finally { if (!cancel) setLoading(false) }
+    })()
+    return () => { cancel = true }
+  }, [cart.length, cart.map(l => l.itemCatalogoId).join('|')])
+
+  if (cart.length === 0 || (sugerencias.length === 0 && !loading)) return null
+
+  return (
+    <div className="bg-amber-900/10 border border-amber-700/30 rounded-xl p-3">
+      <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 mb-2 flex items-center gap-1.5">
+        <Tag size={11} />Sugerencias para tu carrito
+      </p>
+      {loading ? (
+        <div className="flex justify-center py-2"><Loader2 size={12} className="animate-spin text-amber-400" /></div>
+      ) : (
+        <div className="flex gap-2 overflow-x-auto">
+          {sugerencias.map(s => (
+            <div key={s.id} className="flex-shrink-0 w-40 bg-slate-800/60 border border-slate-700 rounded-lg p-2">
+              <div className="aspect-square w-full rounded bg-slate-900 mb-1.5 overflow-hidden flex items-center justify-center">
+                {s.imagenUrl
+                  ? <img src={s.imagenUrl} alt={s.nombre} className="w-full h-full object-cover" />
+                  : <Package size={20} className="text-slate-600" />}
+              </div>
+              <p className="text-[10px] font-semibold text-slate-100 line-clamp-2 leading-tight">{s.nombre}</p>
+              <p className="text-[10px] font-mono text-emerald-400 mt-0.5">RD$ {fmt(s.precio)}</p>
+              {s.motivo && <p className="text-[9px] text-slate-500 italic mt-0.5 line-clamp-1">{s.motivo}</p>}
+              <button
+                onClick={() => onAdd({
+                  id: `producto-${s.id}`, // marcador (no hay itemCatalogo)
+                  nombre: s.nombre, precio: s.precio, imagenUrl: s.imagenUrl,
+                  sku: s.sku, _crossSellProductoId: s.id,
+                })}
+                disabled={s.stockActual <= 0}
+                className="w-full mt-1.5 px-2 py-1 rounded text-[10px] font-bold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40">
+                {s.stockActual <= 0 ? 'Sin stock' : 'Agregar'}
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 // ── CartLine ──────────────────────────────────────────────────────────────────
 function CartLine({ linea, onChange, onRemove }) {
   const pu  = linea.precioUnitario
@@ -539,6 +612,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       {/* Right — Cart */}
       <div className="w-80 flex-shrink-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3">
         <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Carrito</p>
+
+        <CrossSellBanner cart={cart} onAdd={addItem} />
 
         {/* Client */}
         <div className="space-y-2">
