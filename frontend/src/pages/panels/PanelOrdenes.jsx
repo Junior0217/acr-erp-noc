@@ -212,6 +212,7 @@ function LineasPicker({ lineas, setLineas }) {
       descripcion,
       cantidad:       1,
       precioUnitario: Number(item.precio),
+      consumoInterno: false,    // por default es facturable
     }])
     setSearch(''); setShow(false)
   }
@@ -261,13 +262,28 @@ function LineasPicker({ lineas, setLineas }) {
                       )}
                     </div>
                     <div className="flex items-center gap-1 flex-shrink-0">
+                      {/* Toggle consumoInterno: si está ON, esta línea NO se factura al cliente
+                          pero SÍ descuenta stock al cerrar la OT (BOM oculto de instalación). */}
+                      <button type="button" onClick={() => upd(i, 'consumoInterno', !l.consumoInterno)}
+                        title={l.consumoInterno ? 'Consumo interno · NO factura' : 'Facturable · cliente paga'}
+                        className={`px-1.5 py-1 rounded text-[9px] font-bold uppercase transition-colors border ${
+                          l.consumoInterno
+                            ? 'bg-amber-600/20 text-amber-300 border-amber-600/40'
+                            : 'bg-emerald-600/15 text-emerald-300 border-emerald-600/30'
+                        }`}>
+                        {l.consumoInterno ? '🔧 Interno' : '💰 Fact'}
+                      </button>
                       <input type="number" min="1" value={l.cantidad}
                         onChange={e => upd(i, 'cantidad', parseInt(e.target.value) || 1)}
                         className="w-10 text-center bg-slate-700 border border-slate-600 rounded text-xs text-slate-200 py-1 focus:outline-none focus:border-blue-500" />
                       <span className="text-[10px] text-slate-600">×</span>
                       <input type="number" min="0" step="0.01" value={l.precioUnitario}
                         onChange={e => upd(i, 'precioUnitario', parseFloat(e.target.value) || 0)}
-                        className="w-20 text-right bg-slate-700 border border-slate-600 rounded text-xs text-slate-200 py-1 px-1.5 font-mono focus:outline-none focus:border-blue-500" />
+                        disabled={l.consumoInterno}
+                        title={l.consumoInterno ? 'Precio ignorado en facturación (consumo interno)' : ''}
+                        className={`w-20 text-right border rounded text-xs py-1 px-1.5 font-mono focus:outline-none focus:border-blue-500 ${
+                          l.consumoInterno ? 'bg-slate-800 border-slate-700 text-slate-500' : 'bg-slate-700 border-slate-600 text-slate-200'
+                        }`} />
                       <button onClick={() => remove(i)} className="text-slate-600 hover:text-red-400 transition-colors ml-0.5">
                         <Trash2 size={12} />
                       </button>
@@ -364,7 +380,9 @@ function NuevaOTModal({ onClose, onSaved, clienteIdInit, clienteNombreInit }) {
           itemCatalogoId: l.itemCatalogoId,
           descripcion:    l.descripcion,
           cantidad:       Number(l.cantidad) || 1,
-          precioUnitario: Number(l.precioUnitario) || 0,
+          // Si es consumo interno, el precio se fuerza a 0 (no factura).
+          precioUnitario: l.consumoInterno ? 0 : (Number(l.precioUnitario) || 0),
+          consumoInterno: !!l.consumoInterno,
         })),
       }
       const r = await apiFetch('/api/ventas/ordenes', { method: 'POST', body: JSON.stringify(body) })

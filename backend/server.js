@@ -363,7 +363,69 @@ const uploadMulter  = multer({
   limits:  { fileSize: 2 * 1024 * 1024 },     // 2MB
 })
 
-app.use(express.json({ limit: '50kb' }));
+// ─── Security: CSP nonce dinámico + Trusted Types header inyectado por request
+// Nonce SHA-256 truncado (24 chars). El frontend lee res.locals.cspNonce si fuera
+// SSR. Para SPA estática es información para que el navegador rechace scripts
+// inline no marcados con este nonce.
+function cspNonceMiddleware(req, res, next) {
+  res.locals.cspNonce = crypto.randomBytes(18).toString('base64url')
+  next()
+}
+app.use(cspNonceMiddleware)
+app.use((req, res, next) => {
+  const nonce = res.locals.cspNonce
+  // CSP relativamente estricta — preserva 'unsafe-inline' solo en style por Tailwind compilado.
+  // Para producción full-strict: precompila Tailwind y elimina unsafe-inline aquí también.
+  res.setHeader('Content-Security-Policy',
+    `default-src 'self'; ` +
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic'; ` +
+    `style-src 'self' 'unsafe-inline'; ` +
+    `img-src 'self' data: blob: https:; ` +
+    `font-src 'self' data:; ` +
+    `connect-src 'self' https://*.supabase.co https:; ` +
+    `frame-ancestors 'none'; ` +
+    `base-uri 'self'; ` +
+    `object-src 'none'; ` +
+    `require-trusted-types-for 'script'`
+  )
+  next()
+})
+
+// ─── Security: prototype pollution guard sobre req.body antes del body parser
+// Bloquea claves __proto__, prototype, constructor que un atacante podría usar
+// para envenenar Object.prototype. Express.json no protege contra esto por default.
+function _stripPollutionKeys(obj, depth = 0) {
+  if (depth > 6 || obj == null || typeof obj !== 'object') return obj
+  if (Array.isArray(obj)) { obj.forEach(v => _stripPollutionKeys(v, depth + 1)); return obj }
+  for (const k of Object.keys(obj)) {
+    if (k === '__proto__' || k === 'prototype' || k === 'constructor') {
+      delete obj[k]
+    } else {
+      _stripPollutionKeys(obj[k], depth + 1)
+    }
+  }
+  return obj
+}
+
+// ─── Helpers: body limit por ruta + envelope estándar de error/respuesta ──────
+function bodyLimit(maxKb) {
+  return express.json({
+    limit: `${maxKb}kb`,
+    reviver: (k, v) => (k === '__proto__' || k === 'constructor') ? undefined : v,
+  })
+}
+function sendErr(res, status, code, message, detail) {
+  return res.status(status).json({ ok: false, error: message, code, ...(detail ? { detail } : {}) })
+}
+function sendOk(res, data, status = 200) {
+  return res.status(status).json({ ok: true, data })
+}
+
+app.use(express.json({
+  limit: '50kb',
+  reviver: (k, v) => (k === '__proto__' || k === 'constructor') ? undefined : v,
+}));
+app.use((req, _res, next) => { if (req.body) _stripPollutionKeys(req.body); next() });
 
 // ─── CSRF Double-Submit Cookie ────────────────────────────────────────────────
 const CSRF_SKIP = new Set([
@@ -3136,6 +3198,22 @@ function mergeCondiciones(empresa, factura) {
   }
 }
 
+// Clasifica la composición de una factura según sus líneas. Si tiene SOLO
+// productos físicos (con productoId vinculado) → 'Artículos'. Si tiene SOLO
+// servicios/líneas sin producto → 'Servicio'. Si mezcla ambos → 'Mixto'.
+function _composicionFactura(lineas) {
+  let hasArt = false, hasSrv = false
+  for (const l of lineas) {
+    const tipo = l.producto?.tipoItem
+    if (l.productoId && tipo !== 'SERVICIO') hasArt = true
+    else hasSrv = true
+    if (hasArt && hasSrv) break
+  }
+  if (hasArt && hasSrv) return 'Mixto'
+  if (hasArt) return 'Artículos'
+  return 'Servicio'
+}
+
 async function buildPdfData(facturaOrCotizacion) {
   const f = facturaOrCotizacion
   // Si la factura tiene snapshot fiscal (emitida con el sistema nuevo), USA esa data
@@ -3169,14 +3247,20 @@ async function buildPdfData(facturaOrCotizacion) {
       email:       c.email,
     },
     // LineaFactura SOLO tiene relación con producto (no con itemCatalogo).
-    // El nombre del item siempre vive en l.descripcion (string nativo).
-    items: (f.lineas ?? []).map(l => ({
-      descripcion:    l.descripcion,
-      detalle:        l.producto?.nombre && l.producto.nombre !== l.descripcion ? l.producto.nombre : null,
-      sku:            l.producto?.sku ?? null,
-      cantidad:       l.cantidad,
-      precioUnitario: Number(l.precioUnitario),
-    })),
+    // Fallback a orden.lineas para facturas OT-based (sin LineaFactura propia).
+    // Excluye consumoInterno (materiales gastados en instalación no facturables).
+    items: ((f.lineas?.length ? f.lineas : (f.orden?.lineas ?? []))
+      .filter(l => !l.consumoInterno)
+      .map(l => ({
+        descripcion:    l.descripcion,
+        detalle:        l.producto?.nombre && l.producto.nombre !== l.descripcion ? l.producto.nombre : null,
+        sku:            l.producto?.sku ?? null,
+        cantidad:       l.cantidad,
+        precioUnitario: Number(l.precioUnitario),
+      }))),
+    // Tipo de composición DINÁMICO: cuenta productos físicos vs servicios para
+    // mostrar al cliente si está pagando algo tangible, intangible o mixto.
+    tipoComposicion: _composicionFactura((f.lineas?.length ? f.lineas : (f.orden?.lineas ?? [])).filter(l => !l.consumoInterno)),
     ncf:          f.ncf ?? null,
     tipoNcf:      f.tipoNcf ?? null,
     subtotal:     Number(f.subtotal),
@@ -6355,9 +6439,11 @@ app.post('/api/ncf-config', verificarJWT, requerirPermiso('sistema:admin'), asyn
 const lineaOTSchema = z.object({
   itemCatalogoId: z.string().uuid().optional().nullable(),
   productoId:     z.number().int().optional().nullable(),
-  descripcion:    z.string().min(1).max(200),
+  descripcion:    z.string().min(1).max(2000),
   cantidad:       z.number().int().min(1).default(1),
   precioUnitario: z.number().min(0),
+  // BOM oculto: si true, descuenta stock al cerrar OT pero NO se factura.
+  consumoInterno: z.boolean().optional().default(false),
 })
 
 const ordenTrabajoSchema = z.object({
@@ -6550,8 +6636,11 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
       // NCF sigue su lógica DGII independiente (no se mezclan responsabilidades).
       const noFactura = await generarSiguienteCodigo('factura', tx)
 
-      // 5. Cálculo de totales
-      const subtotal = ot.lineas.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0)
+      // 5. Cálculo de totales — EXCLUYE líneas marcadas como consumoInterno
+      // (materiales gastados en instalación que NO se facturan al cliente).
+      // El descuento real de stock para esas líneas ocurre al cerrar la OT.
+      const lineasFacturables = ot.lineas.filter(l => !l.consumoInterno)
+      const subtotal = lineasFacturables.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0)
       const itbis    = ot.cliente.itbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
       const total    = Math.round((subtotal + itbis) * 100) / 100
 
@@ -7815,6 +7904,131 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
+// ─── Reversión Admin (God Mode) — solo sistema:owner ──────────────────────────
+// Permite revertir una factura Pagada/Anulada de vuelta a Borrador en caso de
+// error humano. Restaura stock si la factura tenía líneas de Producto físico.
+// SIEMPRE registra un AuditCaja tipo factura:revertida con quién, cuándo, motivo.
+app.post('/api/facturas/:id/revertir', verificarJWT, billingLimiter, requerirPermiso('sistema:owner'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const motivo = String(req.body?.motivo ?? '').slice(0, 500)
+    if (!motivo || motivo.length < 10) {
+      return res.status(400).json({ error: 'Motivo requerido (mínimo 10 caracteres) para reversión.', code: 'MOTIVO_REQUIRED' })
+    }
+    const existing = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      include: { lineas: { include: { producto: { select: { id: true, tipoItem: true } } } } },
+    })
+    if (!existing) return res.status(404).json({ error: 'Factura no encontrada.' })
+    if (!['Pagada', 'Anulada'].includes(existing.estado)) {
+      return res.status(409).json({ error: `No se puede revertir factura en estado ${existing.estado}.` })
+    }
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      // Si la factura estaba Pagada, restauramos stock de líneas físicas (la salida
+      // había ocurrido al emitir). Si estaba Anulada, NO restauramos (el stock ya
+      // volvió cuando se anuló, o nunca se descontó si la factura no llegó a Pagada).
+      let stockRestaurado = 0
+      if (existing.estado === 'Pagada') {
+        for (const l of existing.lineas) {
+          if (l.productoId && l.producto?.tipoItem !== 'SERVICIO' && Number(l.cantidad) > 0) {
+            await tx.producto.update({
+              where: { id: l.productoId },
+              data:  { stockActual: { increment: l.cantidad } },
+            })
+            await tx.movimientoInventario.create({
+              data: { productoId: l.productoId, tipo: 'Entrada', cantidad: l.cantidad },
+            })
+            stockRestaurado++
+          }
+        }
+      }
+      const updated = await tx.factura.update({
+        where: { id: existing.id },
+        data:  { estado: 'Borrador', fechaPago: null, pdfUrl: null, pdfInvalidatedAt: new Date() },
+      })
+      return { updated, stockRestaurado }
+    })
+
+    auditReq('factura:revertida_god_mode', req, { facturaId: existing.id, estadoAnterior: existing.estado, motivo, stockRestaurado: resultado.stockRestaurado })
+    // Append-only audit con hash chain — la reversión es operación crítica que
+    // exige trazabilidad inmutable verificable post-facto.
+    await appendAuditCaja({
+      tipo:       'factura_revertida',
+      empleadoId: req.user?.sub ?? null,
+      facturaId:  existing.id,
+      monto:      Number(existing.total),
+      detalle:    `God Mode: ${existing.estado} → Borrador. Stock restaurado: ${resultado.stockRestaurado}. Motivo: ${motivo}`,
+      ip:         req.ip,
+      ua:         (req.headers['user-agent'] ?? '').slice(0, 200),
+    }).catch(() => {})
+    res.json({ ok: true, factura: resultado.updated, stockRestaurado: resultado.stockRestaurado })
+  } catch (e) {
+    console.error('[FACTURA REVERTIR]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── Audit hash chain helpers + verify endpoint ──────────────────────────────
+// Cada INSERT a AuditCaja debería pasar por appendAuditCaja() para mantener
+// la cadena. El secret rotable AUDIT_SECRET protege contra reescritura post-facto.
+const AUDIT_SECRET = process.env.AUDIT_SECRET ?? process.env.JWT_SECRET ?? 'change-me-audit-secret'
+
+function _canonicalizar(row) {
+  const safe = {
+    tipo: row.tipo ?? '',
+    empleadoId: row.empleadoId ?? null,
+    facturaId: row.facturaId ?? null,
+    monto: row.monto != null ? String(row.monto) : null,
+    descPct: row.descPct != null ? String(row.descPct) : null,
+    detalle: row.detalle ?? '',
+    ip: row.ip ?? null,
+    createdAt: row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
+  }
+  return JSON.stringify(safe, Object.keys(safe).sort())
+}
+
+async function appendAuditCaja(data) {
+  // Lee el último hash conocido para encadenar.
+  const last = await prisma.auditCaja.findFirst({
+    where:   { hash: { not: null } },
+    orderBy: { id: 'desc' },
+    select:  { hash: true },
+  })
+  const prevHash = last?.hash ?? 'GENESIS'
+  const payload  = _canonicalizar({ ...data, createdAt: data.createdAt ?? new Date() })
+  const hash     = crypto.createHmac('sha256', AUDIT_SECRET).update(payload + '|' + prevHash).digest('hex')
+  return prisma.auditCaja.create({ data: { ...data, prevHash, hash } })
+}
+
+// Endpoint verificación integridad: recorre las últimas N filas, recalcula hash
+// y reporta cualquier inconsistencia. Solo owner. Coste O(N) — usa take limitado.
+app.get('/api/auditoria/caja/verify', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit ?? '500', 10), 5000)
+    const rows = await prisma.auditCaja.findMany({
+      orderBy: { id: 'asc' },
+      take:    limit,
+    })
+    let prev = 'GENESIS'
+    let roto = null
+    for (const r of rows) {
+      if (!r.hash) continue   // filas legacy pre-chain
+      const expected = crypto.createHmac('sha256', AUDIT_SECRET).update(_canonicalizar(r) + '|' + (r.prevHash ?? 'GENESIS')).digest('hex')
+      if (expected !== r.hash) { roto = { id: r.id, esperado: expected, almacenado: r.hash }; break }
+      if (r.prevHash && r.prevHash !== 'GENESIS' && r.prevHash !== prev) {
+        roto = { id: r.id, motivo: 'prevHash no coincide con la fila anterior', prev, prevHashAlmacenado: r.prevHash }
+        break
+      }
+      prev = r.hash
+    }
+    res.json({ ok: !roto, verificadas: rows.length, integridad: roto ? 'ROTA' : 'OK', roto })
+  } catch (e) {
+    console.error('[AUDIT VERIFY]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // ─── PDF Builder (shared por rutas legacy + envío por email) ─────────────────
 // Delegación al motor corporativo nuevo (Puppeteer + renderPdfDoc).
 // Antes era pdfkit; ahora se unifica para que TODOS los PDFs (legacy + nuevos +
@@ -8576,6 +8790,13 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_empleadoId_idx" ON "AuditCaja"("empleadoId")`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_facturaId_idx"  ON "AuditCaja"("facturaId")`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_createdAt_idx"  ON "AuditCaja"("createdAt")`)
+    // Hash chain inmutable para AuditCaja (anti-tamper).
+    await prisma.$executeRawUnsafe(`ALTER TABLE "AuditCaja" ADD COLUMN IF NOT EXISTS "prevHash" TEXT`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "AuditCaja" ADD COLUMN IF NOT EXISTS "hash"     TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_hash_idx" ON "AuditCaja"("hash")`)
+    // BOM Instalacion: consumoInterno en líneas de OT.
+    await prisma.$executeRawUnsafe(`ALTER TABLE "LineaOrdenTrabajo" ADD COLUMN IF NOT EXISTS "consumoInterno" BOOLEAN NOT NULL DEFAULT false`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "LineaOrdenTrabajo_consumoInterno_idx" ON "LineaOrdenTrabajo"("consumoInterno")`)
     await prisma.$executeRawUnsafe(`
       CREATE TABLE IF NOT EXISTS "ProductoSerial" (
         "id" SERIAL PRIMARY KEY,

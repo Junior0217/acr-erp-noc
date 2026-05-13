@@ -632,6 +632,11 @@ model LineaOrdenTrabajo {
   descripcion    String
   cantidad       Int           @default(1)
   precioUnitario Decimal       @db.Decimal(12, 2)
+  // Línea de "consumo interno": descuenta stock del Kardex al cerrar la OT
+  // PERO no se factura al cliente (separación cobro/instalación). Ej: 15m
+  // cable + 1 conector consumidos en una instalación WISP cuyo cobro al
+  // cliente es solo el plan mensual.
+  consumoInterno Boolean       @default(false)
   orden          OrdenTrabajo  @relation(fields: [ordenId], references: [id], onDelete: Cascade)
   itemCatalogo   ItemCatalogo? @relation(fields: [itemCatalogoId], references: [id], onDelete: SetNull)
   producto       Producto?     @relation(fields: [productoId], references: [id], onDelete: Restrict)
@@ -639,6 +644,7 @@ model LineaOrdenTrabajo {
   @@index([ordenId])
   @@index([itemCatalogoId])
   @@index([productoId])
+  @@index([consumoInterno])
 }
 
 model Factura {
@@ -1014,11 +1020,18 @@ model AuditCaja {
   ip         String?
   ua         String?
   createdAt  DateTime @default(now())
+  // Hash chain inmutable (anti-tamper). prevHash = hash de la fila anterior por
+  // tipo+createdAt; hash = HMAC-SHA256(canonical(payload) + prevHash) firmado
+  // con AUDIT_SECRET. Si alguien modifica/borra una fila, el chain queda roto
+  // verificable via /api/auditoria/caja/verify.
+  prevHash   String?
+  hash       String?
 
   @@index([tipo])
   @@index([empleadoId])
   @@index([facturaId])
   @@index([createdAt])
+  @@index([hash])
 }
 
 // ─── Trazabilidad serializada (CCTV, routers, NVR) ───────────────────────────

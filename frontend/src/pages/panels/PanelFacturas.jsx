@@ -384,6 +384,7 @@ export default function PanelFacturas({ highlightId = null }) {
   const { tienePermiso }                          = useAuth()
   const canEdit                                   = tienePermiso('factura:editar')
   const canEmit                                   = tienePermiso('factura:emitir')
+  const isOwner                                   = tienePermiso('sistema:owner')
   const [facturas,      setFacturas]              = useState([])
   const [loading,       setLoading]               = useState(false)
   const [updating,      setUpdating]              = useState(null)
@@ -435,8 +436,16 @@ export default function PanelFacturas({ highlightId = null }) {
   const hayFiltros = !!(filtroEstado || filtroNumero || filtroCliente || filtroCodigo || filtroDesde || filtroHasta)
 
   async function actualizarEstado(f, nuevoEstado) {
+    // Confirmaciones estrictas: ambos cambios afectan contabilidad + DGII.
     if (nuevoEstado === 'Anulada') {
-      if (!window.confirm(`¿Anular la factura ${f.noFactura} (NCF: ${f.ncf})?\nEsta acción es irreversible.`)) return
+      const conf = window.prompt(
+        `⚠️ ANULACIÓN IRREVERSIBLE\n\nFactura: ${f.noFactura}\nNCF: ${f.ncf ?? '—'}\nMonto: RD$${Number(f.total).toFixed(2)}\n\nEscribe "ANULAR" para confirmar:`
+      )
+      if (conf !== 'ANULAR') { toast.info('Anulación cancelada.'); return }
+    } else if (nuevoEstado === 'Pagada') {
+      if (!window.confirm(
+        `Confirmar pago de la factura ${f.noFactura}\nMonto: RD$${Number(f.total).toFixed(2)}\n\nUna vez marcada como Pagada, solo el Propietario Absoluto puede revertirla. ¿Continuar?`
+      )) return
     }
     setUpdating(f.id)
     try {
@@ -444,6 +453,23 @@ export default function PanelFacturas({ highlightId = null }) {
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error al actualizar.'); return }
       toast.success(`Factura ${nuevoEstado === 'Pagada' ? 'marcada como Pagada' : 'anulada'}.`)
+      fetchFacturas()
+    } catch { toast.error('Error de conexión.') }
+    finally { setUpdating(null) }
+  }
+
+  // Reversión god mode: solo sistema:owner ve el botón. Restaura stock si Pagada.
+  async function revertirFactura(f) {
+    const motivo = window.prompt(
+      `🛡️ REVERSIÓN GOD MODE\n\nFactura: ${f.noFactura}\nEstado actual: ${f.estado}\n\nEsto volverá la factura a Borrador. ${f.estado === 'Pagada' ? 'El stock se restaurará automáticamente.' : ''}\n\nMotivo (mínimo 10 caracteres):`
+    )
+    if (!motivo || motivo.trim().length < 10) { toast.info('Motivo requerido (mínimo 10 caracteres).'); return }
+    setUpdating(f.id)
+    try {
+      const r = await apiFetch(`/api/facturas/${f.id}/revertir`, { method: 'POST', body: JSON.stringify({ motivo: motivo.trim() }) })
+      const j = await r.json()
+      if (!r.ok) { toast.error(j.error ?? 'Error al revertir.'); return }
+      toast.success(`Factura revertida a Borrador. Stock restaurado: ${j.stockRestaurado ?? 0}.`)
       fetchFacturas()
     } catch { toast.error('Error de conexión.') }
     finally { setUpdating(null) }
@@ -683,6 +709,14 @@ export default function PanelFacturas({ highlightId = null }) {
                             Anular
                           </button>
                         </div>
+                      )}
+                      {/* God Mode: revertir factura Pagada/Anulada (solo sistema:owner) */}
+                      {isOwner && (f.estado === 'Pagada' || f.estado === 'Anulada') && updating !== f.id && (
+                        <button onClick={() => revertirFactura(f)} disabled={!!updating}
+                          title="Revertir a Borrador (God Mode)"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-amber-600/15 hover:bg-amber-600/25 border border-amber-600/30 text-amber-400 text-xs font-semibold transition-all disabled:opacity-40">
+                          ↺ Revertir
+                        </button>
                       )}
                       {updating === f.id && <Loader2 size={14} className="animate-spin text-blue-500 ml-auto" />}
                     </td>

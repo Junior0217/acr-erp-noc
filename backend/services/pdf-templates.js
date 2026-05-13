@@ -200,10 +200,10 @@ html, body {
   padding: 0; position: relative; overflow: hidden;
 }
 
-/* ───── Top corporate band ───── */
+/* ───── Top corporate band (print-friendly: gris claro, ahorra tinta) ───── */
 .band {
-  height: 6px; width: 100%;
-  background: linear-gradient(90deg, #0f172a 0%, #1e40af 55%, #3b82f6 100%);
+  height: 3px; width: 100%;
+  background: #cbd5e1;
 }
 
 /* ───── Header ───── */
@@ -230,52 +230,56 @@ html, body {
 .corp-meta .lbl { color: #94a3b8; font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; min-width: 56px; text-align: right; }
 .corp-meta .val { color: #0f172a; font-weight: 600; }
 
-/* ───── Document title bar ───── */
+/* ───── Document title bar (print-friendly: fondo claro, texto oscuro) ───── */
 .title-bar {
-  background: #0f172a;
-  color: white;
+  background: #f1f5f9;
+  color: #0f172a;
   padding: 14px 36px;
   display: grid; grid-template-columns: 1fr auto; align-items: center;
   gap: 20px;
+  border-top: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e2e8f0;
 }
 .doc-type {
   font-size: 19px; font-weight: 800; letter-spacing: 0.1em;
   text-transform: uppercase;
+  color: #1e293b;
 }
-.doc-type .sub { font-size: 9px; font-weight: 500; opacity: 0.65; letter-spacing: 0.16em; display: block; margin-top: 2px; }
-.doc-meta { text-align: right; font-size: 10px; line-height: 1.4; }
+.doc-type .sub { font-size: 9px; font-weight: 500; color: #64748b; letter-spacing: 0.16em; display: block; margin-top: 2px; }
+.doc-meta { text-align: right; font-size: 10px; line-height: 1.4; color: #1e293b; }
 /* Número del documento = elemento dominante visual */
 .doc-meta .num {
   font-size: 22px; font-weight: 900; letter-spacing: 0.04em;
-  background: rgba(255,255,255,0.10); padding: 6px 14px; border-radius: 5px;
+  color: #0f172a;
+  background: #e2e8f0; padding: 6px 14px; border-radius: 4px;
   display: inline-block;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.25);
 }
 /* NCF en segundo plano para no competir con el número principal */
 .doc-meta .ncf-line {
   margin-top: 4px;
   font-size: 9px; font-weight: 600;
-  color: rgba(255,255,255,0.55);
+  color: #64748b;
   letter-spacing: 0.04em;
 }
-.doc-meta .ncf-line .lbl { opacity: 0.55; text-transform: uppercase; letter-spacing: 0.12em; font-size: 7.5px; margin-right: 4px; }
-.doc-meta .ncf-line .val { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; }
+.doc-meta .ncf-line .lbl { color: #94a3b8; text-transform: uppercase; letter-spacing: 0.12em; font-size: 7.5px; margin-right: 4px; }
+.doc-meta .ncf-line .val { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; }
 
 .estado-stamp {
   display: inline-block; margin-top: 6px;
   padding: 3px 10px; border-radius: 3px;
   font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em;
+  border: 1px solid;
 }
-.estado-Pagada   { background: #064e3b; color: #6ee7b7; }
-.estado-Emitida  { background: #1e3a8a; color: #93c5fd; }
-.estado-Vencida  { background: #7f1d1d; color: #fca5a5; }
-.estado-Borrador { background: #334155; color: #cbd5e1; }
-.estado-Anulada  { background: #450a0a; color: #fecaca; }
+.estado-Pagada   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
+.estado-Emitida  { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
+.estado-Vencida  { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+.estado-Borrador { background: #f8fafc; color: #475569; border-color: #cbd5e1; }
+.estado-Anulada  { background: #fef2f2; color: #7f1d1d; border-color: #fca5a5; }
 
 /* ───── Sections ───── */
 .body { padding: 18px 36px 12px; }
 .section-label {
-  font-size: 8.5px; font-weight: 800; color: #1e40af;
+  font-size: 8.5px; font-weight: 800; color: #475569;
   text-transform: uppercase; letter-spacing: 0.18em;
   margin-bottom: 6px;
   display: flex; align-items: center; gap: 8px;
@@ -313,12 +317,12 @@ html, body {
   border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden;
 }
 .items thead th {
-  background: #0f172a; color: white;
+  background: #f1f5f9; color: #334155;
   padding: 9px 10px;
   font-size: 9px; font-weight: 700;
   text-transform: uppercase; letter-spacing: 0.1em;
   text-align: left;
-  border-bottom: 2px solid #1e40af;
+  border-bottom: 1px solid #cbd5e1;
 }
 .items thead th.center { text-align: center; }
 .items thead th.right  { text-align: right; }
@@ -501,6 +505,7 @@ function renderDocumento(opts) {
     numero,          // string ej. 'COT-2026-0512-001'
     ncf,             // factura NCF (opt)
     tipoNcf,         // 'B01' / 'B02' / etc.
+    tipoComposicion, // 'Artículos' | 'Servicio' | 'Mixto' — calculado en buildPdfData
     empresa,         // EmpresaPerfil row (NO defaults: si falta algo, oculta esa sección)
     cliente,         // { razonSocial, rnc, direccion, sector, provincia, telefono, email }
     items,           // [{ descripcion, sku?, detalle?, cantidad, precioUnitario }]
@@ -595,7 +600,7 @@ function renderDocumento(opts) {
 
   <div class="title-bar">
     <div class="doc-type">
-      ${escape(tipoLabel)}
+      ${escape(tipoLabel)}${tipoComposicion ? ` · <span style="font-weight:600;color:#475569">${escape(tipoComposicion)}</span>` : ''}
       <span class="sub">${isFactura ? 'Comprobante Fiscal · República Dominicana' : 'Propuesta Comercial'}</span>
     </div>
     <div class="doc-meta">

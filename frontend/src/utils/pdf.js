@@ -111,6 +111,17 @@ export function imprimirBlob(blob) {
 export async function descargarBulkZip(ids, tipo) {
   if (!Array.isArray(ids) || ids.length === 0) return false
   try {
+    // Pre-warm CSRF: la exportación masiva ocurre típicamente después de varias
+    // interacciones, y el token en memoria puede estar desincronizado con la
+    // cookie tras un sliding refresh. apiFetch tiene retry pero descargas binarias
+    // confunden el flow — pre-warm garantiza un primer hit limpio.
+    try {
+      const cr = await fetch(`${import.meta.env.VITE_API_URL ?? ''}/api/auth/csrf`, { credentials: 'include' })
+      if (cr.ok) {
+        const { csrfToken } = await cr.json()
+        if (csrfToken) { const mod = await import('./api'); mod.setCsrfToken?.(csrfToken) }
+      }
+    } catch {}
     const r = await apiFetch('/api/pdf/bulk', {
       method: 'POST',
       body: JSON.stringify({ ids, tipo }),

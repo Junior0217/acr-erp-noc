@@ -409,19 +409,33 @@ function CatalogSearch({ onAdd }) {
   )
 }
 
-// ── CrossSellBanner: lee bundles de los items del carrito ────────────────────
+// ── CrossSellBanner: tira INFERIOR con sugerencias + suppress dismissed ──────
+// Se renderiza como strip horizontal pegada al borde inferior del POS, no
+// encima del carrito. Si el usuario elimina un sugerido del carrito o cierra
+// la propia tarjeta, lo agregamos a dismissedIds (persistido en sessionStorage)
+// y no lo volvemos a sugerir mientras la sesión POS dure.
 function CrossSellBanner({ cart, onAdd }) {
   const [sugerencias, setSugerencias] = useState([])
   const [loading, setLoading] = useState(false)
+  const [dismissed, setDismissed] = useState(() => {
+    try { return new Set(JSON.parse(sessionStorage.getItem('acr_pos_crosssell_dismiss') ?? '[]')) }
+    catch { return new Set() }
+  })
+  const persistDismissed = (s) => {
+    try { sessionStorage.setItem('acr_pos_crosssell_dismiss', JSON.stringify([...s])) } catch {}
+  }
+  function dismiss(productoId) {
+    setDismissed(prev => { const n = new Set(prev); n.add(productoId); persistDismissed(n); return n })
+  }
 
   useEffect(() => {
-    if (cart.length === 0) { setSugerencias([]); return }
+    if (!Array.isArray(cart) || cart.length === 0) { setSugerencias([]); return }
     let cancel = false
     setLoading(true)
     ;(async () => {
       try {
-        // Junta bundles de cada item del carrito (dedupe por producto.id).
-        const ids = (Array.isArray(cart) ? cart : []).map(l => l.itemCatalogoId).filter(Boolean).slice(0, 6)
+        const ids = cart.map(l => l.itemCatalogoId).filter(Boolean).slice(0, 6)
+        if (ids.length === 0) { if (!cancel) setSugerencias([]); return }
         const responses = await Promise.allSettled(
           ids.map(id => apiFetch(`/api/catalogo/${id}/bundles`).then(r => r.ok ? r.json() : { data: [] }))
         )
@@ -434,28 +448,35 @@ function CrossSellBanner({ cart, onAdd }) {
             seen.add(b.id); all.push(b)
           }
         }
-        // Quita items ya en el carrito (por SKU).
-        const skusEnCarrito = new Set((Array.isArray(cart) ? cart : []).map(l => l.codigo).filter(Boolean))
-        const filtered = all.filter(b => !skusEnCarrito.has(b.sku))
-        if (!cancel) setSugerencias(filtered.slice(0, 6))
+        const skusEnCarrito = new Set(cart.map(l => l.codigo).filter(Boolean))
+        const filtered = all.filter(b => !skusEnCarrito.has(b.sku) && !dismissed.has(b.id))
+        if (!cancel) setSugerencias(filtered.slice(0, 8))
       } catch {} finally { if (!cancel) setLoading(false) }
     })()
     return () => { cancel = true }
-  }, [Array.isArray(cart) ? cart.length : 0, (Array.isArray(cart) ? cart : []).map(l => l.itemCatalogoId).join('|')])
+  }, [Array.isArray(cart) ? cart.length : 0, (Array.isArray(cart) ? cart : []).map(l => l.itemCatalogoId).join('|'), dismissed])
 
-  if (cart.length === 0 || (sugerencias.length === 0 && !loading)) return null
+  if (!Array.isArray(cart) || cart.length === 0) return null
+  if (sugerencias.length === 0 && !loading) return null
 
   return (
-    <div className="bg-amber-900/10 border border-amber-700/30 rounded-xl p-3">
-      <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 mb-2 flex items-center gap-1.5">
-        <Tag size={11} />Sugerencias para tu carrito
-      </p>
+    <div className="bg-slate-900/80 border-t border-amber-700/30 px-4 py-2.5 backdrop-blur-sm">
+      <div className="flex items-center justify-between mb-1.5">
+        <p className="text-[10px] font-bold uppercase tracking-widest text-amber-400 flex items-center gap-1.5">
+          <Tag size={11} />Cross-sell sugerido
+        </p>
+        <span className="text-[9px] text-slate-600">Desliza →</span>
+      </div>
       {loading ? (
         <div className="flex justify-center py-2"><Loader2 size={12} className="animate-spin text-amber-400" /></div>
       ) : (
-        <div className="flex gap-2 overflow-x-auto">
+        <div className="flex gap-2 overflow-x-auto pb-1">
           {sugerencias.map(s => (
-            <div key={s.id} className="flex-shrink-0 w-40 bg-slate-800/60 border border-slate-700 rounded-lg p-2">
+            <div key={s.id} className="relative flex-shrink-0 w-36 bg-slate-800/70 border border-slate-700 rounded-lg p-2">
+              <button onClick={() => dismiss(s.id)} title="No mostrar más"
+                className="absolute top-1 right-1 z-10 p-0.5 rounded bg-slate-900/60 text-slate-500 hover:text-red-400 transition-colors">
+                <X size={9} />
+              </button>
               <div className="aspect-square w-full rounded bg-slate-900 mb-1.5 overflow-hidden flex items-center justify-center">
                 {s.imagenUrl
                   ? <img src={s.imagenUrl} alt={s.nombre} className="w-full h-full object-cover" />
@@ -463,17 +484,11 @@ function CrossSellBanner({ cart, onAdd }) {
               </div>
               <p className="text-[10px] font-semibold text-slate-100 line-clamp-2 leading-tight">{s.nombre}</p>
               <p className="text-[10px] font-mono text-emerald-400 mt-0.5">RD$ {fmt(s.precio)}</p>
-              {s.motivo && <p className="text-[9px] text-slate-500 italic mt-0.5 line-clamp-1">{s.motivo}</p>}
               <button
-                onClick={() => onAdd({
-                  // No es un ItemCatalogo: usa productoId directo. CartContext
-                  // marca esta línea como _productoDirecto para que el payload
-                  // al backend incluya productoId (Int) en lugar de itemCatalogoId.
-                  id: null,
-                  productoId: s.id,
-                  nombre: s.nombre, precio: s.precio, imagenUrl: s.imagenUrl,
-                  sku: s.sku,
-                })}
+                onClick={() => {
+                  onAdd({ id: null, productoId: s.id, nombre: s.nombre, precio: s.precio, imagenUrl: s.imagenUrl, sku: s.sku })
+                  dismiss(s.id)   // si lo agregaron, no insistir
+                }}
                 disabled={s.stockActual <= 0}
                 className="w-full mt-1.5 px-2 py-1 rounded text-[10px] font-bold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40">
                 {s.stockActual <= 0 ? 'Sin stock' : 'Agregar'}
@@ -632,19 +647,21 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
 
   return (
     <div className="flex gap-4 h-[calc(100vh-200px)] min-h-[540px]">
-      {/* Left — Catalog */}
-      <div className="flex-1 min-w-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3">
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Catálogo</p>
-        <div className="flex-1 min-h-0">
-          <CatalogSearch onAdd={addItem} />
+      {/* Left — Catálogo + sugerencias (cross-sell pegado a la base) */}
+      <div className="flex-1 min-w-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl flex flex-col overflow-hidden">
+        <div className="flex-1 min-h-0 p-4 flex flex-col gap-3">
+          <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Catálogo</p>
+          <div className="flex-1 min-h-0">
+            <CatalogSearch onAdd={addItem} />
+          </div>
         </div>
+        {/* Cross-sell tira inferior — no tapa el carrito ni la búsqueda */}
+        <CrossSellBanner cart={cart} onAdd={addItem} />
       </div>
 
-      {/* Right — Cart */}
-      <div className="w-80 flex-shrink-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3">
+      {/* Right — Carrito (más ancho en monitores grandes) */}
+      <div className="w-80 lg:w-96 xl:w-[26rem] 2xl:w-[30rem] flex-shrink-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3">
         <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Carrito</p>
-
-        <CrossSellBanner cart={cart} onAdd={addItem} />
 
         {/* Client */}
         <div className="space-y-2">
