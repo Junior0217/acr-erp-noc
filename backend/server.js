@@ -21,7 +21,7 @@ const nodemailer   = require('nodemailer');
 const multer       = require('multer');
 const sharp        = require('sharp');
 const { createClient: createSupabaseClient } = require('@supabase/supabase-js');
-const { generarPdfDocumento } = require('./services/pdf-generator');
+const { generarPdfDocumento, inlineAssets } = require('./services/pdf-generator');
 const { renderDocumento: renderPdfDoc } = require('./services/pdf-templates');
 const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
 const { syncMikrotik } = require('./services/mikrotik');
@@ -2658,10 +2658,16 @@ app.post(
 async function buildPdfData(facturaOrCotizacion) {
   // Carga empresa singleton (zero-hardcode) + estructura datos comunes
   const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
+  // Embebe assets (logo/firma/sello) como data: URIs para que Puppeteer no
+  // dependa de la red de Supabase — el visor headless no espera bien recursos
+  // externos y a veces el PDF salía sin logo.
+  const empresaConAssets = empresa
+    ? { ...empresa, assets: await inlineAssets(empresa.assets ?? {}) }
+    : { razonSocial: '', rnc: '', assets: {} }
   const f = facturaOrCotizacion
   const c = f.cliente ?? {}
   return {
-    empresa: empresa ?? { razonSocial: '', rnc: '', assets: {} },
+    empresa: empresaConAssets,
     cliente: {
       razonSocial: c.razonSocial,
       noCliente:   c.noCliente,
@@ -2692,7 +2698,9 @@ async function buildPdfData(facturaOrCotizacion) {
   }
 }
 
-app.get('/api/ventas/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_cotizaciones'), async (req, res) => {
+// Registrado en el path REAL (el middleware NAMESPACE_REWRITES rewrites
+// /api/ventas/cotizaciones/* → /api/cotizaciones/* antes de llegar aquí).
+app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_cotizaciones'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
   try {
     const cot = await prisma.factura.findUnique({
@@ -2729,7 +2737,8 @@ app.get('/api/ventas/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta
   }
 })
 
-app.get('/api/ventas/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+// Path real (rewrite alias /api/ventas/facturas/:id/pdf -> aquí)
+app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
   try {
     const fact = await prisma.factura.findUnique({
@@ -5567,6 +5576,9 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
 
 async function buildFacturaPDFBuffer(factura) {
   const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
+  const empresaConAssets = empresa
+    ? { ...empresa, assets: await inlineAssets(empresa.assets ?? {}) }
+    : { razonSocial: '', rnc: '', assets: {} }
   const c = factura.cliente ?? {}
   // Soporta tanto factura.lineas (POS) como factura.orden.lineas (OT) — coge la primera no vacía.
   const lineasSrc = (factura.lineas?.length ? factura.lineas : factura.orden?.lineas) ?? []
@@ -5582,7 +5594,7 @@ async function buildFacturaPDFBuffer(factura) {
     numero:       factura.noFactura,
     ncf:          factura.ncf ?? null,
     tipoNcf:      factura.tipoNcf ?? null,
-    empresa:      empresa ?? { razonSocial: '', rnc: '', assets: {} },
+    empresa:      empresaConAssets,
     cliente: {
       razonSocial: c.razonSocial,
       noCliente:   c.noCliente,
@@ -5606,28 +5618,7 @@ async function buildFacturaPDFBuffer(factura) {
   return generarPdfDocumento(html)
 }
 
-// ─── PDF Fiscal ───────────────────────────────────────────────────────────────
-
-app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
-  try {
-    const factura = await prisma.factura.findUnique({
-      where: { id: req.params.id },
-      include: {
-        cliente: true,
-        lineas:  true,
-        orden: { include: { lineas: { include: { itemCatalogo: { select: { nombre: true } } } } } },
-      },
-    })
-    if (!factura) return res.status(404).json({ error: 'Factura no encontrada.' })
-    const buf = await buildFacturaPDFBuffer(factura)
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="factura-${factura.noFactura}.pdf"`)
-    res.setHeader('Content-Length', buf.length)
-    res.end(buf)
-  } catch {
-    if (!res.headersSent) res.status(500).json({ error: 'Error al generar PDF.' })
-  }
-})
+// (Ruta /api/facturas/:id/pdf registrada arriba, unificada con renderPdfDoc.)
 
 // ─── Health ───────────────────────────────────────────────────────────────────
 

@@ -13,9 +13,98 @@
  *   CHROMIUM_GRAPHICS=true      — habilita WebGL en sparticuz (no necesario para PDF)
  */
 const puppeteer = require('puppeteer-core')
+const path = require('path')
+const fs = require('fs')
 
 let _browser = null
 let _launching = null
+
+// ─── Embedding de assets remotos (logo / firma / sello) ──────────────────────
+// Puppeteer no espera bien recursos externos (Supabase, S3) y a veces el PDF
+// se imprime antes de cargar la imagen. Solución: fetch → buffer → data: URI
+// inline en el HTML. Garantiza render instantáneo y evita request de red
+// desde el contenedor headless.
+const _assetCache = new Map() // url -> dataURI (LRU implícito, max 32)
+const ASSET_CACHE_MAX = 32
+
+function mimeFromUrl(url) {
+  const u = url.split('?')[0].toLowerCase()
+  if (u.endsWith('.png'))  return 'image/png'
+  if (u.endsWith('.jpg') || u.endsWith('.jpeg')) return 'image/jpeg'
+  if (u.endsWith('.webp')) return 'image/webp'
+  if (u.endsWith('.svg'))  return 'image/svg+xml'
+  if (u.endsWith('.gif'))  return 'image/gif'
+  return null
+}
+
+function detectMimeFromMagic(buf) {
+  if (!buf || buf.length < 12) return null
+  if (buf[0] === 0x89 && buf[1] === 0x50) return 'image/png'
+  if (buf[0] === 0xFF && buf[1] === 0xD8) return 'image/jpeg'
+  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif'
+  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
+      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp'
+  const head = buf.slice(0, 200).toString('utf8').trim().toLowerCase()
+  if (head.includes('<svg')) return 'image/svg+xml'
+  return null
+}
+
+async function fetchToDataUri(url, { timeoutMs = 5000 } = {}) {
+  if (!url) return null
+  if (_assetCache.has(url)) return _assetCache.get(url)
+
+  // Permite también paths locales (assets/logo.png, /opt/render/.../foo.png)
+  if (url.startsWith('data:')) return url
+  if (!/^https?:\/\//i.test(url)) {
+    try {
+      const abs = path.isAbsolute(url) ? url : path.join(__dirname, '..', url)
+      if (fs.existsSync(abs)) {
+        const buf = fs.readFileSync(abs)
+        const mime = detectMimeFromMagic(buf) || mimeFromUrl(abs) || 'application/octet-stream'
+        const uri = `data:${mime};base64,${buf.toString('base64')}`
+        if (_assetCache.size >= ASSET_CACHE_MAX) _assetCache.delete(_assetCache.keys().next().value)
+        _assetCache.set(url, uri)
+        return uri
+      }
+    } catch {}
+    return null
+  }
+
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const r = await fetch(url, { signal: controller.signal })
+    if (!r.ok) return null
+    const ab = await r.arrayBuffer()
+    const buf = Buffer.from(ab)
+    const mime = detectMimeFromMagic(buf)
+              || r.headers.get('content-type')?.split(';')[0]?.trim()
+              || mimeFromUrl(url)
+              || 'application/octet-stream'
+    const uri = `data:${mime};base64,${buf.toString('base64')}`
+    if (_assetCache.size >= ASSET_CACHE_MAX) _assetCache.delete(_assetCache.keys().next().value)
+    _assetCache.set(url, uri)
+    return uri
+  } catch (e) {
+    console.warn(`[pdf:asset] No se pudo embeber ${url}: ${e.message}`)
+    return null
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Convierte un objeto `assets` con URLs a un objeto con data: URIs.
+ * Si un asset falla la descarga, queda null y la plantilla no lo renderiza.
+ */
+async function inlineAssets(assets) {
+  if (!assets || typeof assets !== 'object') return {}
+  const keys = Object.keys(assets).filter(k => typeof assets[k] === 'string' && assets[k])
+  const entries = await Promise.all(keys.map(async k => [k, await fetchToDataUri(assets[k])]))
+  const out = {}
+  for (const [k, v] of entries) if (v) out[k] = v
+  return out
+}
 
 const IS_LINUX = process.platform === 'linux'
 const IS_PROD  = process.env.NODE_ENV === 'production'
@@ -139,4 +228,4 @@ async function generarPdfDocumento(html, opts = {}) {
   }
 }
 
-module.exports = { generarPdfDocumento, cerrarBrowser, getBrowser }
+module.exports = { generarPdfDocumento, cerrarBrowser, getBrowser, inlineAssets, fetchToDataUri }

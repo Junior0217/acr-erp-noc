@@ -562,8 +562,8 @@ export default function PanelFacturas({ highlightId = null }) {
                   </div>
                 </td></tr>
               ) : facturas.map(f => (
-                <tr key={f.id} onClick={() => descargarPDF(f)}
-                  className={`hover:bg-slate-800/50 transition-colors cursor-pointer ${f.id === highlightId ? 'ring-1 ring-inset ring-emerald-500/40 bg-emerald-900/10' : ''}`}>
+                <tr key={f.id}
+                  className={`hover:bg-slate-800/50 transition-colors ${f.id === highlightId ? 'ring-1 ring-inset ring-emerald-500/40 bg-emerald-900/10' : ''}`}>
                   <td className="px-4 py-3 font-mono text-xs text-slate-300 whitespace-nowrap">{f.noFactura}</td>
                   <td className="px-4 py-3">
                     {f.ncf
@@ -591,8 +591,8 @@ export default function PanelFacturas({ highlightId = null }) {
                   <td className="px-4 py-3 whitespace-nowrap"><FacturaEstadoBadge estado={f.estado} /></td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(f.fechaEmision)}</td>
                   {/* PDF button */}
-                  <td className="px-2 py-3" onClick={e => e.stopPropagation()}>
-                    <button onClick={() => descargarPDF(f)} disabled={downloadingId === f.id}
+                  <td className="px-2 py-3">
+                    <button onClick={(e) => { e.stopPropagation(); descargarPDF(f) }} disabled={downloadingId === f.id}
                       title="Descargar PDF"
                       className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
                       {downloadingId === f.id

@@ -106,17 +106,23 @@ html, body {
   text-transform: uppercase;
 }
 .doc-type .sub { font-size: 9px; font-weight: 500; opacity: 0.65; letter-spacing: 0.16em; display: block; margin-top: 2px; }
-.doc-meta { text-align: right; font-size: 10px; line-height: 1.55; }
+.doc-meta { text-align: right; font-size: 10px; line-height: 1.4; }
+/* Número del documento = elemento dominante visual */
 .doc-meta .num {
-  font-size: 14px; font-weight: 800; letter-spacing: 0.04em;
-  background: rgba(255,255,255,0.10); padding: 4px 10px; border-radius: 4px;
+  font-size: 22px; font-weight: 900; letter-spacing: 0.04em;
+  background: rgba(255,255,255,0.10); padding: 6px 14px; border-radius: 5px;
   display: inline-block;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.25);
 }
-.doc-meta .ncf {
-  font-size: 10.5px; margin-top: 4px; font-weight: 700;
-  color: #93c5fd; letter-spacing: 0.05em;
+/* NCF en segundo plano para no competir con el número principal */
+.doc-meta .ncf-line {
+  margin-top: 4px;
+  font-size: 9px; font-weight: 600;
+  color: rgba(255,255,255,0.55);
+  letter-spacing: 0.04em;
 }
-.doc-meta .tipo-ncf { font-size: 8px; opacity: 0.6; text-transform: uppercase; letter-spacing: 0.12em; }
+.doc-meta .ncf-line .lbl { opacity: 0.55; text-transform: uppercase; letter-spacing: 0.12em; font-size: 7.5px; margin-right: 4px; }
+.doc-meta .ncf-line .val { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; }
 
 .estado-stamp {
   display: inline-block; margin-top: 6px;
@@ -203,6 +209,11 @@ html, body {
   display: grid; grid-template-columns: 1fr 280px;
   gap: 20px; margin-top: 14px;
 }
+.totals-wrap.totals-wrap--solo {
+  grid-template-columns: 1fr;
+  justify-items: end;
+}
+.totals-wrap.totals-wrap--solo .totals { width: 280px; }
 .legal-note {
   font-size: 8.5px; color: #64748b; line-height: 1.55;
   padding: 10px 12px; background: #f8fafc;
@@ -376,30 +387,21 @@ function renderDocumento(opts) {
     </div>` : ''
 
   const corpRows = [
-    emp.rnc                ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${escape(emp.rnc)}</span></div>` : '',
-    emp.registroMercantil  ? `<div class="row"><span class="lbl">RM</span><span class="val mono">${escape(emp.registroMercantil)}</span></div>` : '',
-    direccionEmp           ? `<div class="row"><span class="lbl">Dirección</span><span class="val">${escape(direccionEmp)}</span></div>` : '',
-    emp.telefono           ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${escape(emp.telefono)}</span></div>` : '',
-    emp.email              ? `<div class="row"><span class="lbl">Email</span><span class="val">${escape(emp.email)}</span></div>` : '',
-    emp.website            ? `<div class="row"><span class="lbl">Web</span><span class="val">${escape(emp.website)}</span></div>` : '',
+    emp.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${escape(emp.rnc)}</span></div>` : '',
+    direccionEmp ? `<div class="row"><span class="lbl">Dirección</span><span class="val">${escape(direccionEmp)}</span></div>` : '',
+    emp.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${escape(emp.telefono)}</span></div>` : '',
+    emp.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${escape(emp.email)}</span></div>` : '',
+    emp.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${escape(emp.website)}</span></div>` : '',
   ].filter(Boolean).join('')
 
   const legalNote = isFactura
-    ? `<div class="legal-note">
-        <div class="ttl">Información Fiscal</div>
-        Esta factura cumple con el reglamento del Decreto 254-06 y la Norma General 06-2018 de la DGII.
-        Verifica el NCF en <strong>dgii.gov.do/consultas</strong>.
-        ${ncf ? `Comprobante: <strong class="mono">${escape(ncf)}</strong>${tipoNcf ? ` (${escape(tipoNcf)})` : ''}.` : ''}
-      </div>`
+    ? ''
     : `<div class="legal-note">
         <div class="ttl">Condiciones Generales</div>
         Esta cotización tiene carácter informativo y no constituye documento fiscal.
         Los precios pueden estar sujetos a cambio sin previo aviso fuera del período de validez.
-        Para emisión de factura formal con NCF se requiere confirmación por escrito.
+        Para emisión de factura formal se requiere confirmación por escrito.
       </div>`
-
-  const numeroPrincipal = isFactura ? (ncf || numero) : numero
-  const numeroSecundario = isFactura && ncf ? numero : null
 
   return `<!DOCTYPE html>
 <html lang="es"><head>
@@ -429,9 +431,8 @@ function renderDocumento(opts) {
       <span class="sub">${isFactura ? 'Comprobante Fiscal · República Dominicana' : 'Propuesta Comercial'}</span>
     </div>
     <div class="doc-meta">
-      <div class="num mono">${escape(numeroPrincipal)}</div>
-      ${isFactura && ncf ? `<div class="tipo-ncf">NCF${tipoNcf ? ` · ${escape(tipoNcf)}` : ''}</div>` : ''}
-      ${numeroSecundario ? `<div class="ncf mono" style="opacity:0.7;">${escape(numeroSecundario)}</div>` : ''}
+      <div class="num mono">${escape(numero)}</div>
+      ${isFactura && ncf ? `<div class="ncf-line"><span class="lbl">NCF${tipoNcf ? ` · ${escape(tipoNcf)}` : ''}</span><span class="val">${escape(ncf)}</span></div>` : ''}
       <div style="margin-top:6px; font-size:9px; opacity:0.85;">
         Emisión: <strong>${fechaCorta(fechaEmision)}</strong>
         ${fechaVence ? ` · ${isFactura ? 'Vence' : 'Válida hasta'}: <strong>${fechaCorta(fechaVence)}</strong>` : ''}
@@ -475,7 +476,7 @@ function renderDocumento(opts) {
       <tbody>${itemsRows || `<tr><td colspan="5" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
     </table>
 
-    <div class="totals-wrap">
+    <div class="totals-wrap${legalNote ? '' : ' totals-wrap--solo'}">
       ${legalNote}
       <div class="totals">
         <div class="tot-row">
