@@ -4929,6 +4929,39 @@ app.get('/api/mapa-noc', async (req, res) => {
 
 const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
 
+// ─── Descripción estructurada (compartida por productos/servicios/items) ─────
+// Definida AQUÍ (antes que cualquier schema que la use) para evitar TDZ —
+// las const declarations no se hoistan, y zod las evalúa al construir el schema.
+const descripcionEstructuradaSchema = z.object({
+  v:         z.literal(1),
+  titulo:    z.string().min(1).max(200),
+  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
+  imagenUrl: z.string().max(500).nullable().optional(),
+})
+const descripcionFlexSchema = z.union([
+  z.string().max(2000),
+  descripcionEstructuradaSchema,
+]).nullable().optional()
+
+// Normaliza descripcion: string legacy se pasa tal cual, objeto {v:1, ...} se
+// serializa como JSON dentro de la columna TEXT — el renderer PDF detecta v=1.
+function descripcionToRaw(value) {
+  if (value == null) return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'object') {
+    if (value.v === 1) {
+      const limpio = {
+        v: 1,
+        titulo:    String(value.titulo ?? '').slice(0, 200),
+        bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
+        imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
+      }
+      return JSON.stringify(limpio)
+    }
+  }
+  return null
+}
+
 const categoriaSchema = z.object({
   nombre: z.string().min(2).max(100).transform(stripTags),
 });
@@ -6263,38 +6296,6 @@ async function generarSiguienteCodigo(entidad, tx) {
   const { prefijo, actual, padding } = rows[0]
   return `${prefijo}-${String(actual).padStart(Number(padding) || 6, '0')}`
 }
-
-// Normaliza el campo `descripcion` aceptando string legacy O objeto estructurado
-// { v:1, titulo, bullets:[], imagenUrl? }. El objeto se serializa como JSON
-// dentro de la columna TEXT — el parser de PDF detecta v=1 y renderiza nativo.
-function descripcionToRaw(value) {
-  if (value == null) return null
-  if (typeof value === 'string') return value
-  if (typeof value === 'object') {
-    if (value.v === 1) {
-      const limpio = {
-        v: 1,
-        titulo:    String(value.titulo ?? '').slice(0, 200),
-        bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-        imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-      }
-      return JSON.stringify(limpio)
-    }
-  }
-  return null
-}
-
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-})
-// Validador reusable: acepta string legacy O el objeto estructurado v=1.
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional()
 
 // Compute effective unit price after sequential discounts (% first, then fixed)
 function efectivoUnitario(pu, pct, monto) {
