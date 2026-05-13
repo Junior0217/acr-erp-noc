@@ -2722,16 +2722,18 @@ function mergeCondiciones(empresa, factura) {
 }
 
 async function buildPdfData(facturaOrCotizacion) {
-  // Carga empresa singleton (zero-hardcode) + estructura datos comunes
-  const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
-  // Embebe assets (logo/firma/sello) como data: URIs para que Puppeteer no
-  // dependa de la red de Supabase — el visor headless no espera bien recursos
-  // externos y a veces el PDF salía sin logo.
+  const f = facturaOrCotizacion
+  // Si la factura tiene snapshot fiscal (emitida con el sistema nuevo), USA esa data
+  // congelada en vez del estado vivo de EmpresaPerfil/Cliente. Garantiza que un PDF
+  // re-generado hoy muestre los datos que tenía el día que se emitió (DGII compliance).
+  const snap = f.snapshot && typeof f.snapshot === 'object' ? f.snapshot : null
+  const empresa = snap?.empresa
+    ? { ...snap.empresa, condicionesDefault: snap.empresa.condicionesDefault ?? {} }
+    : await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
   const empresaConAssets = empresa
     ? { ...empresa, assets: await inlineAssets(empresa.assets ?? {}) }
     : { razonSocial: '', rnc: '', assets: {} }
-  const f = facturaOrCotizacion
-  const c = f.cliente ?? {}
+  const c = snap?.cliente ?? f.cliente ?? {}
   return {
     empresa: empresaConAssets,
     cliente: {
@@ -2742,7 +2744,7 @@ async function buildPdfData(facturaOrCotizacion) {
       direccion:   c.direccion,
       sector:      c.sector,
       provincia:   c.provincia,
-      telefono:    c.telefono,
+      telefono:    c.telefono ?? c.telefonoPrincipal,
       email:       c.email,
     },
     // LineaFactura SOLO tiene relación con producto (no con itemCatalogo).
@@ -4019,6 +4021,8 @@ const productoSchema = z.object({
   categoriaId:    z.number().int().positive(),
   tipoItem:       z.enum(['ARTICULO', 'SERVICIO']).optional(),
   esCanibalizado: z.boolean().optional(),
+  descripcion:    z.string().max(1000).optional().nullable().transform(v => v ?? null),
+  imagenUrl:      z.string().max(500).url().optional().nullable().or(z.literal('').transform(() => null)),
 });
 
 const productoUpdateSchema = productoSchema.omit({ sku: true }).partial();
@@ -4874,12 +4878,14 @@ app.delete('/api/admin/sessions/:empleadoId', verificarJWT, requerirPermiso('sis
 
 const itemCatalogoSchema = z.object({
   nombre:      z.string().min(1).max(120),
-  descripcion: z.string().optional().nullable(),
+  descripcion: z.string().max(1000).optional().nullable(),
+  imagenUrl:   z.string().max(500).url().optional().nullable().or(z.literal('').transform(() => null)),
   tipo:        z.enum(['Recurrente', 'VentaUnica', 'Servicio']),
   categoria:   z.enum(['WISP', 'CCTV', 'Redes', 'CercoElectrico', 'VentaDirecta', 'Mixto', 'SoporteTecnico', 'Reparacion', 'ProyectoCCTV']),
   precio:      z.number().min(0),
   costo:       z.number().min(0).optional().default(0),
   stock:       z.number().int().optional().nullable(),
+  productoId:  z.number().int().positive().optional().nullable(),
   activo:      z.boolean().default(true),
 })
 
@@ -4891,12 +4897,26 @@ app.get('/api/catalogo', verificarJWT, async (req, res) => {
     if (categoria) where.categoria = categoria
     if (activo !== undefined && activo !== '') where.activo = activo === 'true'
     if (search) where.nombre = { contains: search, mode: 'insensitive' }
-    const items = await prisma.itemCatalogo.findMany({ where, orderBy: [{ categoria: 'asc' }, { nombre: 'asc' }] })
+    // Carga el producto físico si existe — proyecta stockActual/imagen al ItemCatalogo
+    // como "single source of truth" para el POS (sin duplicar datos en la BD).
+    const items = await prisma.itemCatalogo.findMany({
+      where, orderBy: [{ categoria: 'asc' }, { nombre: 'asc' }],
+      include: { producto: { select: { id: true, sku: true, stockActual: true, stockMinimo: true, imagenUrl: true, descripcion: true } } },
+    })
+    // Resuelve campos efectivos: imagen y stock del Producto físico ganan si están atados.
+    const enriched = items.map(it => ({
+      ...it,
+      imagenUrl: it.imagenUrl ?? it.producto?.imagenUrl ?? null,
+      // stock efectivo: si hay producto vinculado, gana el stockActual del inventario real
+      stock: it.producto ? it.producto.stockActual : it.stock,
+      stockSource: it.producto ? 'inventario' : (it.stock != null ? 'catalogo' : null),
+      sku: it.producto?.sku ?? null,
+    }))
     const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     const canSeeCosts = permisos.includes('sistema:owner') || permisos.includes('catalogo:ver_costos')
-    const data = canSeeCosts ? items : items.map(({ costo, ...rest }) => rest)
+    const data = canSeeCosts ? enriched : enriched.map(({ costo, ...rest }) => rest)
     res.json({ data })
-  } catch (e) { console.error('[GET /api/catalogo]', e.message); res.status(500).json({ error: 'Error interno.' }) }
+  } catch (e) { console.error('[GET /api/catalogo]', e.code, e.message); res.status(500).json({ error: 'Error interno.' }) }
 })
 
 app.post('/api/catalogo', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
@@ -5333,12 +5353,54 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
       estado    = 'Emitida'
     }
 
-    // 6. Create Factura + LineaFactura (nested write)
+    // 6. Snapshot fiscal: foto inmutable de empresa + cliente al momento de emitir.
+    // Solo en facturas reales (no cotizaciones). Si la empresa cambia logo/RNC/dirección
+    // años después, los PDFs antiguos siguen mostrando el estado original.
+    let snapshot = null
+    if (!esCotizacion) {
+      const empresa = await tx.empresaPerfil.findUnique({ where: { id: 1 } })
+      snapshot = {
+        emitidoEn: new Date().toISOString(),
+        empresa: empresa ? {
+          razonSocial:       empresa.razonSocial,
+          nombreComercial:   empresa.nombreComercial,
+          rnc:               empresa.rnc,
+          registroMercantil: empresa.registroMercantil,
+          direccion:         empresa.direccion,
+          sector:            empresa.sector,
+          provincia:         empresa.provincia,
+          telefono:          empresa.telefono,
+          email:             empresa.email,
+          website:           empresa.website,
+          eslogan:           empresa.eslogan,
+          representanteNombre:   empresa.representanteNombre,
+          representanteApellido: empresa.representanteApellido,
+          representanteCargo:    empresa.representanteCargo,
+          assets:                empresa.assets ?? {},
+          condicionesDefault:    empresa.condicionesDefault ?? {},
+        } : null,
+        cliente: {
+          razonSocial: cliente.razonSocial,
+          noCliente:   cliente.noCliente,
+          rnc:         cliente.rnc,
+          cedula:      cliente.cedula,
+          direccion:   cliente.direccion,
+          sector:      cliente.sector,
+          provincia:   cliente.provincia,
+          telefono:    cliente.telefonoPrincipal ?? cliente.telefono,
+          email:       cliente.email,
+          tipoEmpresa: cliente.tipoEmpresa,
+        },
+      }
+    }
+
+    // 7. Create Factura + LineaFactura (nested write)
     const lineaData = lineasEnriquecidas.map(({ _tipoItem, ...rest }) => rest)
     const f = await tx.factura.create({
       data: {
         noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
         ncf, tipoNcf, esCotizacion,
+        snapshot,
         notas:      esCotizacion
           ? `Cotización POS — ${lineas.length} línea(s)`
           : nombreTemporal
@@ -6253,7 +6315,22 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil" ADD COLUMN IF NOT EXISTS "condicionesDefault" JSONB NOT NULL DEFAULT '{}'::jsonb`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "condiciones"         JSONB`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pdfUrl"              TEXT`)
-    console.log('[DB] Schema columns verified (commercial terms + pdf cache).')
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "snapshot"            JSONB`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Producto"       ADD COLUMN IF NOT EXISTS "descripcion"         TEXT`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Producto"       ADD COLUMN IF NOT EXISTS "imagenUrl"           TEXT`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo"   ADD COLUMN IF NOT EXISTS "imagenUrl"           TEXT`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo"   ADD COLUMN IF NOT EXISTS "productoId"          INTEGER`)
+    // FK opcional + índice (idempotente via catalog lookup)
+    try {
+      await prisma.$executeRawUnsafe(`DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ItemCatalogo_productoId_fkey') THEN
+          ALTER TABLE "ItemCatalogo" ADD CONSTRAINT "ItemCatalogo_productoId_fkey"
+            FOREIGN KEY ("productoId") REFERENCES "Producto"(id) ON DELETE SET NULL;
+        END IF;
+      END $$`)
+    } catch {}
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ItemCatalogo_productoId_idx" ON "ItemCatalogo"("productoId")`)
+    console.log('[DB] Schema columns verified (terms + cache + snapshot + pos images + catalog->producto link).')
   } catch (e) {
     console.error('[DB] ensureSchemaColumns FAILED:', e.message)
   }

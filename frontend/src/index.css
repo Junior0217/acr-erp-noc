@@ -6,3 +6,14 @@ body {
   background-color: #0f172a;
   color: #f8fafc;
 }
+
+/* Markdown ligero (POS detail modal) sobre fondo oscuro */
+.prose-pos strong { color: #f1f5f9; font-weight: 700; }
+.prose-pos em     { color: #cbd5e1; font-style: italic; }
+.prose-pos ul, .prose-pos ol { margin: 6px 0 6px 18px; padding: 0; }
+.prose-pos li { margin: 2px 0; line-height: 1.5; }
+.prose-pos ul li { list-style: disc; }
+.prose-pos ol li { list-style: decimal; }
+.prose-pos code  { font-family: ui-monospace, monospace; background: #1e293b; padding: 1px 5px; border-radius: 4px; font-size: 0.85em; color: #93c5fd; }
+.prose-pos p     { margin: 4px 0; }
+.prose-pos a     { color: #60a5fa; text-decoration: underline; }

@@ -6,8 +6,18 @@ import {
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
 import { toast } from 'sonner'
+import { marked } from 'marked'
 
 const fmt = v => Number(v ?? 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+
+// Markdown ligero -> HTML para preview en modal de POS. Sin sanitización porque
+// el contenido siempre lo escribe staff interno (descripcion del Producto/ItemCatalogo).
+// Limitado a inline + listas básicas.
+marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false })
+function mdToHtml(s) {
+  if (!s) return ''
+  try { return marked.parse(String(s)) } catch { return String(s) }
+}
 
 const CAT_ICON = {
   WISP:           { icon: Wifi,    color: 'text-cyan-400',    bg: 'bg-cyan-500/10',    border: 'border-cyan-500/30'    },
@@ -131,16 +141,29 @@ function ItemDetailModal({ item, onClose, onConfirm }) {
         </div>
 
         <div className="overflow-y-auto">
-          {/* Hero / Image placeholder */}
-          <div className={`mx-5 mt-5 h-48 rounded-xl flex items-center justify-center border ${meta.border} ${meta.bg}`}>
-            <Icon size={72} className={`${meta.color} opacity-60`} strokeWidth={1.25} />
+          {/* Hero / Image */}
+          <div className={`mx-5 mt-5 h-64 rounded-xl overflow-hidden flex items-center justify-center border ${meta.border} ${meta.bg} relative`}>
+            {item.imagenUrl ? (
+              <img src={item.imagenUrl} alt={item.nombre} className="w-full h-full object-cover"
+                onError={e => { e.currentTarget.style.display = 'none' }} />
+            ) : (
+              <Icon size={96} className={`${meta.color} opacity-50`} strokeWidth={1.1} />
+            )}
+            {item.sku && (
+              <span className="absolute top-2 right-2 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-black/60 text-slate-200 backdrop-blur-sm">
+                {item.sku}
+              </span>
+            )}
           </div>
 
           {/* Info */}
           <div className="px-5 py-4 space-y-3">
             <div>
               <h3 className="text-lg font-bold text-slate-100 leading-tight">{item.nombre}</h3>
-              {item.descripcion && <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{item.descripcion}</p>}
+              {item.descripcion && (
+                <div className="text-xs text-slate-400 mt-2 leading-relaxed prose-pos"
+                  dangerouslySetInnerHTML={{ __html: mdToHtml(item.descripcion) }} />
+              )}
             </div>
 
             <div className="grid grid-cols-2 gap-2">
@@ -318,11 +341,19 @@ function CatalogSearch({ onAdd }) {
                 <button key={item.id}
                   onClick={() => setDetailItem(item)}
                   className={`group relative text-left bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : ''}`}>
-                  <div className={`aspect-square w-full rounded-lg flex items-center justify-center ${meta.bg}`}>
-                    <Icon size={36} className={`${meta.color}`} strokeWidth={1.4} />
+                  <div className={`aspect-square w-full rounded-lg overflow-hidden flex items-center justify-center ${meta.bg}`}>
+                    {item.imagenUrl ? (
+                      <img src={item.imagenUrl} alt={item.nombre} className="w-full h-full object-cover"
+                        onError={e => { e.currentTarget.style.display = 'none'; e.currentTarget.parentElement.innerHTML = '' }} />
+                    ) : (
+                      <Icon size={36} className={`${meta.color}`} strokeWidth={1.4} />
+                    )}
                   </div>
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-slate-100 leading-tight line-clamp-2">{item.nombre}</p>
+                    {item.descripcion && (
+                      <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">{item.descripcion.replace(/[*_`#-]/g, '').trim()}</p>
+                    )}
                     <div className="flex items-center justify-between mt-1">
                       <span className="text-xs font-bold font-mono text-emerald-400">RD$ {fmt(item.precio)}</span>
                       {item.tipo === 'VentaUnica' && (

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { X, Loader2 } from 'lucide-react'
+import { apiFetch } from '../../utils/api'
 
-const API = import.meta.env.VITE_API_URL || ''
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
 
@@ -13,9 +13,10 @@ export default function FormularioCategoria({ categoria, onClose, onSaved }) {
   async function guardar() {
     setSaving(true); setError('')
     try {
-      const url = categoria ? `${API}/api/categorias/${categoria.id}` : `${API}/api/categorias`
+      // apiFetch inyecta X-CSRF-Token + cookie credentials. fetch crudo daba 403.
+      const path = categoria ? `/api/categorias/${categoria.id}` : '/api/categorias'
       const method = categoria ? 'PUT' : 'POST'
-      const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ nombre }) })
+      const r = await apiFetch(path, { method, body: JSON.stringify({ nombre }) })
       const json = await r.json()
       if (!r.ok) { setError(json.error ?? 'Error al guardar'); return }
       onSaved(json)

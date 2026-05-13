@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Loader2, Info } from 'lucide-react'
+import { apiFetch } from '../../utils/api'
 
-const API = import.meta.env.VITE_API_URL || ''
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
 
@@ -11,15 +11,19 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
     nombre:      producto?.nombre ?? '',
     precio:      producto?.precio ?? '',
     categoriaId: producto?.categoriaId ?? '',
+    imagenUrl:   producto?.imagenUrl ?? '',
+    descripcion: producto?.descripcion ?? '',
   })
   const [categorias, setCategorias] = useState([])
   const [saving, setSaving]   = useState(false)
   const [error, setError]     = useState('')
 
   useEffect(() => {
-    fetch(`${API}/api/categorias`)
+    // apiFetch para hidratar categorías (GET no exige CSRF pero conserva cookie auth).
+    apiFetch('/api/categorias')
       .then(r => r.json())
       .then(j => setCategorias(j.data ?? []))
+      .catch(() => {})
   }, [])
 
   function set(k, v) { setForm(f => ({ ...f, [k]: v })) }
@@ -31,12 +35,14 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
         nombre:      form.nombre,
         precio:      parseFloat(form.precio) || 0,
         categoriaId: parseInt(form.categoriaId),
+        imagenUrl:   form.imagenUrl || null,
+        descripcion: form.descripcion || null,
       }
       if (!producto) body.sku = form.sku
 
-      const url    = producto ? `${API}/api/productos/${producto.id}` : `${API}/api/productos`
+      const path   = producto ? `/api/productos/${producto.id}` : '/api/productos'
       const method = producto ? 'PUT' : 'POST'
-      const r    = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const r    = await apiFetch(path, { method, body: JSON.stringify(body) })
       const json = await r.json()
       if (!r.ok) { setError(json.error ?? 'Error al guardar'); return }
       onSaved(json)
@@ -108,6 +114,27 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
                 <option key={c.id} value={c.id}>{c.nombre}</option>
               ))}
             </select>
+          </div>
+
+          <div>
+            <label className={LABEL}>Imagen (URL)</label>
+            <div className="flex gap-2">
+              <input className={INPUT} value={form.imagenUrl} onChange={e => set('imagenUrl', e.target.value)}
+                placeholder="https://… (pega aquí el link de Supabase Storage o subir luego)" />
+              {form.imagenUrl && (
+                <div className="w-12 h-10 rounded-lg overflow-hidden bg-slate-800 border border-slate-700 flex-shrink-0">
+                  <img src={form.imagenUrl} alt="" className="w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none' }} />
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div>
+            <label className={LABEL}>Descripción (admite Markdown ligero)</label>
+            <textarea className={INPUT + ' min-h-[80px] font-mono text-xs'} value={form.descripcion}
+              onChange={e => set('descripcion', e.target.value)} rows={3}
+              placeholder={'**Cámara IP 4MP**\n- Visión nocturna IR 30m\n- WDR 120dB\n- POE 802.3af'} maxLength={1000} />
+            <p className="text-[10px] text-slate-600 mt-1">Soporta **negrita**, *cursiva*, - listas. Se ve en POS + PDF.</p>
           </div>
 
           <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-blue-900/20 border border-blue-700/30">

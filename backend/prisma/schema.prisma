@@ -172,6 +172,10 @@ model Producto {
   id               Int                    @id @default(autoincrement())
   sku              String                 @unique
   nombre           String
+  // Descripción rica (admite Markdown ligero — se renderiza en POS detail + PDF).
+  descripcion      String?
+  // URL de imagen (Supabase Storage). Si presente, sustituye el ícono genérico en el POS.
+  imagenUrl        String?
   precio           Decimal                @db.Decimal(12, 2)
   stockActual      Int                    @default(0)
   stockMinimo      Int                    @default(5)
@@ -187,6 +191,7 @@ model Producto {
   lineasCarrito    LineaCarrito[]
   activosCliente   ActivoCliente[]
   prestamos        EquipoPrestamo[]
+  itemsCatalogo    ItemCatalogo[]   // ItemCatalogos que apuntan a este Producto físico
 
   @@index([sku])
   @@index([categoriaId])
@@ -472,11 +477,20 @@ model ItemCatalogo {
   id          String              @id @default(uuid())
   nombre      String
   descripcion String?
+  // URL de imagen (Supabase Storage). Si está atado a un Producto físico,
+  // el POS prioriza la imagen del Producto cuando exista (single source of truth).
+  imagenUrl   String?
   tipo        TipoFacturacion
   categoria   TipoServicio
   precio      Decimal             @db.Decimal(12, 2)
   costo       Decimal             @default(0) @db.Decimal(12, 2)
+  // stock manual (legacy). Si productoId está seteado, el stock real se lee
+  // del Producto (sincronización: el catálogo refleja el inventario físico).
   stock       Int?
+  // Vínculo opcional con Producto físico. Cuando existe, ItemCatalogo es la
+  // "vitrina comercial" y Producto es la "fuente fiscal" de stock.
+  productoId  Int?
+  producto    Producto?           @relation(fields: [productoId], references: [id], onDelete: SetNull)
   activo      Boolean             @default(true)
   tipoItem    TipoItem            @default(SERVICIO)
   lineas      LineaOrdenTrabajo[]
@@ -487,6 +501,7 @@ model ItemCatalogo {
   @@index([categoria])
   @@index([activo])
   @@index([tipoItem])
+  @@index([productoId])
 }
 
 model OrdenTrabajo {
@@ -568,6 +583,13 @@ model Factura {
   // URL pública del PDF cacheado en Supabase Storage. Null = nunca generado o
   // invalidado (factura editada). Cuando existe, /pdf hace redirect 302 — cero CPU.
   pdfUrl       String?
+  // Snapshot fiscal inmutable: foto del estado de la factura al momento de
+  // emitirse (empresa.razonSocial, empresa.rnc, empresa.assets, cliente.*,
+  // items con SKU/precio/descripcion del momento). Si la empresa cambia de
+  // logo o nombre años después, los PDFs antiguos siguen mostrando los datos
+  // que existían al emitirse. Cumplimiento DGII a largo plazo.
+  // Null para cotizaciones (no fiscal) y facturas pre-rollout.
+  snapshot     Json?
   esCotizacion Boolean       @default(false)
   deletedAt    DateTime?
   cliente      Cliente       @relation(fields: [clienteId], references: [id], onDelete: Restrict)
