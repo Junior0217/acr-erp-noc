@@ -354,6 +354,15 @@ const billingLimiter = rateLimit({
   message: { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
 });
 
+// uploadLimiter + uploadMulter: declarados aquí (con el resto de limiters globales)
+// para evitar TDZ. Antes vivían junto a las rutas de upload (~línea 2780) pero
+// endpoints nuevos los referencian en líneas anteriores -> ReferenceError al boot.
+const uploadLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false })
+const uploadMulter  = multer({
+  storage: multer.memoryStorage(),
+  limits:  { fileSize: 2 * 1024 * 1024 },     // 2MB
+})
+
 app.use(express.json({ limit: '50kb' }));
 
 // ─── CSRF Double-Submit Cookie ────────────────────────────────────────────────
@@ -2295,7 +2304,16 @@ app.post('/api/ordenes/:id/fotos/upload',
     if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
     try {
       if (!supabase) return res.status(503).json({ error: 'Storage no configurado.', code: 'STORAGE_DISABLED' })
-      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
+      // Defensa contra Content-Type incorrecto: multer ignora silenciosamente si
+      // el body NO es multipart -> req.file queda undefined. Devolvemos mensaje claro.
+      const ct = String(req.headers['content-type'] ?? '')
+      if (!ct.startsWith('multipart/form-data')) {
+        return res.status(415).json({ error: 'Content-Type debe ser multipart/form-data.', code: 'WRONG_CT' })
+      }
+      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").', code: 'NO_FILE' })
+      if (!req.file.buffer || req.file.buffer.length === 0) {
+        return res.status(400).json({ error: 'Archivo vacío.', code: 'EMPTY_FILE' })
+      }
 
       const ot = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, estado: true, estaFacturada: true } })
       if (!ot) return res.status(404).json({ error: 'OT no encontrada.' })
@@ -2310,8 +2328,12 @@ app.post('/api/ordenes/:id/fotos/upload',
       try {
         const c = await comprimirImagen(req.file.buffer, inputMime)
         buffer = c.buffer; finalMime = c.mime; ext = c.ext
-      } catch {
-        return res.status(422).json({ error: 'Imagen corrupta.', code: 'COMPRESS_FAIL' })
+      } catch (sharpErr) {
+        console.error('[OT FOTO SHARP]', sharpErr?.message)
+        return res.status(422).json({ error: 'Imagen corrupta o ilegible.', code: 'COMPRESS_FAIL' })
+      }
+      if (!buffer || buffer.length === 0) {
+        return res.status(422).json({ error: 'Imagen post-compresión vacía.', code: 'EMPTY_AFTER_COMPRESS' })
       }
       const filename = `${ot.id}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`
       const { error: upErr } = await supabase.storage.from(OT_FOTOS_BUCKET).upload(filename, buffer, {
@@ -2780,12 +2802,8 @@ async function comprimirImagen(buf, mime) {
   return { buffer: out, mime: 'image/png', ext: 'png' }
 }
 
-const uploadMulter = multer({
-  storage: multer.memoryStorage(),
-  limits:  { fileSize: 2 * 1024 * 1024 },     // 2MB
-})
-
-const uploadLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false })
+// uploadMulter + uploadLimiter ahora viven con los demás rate limiters globales
+// arriba (cerca de billingLimiter) para que endpoints anteriores los puedan usar.
 
 app.post(
   '/api/configuracion/empresa/upload',
@@ -6200,19 +6218,19 @@ app.get('/api/catalogo/buscar', verificarJWT, async (req, res) => {
         }).then(rows => rows.map(it => ({
           kind:          'item',
           id:            it.id,
-          codigo:        it.codigo,
-          nombre:        it.nombre,
-          descripcion:   it.descripcion,
+          codigo:        it.codigo ?? `ITM-${String(it.id).slice(0, 6).toUpperCase()}`,
+          nombre:        it.nombre ?? 'Sin nombre',
+          descripcion:   it.descripcion ?? null,
           imagenUrl:     it.imagenUrl ?? it.producto?.imagenUrl ?? null,
-          tipo:          it.tipo,
-          categoria:     it.categoria,
-          tipoItem:      it.tipoItem,        // ARTICULO o SERVICIO
-          esBundle:      it.esBundle,
-          precio:        Number(it.precio),
-          productoId:    it.productoId,
+          tipo:          it.tipo ?? 'Servicio',
+          categoria:     it.categoria ?? null,
+          tipoItem:      it.tipoItem ?? 'SERVICIO',
+          esBundle:      !!it.esBundle,
+          precio:        Number(it.precio ?? 0),
+          productoId:    it.productoId ?? null,
           stockActual:   it.producto?.stockActual ?? null,
           sku:           it.producto?.sku ?? null,
-          activo:        it.activo,
+          activo:        it.activo !== false,
         })))
       )
     }
@@ -6235,16 +6253,16 @@ app.get('/api/catalogo/buscar', verificarJWT, async (req, res) => {
         }).then(rows => rows.map(p => ({
           kind:        'producto',
           id:          p.id,
-          codigo:      p.sku,
-          nombre:      p.nombre,
-          descripcion: p.descripcion,
+          codigo:      p.sku ?? `P-${p.id}`,
+          nombre:      p.nombre ?? 'Sin nombre',
+          descripcion: p.descripcion ?? null,
           imagenUrl:   p.imagenUrl ?? null,
           tipo:        'VentaUnica',
-          tipoItem:    p.tipoItem,
-          precio:      Number(p.precio),
+          tipoItem:    p.tipoItem ?? 'ARTICULO',
+          precio:      Number(p.precio ?? 0),
           productoId:  p.id,
-          stockActual: p.stockActual,
-          sku:         p.sku,
+          stockActual: p.stockActual ?? 0,
+          sku:         p.sku ?? null,
           activo:      true,
         })))
       )
@@ -6266,16 +6284,16 @@ app.get('/api/catalogo/buscar', verificarJWT, async (req, res) => {
         }).then(rows => rows.map(pl => ({
           kind:        'plan',
           id:          pl.id,
-          codigo:      pl.sku,
-          nombre:      pl.nombre,
+          codigo:      pl.sku ?? `PLN-${String(pl.id).slice(0, 6).toUpperCase()}`,
+          nombre:      pl.nombre ?? 'Sin nombre',
           descripcion: null,
           imagenUrl:   null,
           tipo:        'Recurrente',
-          categoria:   pl.tipo,
+          categoria:   pl.tipo ?? 'Mixto',
           tipoItem:    'SERVICIO',
-          precio:      Number(pl.precioMensualBase),
+          precio:      Number(pl.precioMensualBase ?? 0),
           stockActual: null,
-          activo:      pl.activo,
+          activo:      pl.activo !== false,
         })))
       )
     }
@@ -6707,33 +6725,43 @@ const facturaManualSchema = z.object({
 //   - Línea de servicio puro → array vacío (no consume stock)
 // Usado por OT (reservas) y POS (stock check + deducción).
 async function expandirLineaAComponentes(tx, linea) {
+  // Guards defensivos: una línea ausente o sin cantidad válida no consume stock.
+  if (!linea || typeof linea !== 'object') return []
+  const cantidad = Number(linea.cantidad)
+  if (!Number.isFinite(cantidad) || cantidad <= 0) return []
   if (linea.productoId) {
-    return [{ productoId: linea.productoId, cantidad: linea.cantidad, source: 'direct' }]
+    return [{ productoId: linea.productoId, cantidad, source: 'direct' }]
   }
   if (linea.itemCatalogoId) {
-    const it = await tx.itemCatalogo.findUnique({
-      where:   { id: linea.itemCatalogoId },
-      include: {
-        componentes: { include: { producto: { select: { id: true, nombre: true, stockActual: true, tipoItem: true } } } },
-        producto:    { select: { id: true, nombre: true, stockActual: true, tipoItem: true } },
-      },
-    })
+    let it
+    try {
+      it = await tx.itemCatalogo.findUnique({
+        where:   { id: linea.itemCatalogoId },
+        include: {
+          componentes: { include: { producto: { select: { id: true, nombre: true, stockActual: true, tipoItem: true } } } },
+          producto:    { select: { id: true, nombre: true, stockActual: true, tipoItem: true } },
+        },
+      })
+    } catch (e) {
+      console.warn(`[expandirLineaAComponentes] lookup falló id=${linea.itemCatalogoId}:`, e.message)
+      return []
+    }
     if (!it) return []
     // Bundle: explota a lista de componentes (cantidades multiplicadas por la línea).
     if (it.esBundle && Array.isArray(it.componentes) && it.componentes.length > 0) {
       return it.componentes
-        .filter(c => c.producto && c.producto.tipoItem !== 'SERVICIO')
+        .filter(c => c?.producto && c.producto.tipoItem !== 'SERVICIO' && Number(c.cantidad) > 0)
         .map(c => ({
           productoId: c.productoId,
-          cantidad:   c.cantidad * linea.cantidad,
-          nombre:     c.producto.nombre,
+          cantidad:   Number(c.cantidad) * cantidad,
+          nombre:     c.producto.nombre ?? 'Componente',
           source:     'bundle',
           bundleItemId: it.id,
         }))
     }
     // Item simple vinculado a Producto físico (no bundle)
     if (it.productoId && it.producto?.tipoItem !== 'SERVICIO') {
-      return [{ productoId: it.productoId, cantidad: linea.cantidad, nombre: it.producto.nombre, source: 'linked' }]
+      return [{ productoId: it.productoId, cantidad, nombre: it.producto?.nombre ?? it.nombre ?? 'Producto', source: 'linked' }]
     }
   }
   return []
