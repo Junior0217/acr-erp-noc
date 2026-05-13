@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Loader2, Trash2, Search, AlertTriangle, CheckCircle, Shield } from 'lucide-react'
+import VoiceDictationButton from '../VoiceDictationButton'
+import FotosOT from './FotosOT'
 
 const API = import.meta.env.VITE_API_URL || ''
 
@@ -191,7 +193,10 @@ export default function FormularioOrden({ orden, servicioId, onClose, onSaved })
 
           {/* Notas generales */}
           <div>
-            <label className={LABEL}>Notas</label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label className={LABEL + ' mb-0'}>Notas</label>
+              {!completada && <VoiceDictationButton value={form.notas} onChange={v => set('notas', v)} />}
+            </div>
             <textarea rows={2} className={INPUT + ' resize-none'} value={form.notas}
               onChange={e => set('notas', e.target.value)} placeholder="Instrucciones o notas para el técnico..." disabled={completada} />
           </div>
@@ -201,13 +206,19 @@ export default function FormularioOrden({ orden, servicioId, onClose, onSaved })
             <div className="space-y-3 pt-1 border-t border-slate-800">
               <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider pt-2">Resultado Técnico</p>
               <div>
-                <label className={LABEL}>Diagnóstico</label>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className={LABEL + ' mb-0'}>Diagnóstico</label>
+                  {!completada && <VoiceDictationButton value={form.diagnostico} onChange={v => set('diagnostico', v)} />}
+                </div>
                 <textarea rows={2} className={INPUT + ' resize-none'} value={form.diagnostico}
                   onChange={e => set('diagnostico', e.target.value)}
                   placeholder="Descripción del problema encontrado..." disabled={completada} />
               </div>
               <div>
-                <label className={LABEL}>Solución Aplicada</label>
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <label className={LABEL + ' mb-0'}>Solución Aplicada</label>
+                  {!completada && <VoiceDictationButton value={form.solucion} onChange={v => set('solucion', v)} />}
+                </div>
                 <textarea rows={2} className={INPUT + ' resize-none'} value={form.solucion}
                   onChange={e => set('solucion', e.target.value)}
                   placeholder="Descripción de la solución implementada..." disabled={completada} />
@@ -268,6 +279,13 @@ export default function FormularioOrden({ orden, servicioId, onClose, onSaved })
               </div>
             )}
           </div>
+
+          {/* Fotos de evidencia (solo cuando la OT ya existe — necesita ID) */}
+          {orden?.id && (
+            <div className="pt-3 border-t border-slate-800">
+              <FotosOT ordenId={orden.id} otCode={orden.id?.slice(0, 8)?.toUpperCase()} readonly={completada} />
+            </div>
+          )}
         </div>
 
         {error && <p className="px-5 pb-2 text-xs text-red-400">{error}</p>}

@@ -2280,6 +2280,73 @@ app.get('/api/ordenes/:id/fotos', verificarJWT, requerirPermiso('ot:ver'), async
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
+// Bucket dedicado para fotos de OT (separado de catálogo e inventario).
+const OT_FOTOS_BUCKET = process.env.SUPABASE_OT_FOTOS_BUCKET ?? 'ot-fotos'
+// Upload directo de foto (multipart) con watermark ya aplicado por el cliente.
+// Maneja: validación MIME + upload Supabase + creación de OrdenFoto en una sola llamada.
+// El watermark se inyecta CLIENT-SIDE (canvas) antes de enviar; el server confía pero
+// re-procesa via sharp para normalizar a JPEG + cap 800x800 + EXIF strip (privacidad GPS doble).
+app.post('/api/ordenes/:id/fotos/upload',
+  uploadLimiter,
+  verificarJWT,
+  requerirPermiso('ot:editar'),
+  uploadMulter.single('file'),
+  async (req, res) => {
+    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+    try {
+      if (!supabase) return res.status(503).json({ error: 'Storage no configurado.', code: 'STORAGE_DISABLED' })
+      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
+
+      const ot = await prisma.ordenTrabajo.findUnique({ where: { id: req.params.id }, select: { id: true, estado: true, estaFacturada: true } })
+      if (!ot) return res.status(404).json({ error: 'OT no encontrada.' })
+      if (ot.estado === 'Cerrada' && ot.estaFacturada) return res.status(423).json({ error: 'OT inmutable.' })
+
+      const inputMime = detectMimeFromBuffer(req.file.buffer)
+      if (!inputMime || !['image/png', 'image/jpeg', 'image/webp'].includes(inputMime)) {
+        return res.status(415).json({ error: 'Solo PNG/JPG/WebP. SVG rechazado por seguridad.', code: 'INVALID_MIME' })
+      }
+      // Comprime + strip EXIF (sharp respeta rotate desde EXIF y luego descarta metadata).
+      let buffer, finalMime, ext
+      try {
+        const c = await comprimirImagen(req.file.buffer, inputMime)
+        buffer = c.buffer; finalMime = c.mime; ext = c.ext
+      } catch {
+        return res.status(422).json({ error: 'Imagen corrupta.', code: 'COMPRESS_FAIL' })
+      }
+      const filename = `${ot.id}/${Date.now()}-${crypto.randomBytes(4).toString('hex')}.${ext}`
+      const { error: upErr } = await supabase.storage.from(OT_FOTOS_BUCKET).upload(filename, buffer, {
+        contentType: finalMime, cacheControl: '604800', upsert: false,
+      })
+      if (upErr) {
+        console.error('[OT FOTO UPLOAD]', upErr.message)
+        return res.status(502).json({ error: `Error al subir: ${upErr.message}` })
+      }
+      const { data: pub } = supabase.storage.from(OT_FOTOS_BUCKET).getPublicUrl(filename)
+
+      // Validar lat/lng como strings cortas (mismo schema que /fotos JSON)
+      const latitud  = req.body?.latitud  ? String(req.body.latitud).slice(0, 30)  : null
+      const longitud = req.body?.longitud ? String(req.body.longitud).slice(0, 30) : null
+      const descripcion = req.body?.descripcion ? String(req.body.descripcion).slice(0, 200) : null
+
+      const foto = await prisma.ordenFoto.create({
+        data: {
+          ordenId:     ot.id,
+          url:         pub?.publicUrl ?? '',
+          latitud, longitud, descripcion,
+          subidoPor:   req.user?.sub ?? null,
+        },
+        include: { empleado: { select: { id: true, nombre: true } } },
+      })
+      auditReq('ot:foto_upload_v2', req, { ordenId: ot.id, fotoId: foto.id, gps: !!latitud })
+      res.status(201).json(foto)
+    } catch (e) {
+      if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
+      console.error('[OT FOTO UPLOAD]', e.message)
+      res.status(500).json({ error: 'Error interno.' })
+    }
+  }
+)
+
 app.post('/api/ordenes/:id/fotos', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
   try {
