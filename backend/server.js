@@ -2187,8 +2187,46 @@ app.patch('/api/ordenes/:id/estado', verificarJWT, requerirPermiso('ot:editar'),
     if (data.garantiaDias      != null) update.garantiaDias      = data.garantiaDias
     if (data.estado === 'Cerrada') update.completadaEn = new Date()
 
-    await prisma.$transaction(async (tx) => {
+    const resultado = await prisma.$transaction(async (tx) => {
       await tx.ordenTrabajo.update({ where: { id: req.params.id }, data: update })
+
+      // Reservas de stock: Cancelada → libera; Cerrada → consume del stock.
+      let reservasLiberadas = 0
+      let stockDescontado  = 0
+      if (data.estado === 'Cancelada') {
+        const r = await tx.reservaInventario.deleteMany({
+          where: { ordenId: ot.id, liberada: false },
+        })
+        reservasLiberadas = r.count
+      } else if (data.estado === 'Cerrada') {
+        // Consume cada reserva: UPDATE atómico stock - cantidad + Kardex Salida.
+        // Si stockActual < cantidad reservada (drift), log y skip esa línea sin abortar
+        // el cierre completo (las reservas son una previsión; el cierre es el hecho real).
+        const reservas = await tx.reservaInventario.findMany({
+          where: { ordenId: ot.id, liberada: false },
+        })
+        for (const r of reservas) {
+          const rows = await tx.$queryRaw`
+            UPDATE "Producto" SET "stockActual" = "stockActual" - ${r.cantidad}
+            WHERE id = ${r.productoId} AND "stockActual" >= ${r.cantidad}
+            RETURNING id, "stockActual"
+          `
+          if (!rows || rows.length === 0) {
+            console.warn(`[OT CIERRE] Stock drift productoId=${r.productoId} cantidad=${r.cantidad} OT=${ot.id}`)
+            await tx.auditCaja.create({ data: {
+              tipo: 'stock_drift_ot', empleadoId: req.user?.sub ?? null,
+              detalle: `Cierre OT ${ot.noOT ?? ot.id}: stock insuficiente productoId=${r.productoId} req=${r.cantidad}. Reserva consumida sin descontar.`,
+            }}).catch(() => {})
+          } else {
+            await tx.movimientoInventario.create({
+              data: { productoId: r.productoId, tipo: 'Salida', cantidad: r.cantidad },
+            })
+            stockDescontado++
+          }
+        }
+        await tx.reservaInventario.deleteMany({ where: { ordenId: ot.id } })
+        reservasLiberadas = reservas.length
+      }
 
       // Auto-create ActivoCliente entries for product lines on close
       if (data.estado === 'Cerrada' && ['Instalacion','CCTV','Reparacion'].includes(ot.tipoOT)) {
@@ -2209,10 +2247,11 @@ app.patch('/api/ordenes/:id/estado', verificarJWT, requerirPermiso('ot:editar'),
           })
         }
       }
+      return { reservasLiberadas, stockDescontado }
     })
 
-    auditReq('ot:estado', req, { otId: ot.id, estado: data.estado })
-    res.json({ ok: true })
+    auditReq('ot:estado', req, { otId: ot.id, estado: data.estado, reservasLiberadas: resultado.reservasLiberadas, stockDescontado: resultado.stockDescontado })
+    res.json({ ok: true, ...resultado })
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
     console.error('[OT ESTADO]', e.message)
@@ -6148,6 +6187,10 @@ app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res
 
 const SLA_HORAS_POR_TIPO = { Reparacion: 48, Instalacion: 168, CCTV: 168, Mantenimiento: 72, General: 24, ISP: 72, CercoElectrico: 168, VentaDirecta: 24 }
 
+// TTL para reservas creadas por OT en estado Pendiente.
+// Si la OT no avanza en 7 días, un cron las libera (ver expirarReservasOTPendientes).
+const OT_RESERVA_TTL_MS = 7 * 86_400_000
+
 app.post('/api/ordenes', verificarJWT, billingLimiter, requerirPermiso('ot:crear'), async (req, res) => {
   try {
     const { lineas, ...otData } = ordenTrabajoSchema.parse(req.body)
@@ -6161,18 +6204,44 @@ app.post('/api/ordenes', verificarJWT, billingLimiter, requerirPermiso('ot:crear
       await tx.lineaOrdenTrabajo.createMany({
         data: lineas.map(l => ({ ...l, ordenId: ot.id })),
       })
+
+      // Reservas de stock: para cada línea, expandimos a componentes físicos
+      // (item simple, item bundle, o producto directo) y creamos ReservaInventario.
+      // Las reservas NO descuentan del stockActual aún — solo "marcan" para que
+      // el POS sepa que ese inventario está comprometido. Stock disponible real
+      // = stockActual - SUM(reservas liberada=false).
+      const expiraEn = new Date(Date.now() + OT_RESERVA_TTL_MS)
+      const reservasACrear = []
+      for (const l of lineas) {
+        const comps = await expandirLineaAComponentes(tx, l)
+        for (const c of comps) {
+          reservasACrear.push({
+            productoId: c.productoId,
+            cantidad:   c.cantidad,
+            ordenId:    ot.id,
+            expiraEn,
+            motivo:     `OT ${noOT} · ${c.source}${c.nombre ? ' · ' + c.nombre : ''}`,
+          })
+        }
+      }
+      if (reservasACrear.length > 0) {
+        await tx.reservaInventario.createMany({ data: reservasACrear })
+      }
+
       return tx.ordenTrabajo.findUnique({
         where: { id: ot.id },
         include: {
           cliente: { select: { id: true, razonSocial: true } },
           lineas:  { include: { itemCatalogo: { select: { nombre: true } } } },
+          reservas:{ select: { id: true, productoId: true, cantidad: true, expiraEn: true } },
         },
       })
     })
-    auditReq('ot:crear', req, { ordenId: orden.id, tipoOT: orden.tipoOT, clienteId: orden.clienteId })
+    auditReq('ot:crear', req, { ordenId: orden.id, tipoOT: orden.tipoOT, clienteId: orden.clienteId, reservas: orden.reservas?.length ?? 0 })
     res.status(201).json(orden)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    console.error('[OT CREAR]', e.message)
     res.status(500).json({ error: 'Error interno.' })
   }
 })
@@ -6432,6 +6501,46 @@ const facturaManualSchema = z.object({
 
 // Shared transaction: used by /api/facturas/manual and /api/carrito/checkout
 // C2: puedeOverridePrecio gating + empleadoId trace.
+// ─── BOM helper: expande líneas a lista plana de componentes físicos ─────────
+// Devuelve un array de { productoId, cantidad, nombre } para cada línea:
+//   - Línea con productoId directo  → 1 entry (la propia línea)
+//   - Línea con itemCatalogo bundle → N entries (uno por componente, qty × line.qty)
+//   - Línea con itemCatalogo simple vinculado a Producto → 1 entry (item.productoId)
+//   - Línea de servicio puro → array vacío (no consume stock)
+// Usado por OT (reservas) y POS (stock check + deducción).
+async function expandirLineaAComponentes(tx, linea) {
+  if (linea.productoId) {
+    return [{ productoId: linea.productoId, cantidad: linea.cantidad, source: 'direct' }]
+  }
+  if (linea.itemCatalogoId) {
+    const it = await tx.itemCatalogo.findUnique({
+      where:   { id: linea.itemCatalogoId },
+      include: {
+        componentes: { include: { producto: { select: { id: true, nombre: true, stockActual: true, tipoItem: true } } } },
+        producto:    { select: { id: true, nombre: true, stockActual: true, tipoItem: true } },
+      },
+    })
+    if (!it) return []
+    // Bundle: explota a lista de componentes (cantidades multiplicadas por la línea).
+    if (it.esBundle && Array.isArray(it.componentes) && it.componentes.length > 0) {
+      return it.componentes
+        .filter(c => c.producto && c.producto.tipoItem !== 'SERVICIO')
+        .map(c => ({
+          productoId: c.productoId,
+          cantidad:   c.cantidad * linea.cantidad,
+          nombre:     c.producto.nombre,
+          source:     'bundle',
+          bundleItemId: it.id,
+        }))
+    }
+    // Item simple vinculado a Producto físico (no bundle)
+    if (it.productoId && it.producto?.tipoItem !== 'SERVICIO') {
+      return [{ productoId: it.productoId, cantidad: linea.cantidad, nombre: it.producto.nombre, source: 'linked' }]
+    }
+  }
+  return []
+}
+
 async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0, puedeOverridePrecio = false, empleadoId = null }) {
   return prisma.$transaction(async (tx) => {
     // 1. Resolve client
@@ -6693,34 +6802,65 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
     const _iidsForGate = [...new Set(lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))]
     const [_prodGate, _itemGate] = await Promise.all([
       _pidsForGate.length ? prisma.producto.findMany({ where: { id: { in: _pidsForGate } }, select: { id: true, nombre: true, precio: true, stockActual: true, tipoItem: true } }) : [],
-      _iidsForGate.length ? prisma.itemCatalogo.findMany({ where: { id: { in: _iidsForGate } }, select: { id: true, nombre: true, precio: true, productoId: true, producto: { select: { stockActual: true, tipoItem: true } } } }) : [],
+      _iidsForGate.length ? prisma.itemCatalogo.findMany({
+        where: { id: { in: _iidsForGate } },
+        select: {
+          id: true, nombre: true, precio: true, productoId: true, esBundle: true,
+          producto: { select: { id: true, nombre: true, stockActual: true, tipoItem: true } },
+          componentes: { include: { producto: { select: { id: true, nombre: true, stockActual: true, tipoItem: true } } } },
+        },
+      }) : [],
     ])
     const _pMapGate = Object.fromEntries(_prodGate.map(p => [p.id, Number(p.precio)]))
     const _iMapGate = Object.fromEntries(_itemGate.map(i => [i.id, Number(i.precio)]))
+    const _itemFullMap = Object.fromEntries(_itemGate.map(i => [i.id, i]))
 
-    // M10: pre-flight stock check — abortar antes de quemar NCF si algún ARTICULO
-    // físico no tiene inventario. Las líneas de SERVICIO se ignoran (no consumen).
-    // Solo en facturas reales (cotizaciones reservan, no descuentan).
+    // M10 + Bundles: pre-flight stock check expandiendo bundles. Cada línea se
+    // explota a {productoId, cantidad} (bundle multiplica componentes × line.qty)
+    // y se agrega antes de comparar contra stockActual. Esto evita falsos OK
+    // cuando dos líneas distintas pegan al mismo producto físico (ej. 2 kits CCTV
+    // que comparten el mismo modelo de cámara).
+    const _stockMapDirect = Object.fromEntries(_prodGate.map(p => [p.id, p]))
     if (!esCotizacion) {
-      const stockMap = Object.fromEntries(_prodGate.map(p => [p.id, p]))
-      const itemStockMap = Object.fromEntries(_itemGate.filter(i => i.productoId).map(i => [i.id, i]))
+      const requeridos = {}   // productoId -> cantidad total requerida
+      const nombresPorPid = {} // para mensajes amistosos
       for (const l of lineas) {
         if (l.productoId) {
-          const p = stockMap[l.productoId]
-          if (p && p.tipoItem !== 'SERVICIO' && Number(p.stockActual) < l.cantidad) {
+          const p = _stockMapDirect[l.productoId]
+          if (!p || p.tipoItem === 'SERVICIO') continue
+          requeridos[p.id] = (requeridos[p.id] ?? 0) + l.cantidad
+          nombresPorPid[p.id] = p.nombre
+        } else if (l.itemCatalogoId) {
+          const it = _itemFullMap[l.itemCatalogoId]
+          if (!it) continue
+          // Bundle: explota a componentes.
+          if (it.esBundle && Array.isArray(it.componentes) && it.componentes.length > 0) {
+            for (const c of it.componentes) {
+              if (!c.producto || c.producto.tipoItem === 'SERVICIO') continue
+              const cantTotal = c.cantidad * l.cantidad
+              requeridos[c.productoId] = (requeridos[c.productoId] ?? 0) + cantTotal
+              nombresPorPid[c.productoId] = c.producto.nombre
+            }
+          } else if (it.productoId && it.producto?.tipoItem !== 'SERVICIO') {
+            requeridos[it.productoId] = (requeridos[it.productoId] ?? 0) + l.cantidad
+            nombresPorPid[it.productoId] = it.producto?.nombre ?? it.nombre
+          }
+        }
+      }
+      // Verificar disponibilidad por producto (un solo query por chunk).
+      const pidsRequeridos = Object.keys(requeridos).map(Number)
+      if (pidsRequeridos.length > 0) {
+        const stockActuales = await prisma.producto.findMany({
+          where:  { id: { in: pidsRequeridos } },
+          select: { id: true, nombre: true, stockActual: true },
+        })
+        for (const p of stockActuales) {
+          const req = requeridos[p.id]
+          if (Number(p.stockActual) < req) {
             return res.status(422).json({
-              error: `Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${l.cantidad}.`,
+              error: `Stock insuficiente para "${p.nombre}". Disponible: ${p.stockActual}, requerido: ${req} (incluye expansión de bundles).`,
               code:  'STOCK_INSUFICIENTE',
               productoId: p.id,
-            })
-          }
-        } else if (l.itemCatalogoId) {
-          const it = itemStockMap[l.itemCatalogoId]
-          if (it?.producto && it.producto.tipoItem !== 'SERVICIO' && Number(it.producto.stockActual) < l.cantidad) {
-            return res.status(422).json({
-              error: `Stock insuficiente para "${it.nombre}". Disponible: ${it.producto.stockActual}, requerido: ${l.cantidad}.`,
-              code:  'STOCK_INSUFICIENTE',
-              itemCatalogoId: it.id,
             })
           }
         }
@@ -6960,26 +7100,34 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
     // de inventario, no cotizaciones). Itemcatalogo→producto se maneja aparte si aplica.
     if (!esCotizacion) {
       try {
-        const ventasProducto = lineas.filter(l => l.productoId)
-        for (const v of ventasProducto) {
+        // Bundles + items directos: expandimos cada línea y agregamos antes de
+        // ejecutar el UPDATE. Garantiza que un kit CCTV descuente las 4 cámaras
+        // + 1 DVR + cable del stockActual real.
+        const aDescontar = {}  // productoId -> cantidad acumulada
+        for (const l of lineas) {
+          const comps = await expandirLineaAComponentes(prisma, l)
+          for (const c of comps) {
+            aDescontar[c.productoId] = (aDescontar[c.productoId] ?? 0) + c.cantidad
+          }
+        }
+        for (const [pidStr, cant] of Object.entries(aDescontar)) {
+          const pid = Number(pidStr)
           const rows = await prisma.$queryRaw`
-            UPDATE "Producto" SET "stockActual" = "stockActual" - ${v.cantidad}
-            WHERE id = ${v.productoId} AND "stockActual" >= ${v.cantidad}
+            UPDATE "Producto" SET "stockActual" = "stockActual" - ${cant}
+            WHERE id = ${pid} AND "stockActual" >= ${cant}
             RETURNING id, "stockActual"
           `
           if (!rows || rows.length === 0) {
-            // M10: si llega aquí es que la fila se movió entre pre-flight check y este UPDATE
-            // (otra venta paralela quemó el inventario). Marcar AuditCaja para investigar.
-            console.error(`[POS] STOCK DRIFT producto ${v.productoId} - venta facturada SIN deducción. Factura ${factura.noFactura}`)
+            console.error(`[POS] STOCK DRIFT producto ${pid} - venta facturada SIN deducción. Factura ${factura.noFactura}`)
             await prisma.auditCaja.create({ data: {
               tipo: 'stock_drift', empleadoId: req.user?.sub ?? null,
               facturaId: factura.id,
-              detalle: `Stock drift productoId=${v.productoId} cantidad=${v.cantidad} — investigar reconciliación.`,
+              detalle: `Stock drift productoId=${pid} cantidad=${cant} (post-bundle expansion) — investigar reconciliación.`,
               ip: req.ip, ua: (req.headers['user-agent'] ?? '').slice(0, 200),
             }}).catch(() => {})
             continue
           }
-          await prisma.movimientoInventario.create({ data: { productoId: v.productoId, tipo: 'Salida', cantidad: v.cantidad } })
+          await prisma.movimientoInventario.create({ data: { productoId: pid, tipo: 'Salida', cantidad: cant } })
         }
       } catch (e) { console.error('[POS STOCK]', e.message) }
     }
@@ -7917,6 +8065,46 @@ async function recordarRotacionBackupCodes() {
 }
 cron.schedule('30 4 * * *', recordarRotacionBackupCodes, { timezone: 'America/Santo_Domingo' })
 
+// ─── Expirar reservas de stock de OTs estancadas (TTL 7 días) ────────────────
+// Cada 30 min recorre ReservaInventario.ordenId con expiraEn < NOW. Si la OT
+// asociada sigue 'Pendiente', libera la reserva (marca liberada=true). Si la OT
+// avanzó a EnProceso/Cerrada/Cancelada, el flujo de estado ya las manejó —
+// solo liberamos las verdaderamente abandonadas.
+async function expirarReservasOTPendientes() {
+  const t0 = Date.now()
+  try {
+    const expiradas = await prisma.reservaInventario.findMany({
+      where: {
+        ordenId:  { not: null },
+        liberada: false,
+        expiraEn: { lt: new Date() },
+      },
+      include: { orden: { select: { id: true, noOT: true, estado: true } } },
+    })
+    let liberadas = 0
+    for (const r of expiradas) {
+      // Solo libera reservas de OTs aún Pendientes (sin movimiento).
+      if (r.orden?.estado === 'Pendiente') {
+        await prisma.reservaInventario.update({
+          where: { id: r.id },
+          data:  { liberada: true, motivo: `${r.motivo ?? ''} · TTL expirado ${new Date().toISOString().slice(0,10)}`.trim() },
+        }).catch(() => {})
+        liberadas++
+      }
+    }
+    if (liberadas > 0) {
+      console.log(`[OT TTL] ${liberadas}/${expiradas.length} reservas liberadas en ${Date.now() - t0}ms.`)
+      await prisma.auditCaja.create({ data: {
+        tipo: 'ot_reservas_ttl',
+        detalle: `${liberadas} reservas liberadas por TTL 7d sobre OTs en Pendiente.`,
+      }}).catch(() => {})
+    }
+  } catch (e) {
+    console.error('[OT TTL]', e.message)
+  }
+}
+cron.schedule('*/30 * * * *', expirarReservasOTPendientes, { timezone: 'America/Santo_Domingo' })
+
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
@@ -8088,6 +8276,32 @@ async function ensureSchemaColumns() {
     // Plan.sku — auto-secuenciador (PLN-000001 por defecto)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Plan" ADD COLUMN IF NOT EXISTS "sku" TEXT`)
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "Plan_sku_key" ON "Plan"("sku") WHERE "sku" IS NOT NULL`)
+    // Reservas vinculadas a OrdenTrabajo (no solo cotizaciones)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "ReservaInventario" ADD COLUMN IF NOT EXISTS "ordenId" TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ReservaInventario_ordenId_idx" ON "ReservaInventario"("ordenId")`)
+    try {
+      await prisma.$executeRawUnsafe(`DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'ReservaInventario_ordenId_fkey') THEN
+          ALTER TABLE "ReservaInventario" ADD CONSTRAINT "ReservaInventario_ordenId_fkey"
+            FOREIGN KEY ("ordenId") REFERENCES "OrdenTrabajo"(id) ON DELETE SET NULL;
+        END IF;
+      END $$`)
+    } catch {}
+    // BOM (Bill of Materials) — ItemCatalogo bundles + componentes
+    await prisma.$executeRawUnsafe(`ALTER TABLE "ItemCatalogo" ADD COLUMN IF NOT EXISTS "esBundle" BOOLEAN NOT NULL DEFAULT false`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ItemCatalogo_esBundle_idx" ON "ItemCatalogo"("esBundle")`)
+    await prisma.$executeRawUnsafe(`
+      CREATE TABLE IF NOT EXISTS "ItemCatalogoComponente" (
+        "id" SERIAL PRIMARY KEY,
+        "itemCatalogoId" TEXT NOT NULL REFERENCES "ItemCatalogo"(id) ON DELETE CASCADE,
+        "productoId" INTEGER NOT NULL REFERENCES "Producto"(id) ON DELETE RESTRICT,
+        "cantidad" INTEGER NOT NULL DEFAULT 1,
+        "createdAt" TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `)
+    await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ItemCatalogoComponente_itemCatalogoId_productoId_key" ON "ItemCatalogoComponente"("itemCatalogoId","productoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ItemCatalogoComponente_itemCatalogoId_idx" ON "ItemCatalogoComponente"("itemCatalogoId")`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ItemCatalogoComponente_productoId_idx" ON "ItemCatalogoComponente"("productoId")`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pagos"               JSONB`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "etapaPipeline"       TEXT NOT NULL DEFAULT 'Borrador'`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_etapaPipeline_idx" ON "Factura"("etapaPipeline")`)

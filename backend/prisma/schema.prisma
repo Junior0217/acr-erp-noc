@@ -227,23 +227,23 @@ model Categoria {
 }
 
 model Producto {
-  id               Int                    @id @default(autoincrement())
-  sku              String                 @unique
+  id               Int                      @id @default(autoincrement())
+  sku              String                   @unique
   nombre           String
   // Descripción rica (admite Markdown ligero — se renderiza en POS detail + PDF).
   descripcion      String?
   // URL de imagen (Supabase Storage). Si presente, sustituye el ícono genérico en el POS.
   imagenUrl        String?
-  precio           Decimal                @db.Decimal(12, 2)
+  precio           Decimal                  @db.Decimal(12, 2)
   // Costo promedio ponderado: se actualiza en cada entrada con
   // (stockActual*costoPromedio + entrada*costoNuevo) / (stockActual+entrada).
-  costoPromedio    Decimal                @default(0) @db.Decimal(12, 2)
-  stockActual      Int                    @default(0)
-  stockMinimo      Int                    @default(5)
+  costoPromedio    Decimal                  @default(0) @db.Decimal(12, 2)
+  stockActual      Int                      @default(0)
+  stockMinimo      Int                      @default(5)
   categoriaId      Int
-  tipoItem         TipoItem               @default(ARTICULO)
-  esCanibalizado   Boolean                @default(false)
-  categoria        Categoria              @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
+  tipoItem         TipoItem                 @default(ARTICULO)
+  esCanibalizado   Boolean                  @default(false)
+  categoria        Categoria                @relation(fields: [categoriaId], references: [id], onDelete: Restrict)
   movimientos      MovimientoInventario[]
   plantillaEquipos PlantillaEquipo[]
   detallesOrden    DetalleOrden[]
@@ -254,9 +254,10 @@ model Producto {
   prestamos        EquipoPrestamo[]
   itemsCatalogo    ItemCatalogo[] // ItemCatalogos que apuntan a este Producto físico
   series           ProductoSerial[]
-  bundlesPadre     ProductoBundle[]       @relation("BundlePadre")
-  bundlesHijo      ProductoBundle[]       @relation("BundleHijo")
+  bundlesPadre     ProductoBundle[]         @relation("BundlePadre")
+  bundlesHijo      ProductoBundle[]         @relation("BundleHijo")
   reservas         ReservaInventario[]
+  componentesDe    ItemCatalogoComponente[]
 
   @@index([sku])
   @@index([categoriaId])
@@ -543,11 +544,11 @@ model Prospecto {
 // ─── Ventas & Facturación ─────────────────────────────────────────────────────
 
 model ItemCatalogo {
-  id          String              @id @default(uuid())
+  id          String                   @id @default(uuid())
   // Código corto autogenerado (SRV-0001, ART-0001, REC-0001). Derivado del
   // tipo + nextval de secuencia. Visible en POS y PDF como identificador
   // humano-friendly cuando el item NO está vinculado a un Producto físico (SKU).
-  codigo      String?             @unique
+  codigo      String?                  @unique
   nombre      String
   descripcion String?
   // URL de imagen (Supabase Storage). Si está atado a un Producto físico,
@@ -555,25 +556,30 @@ model ItemCatalogo {
   imagenUrl   String?
   tipo        TipoFacturacion
   categoria   TipoServicio
-  precio      Decimal             @db.Decimal(12, 2)
-  costo       Decimal             @default(0) @db.Decimal(12, 2)
+  precio      Decimal                  @db.Decimal(12, 2)
+  costo       Decimal                  @default(0) @db.Decimal(12, 2)
   // stock manual (legacy). Si productoId está seteado, el stock real se lee
   // del Producto (sincronización: el catálogo refleja el inventario físico).
   stock       Int?
   // Vínculo opcional con Producto físico. Cuando existe, ItemCatalogo es la
   // "vitrina comercial" y Producto es la "fuente fiscal" de stock.
   productoId  Int?
-  producto    Producto?           @relation(fields: [productoId], references: [id], onDelete: SetNull)
-  activo      Boolean             @default(true)
-  tipoItem    TipoItem            @default(SERVICIO)
+  producto    Producto?                @relation(fields: [productoId], references: [id], onDelete: SetNull)
+  activo      Boolean                  @default(true)
+  tipoItem    TipoItem                 @default(SERVICIO)
+  // Si el item es bundle (kit), `esBundle=true` activa la receta. Al facturar,
+  // los descuentos de stock ocurren sobre cada componente, no sobre `productoId`.
+  esBundle    Boolean                  @default(false)
   lineas      LineaOrdenTrabajo[]
-  createdAt   DateTime            @default(now())
-  updatedAt   DateTime            @updatedAt
+  componentes ItemCatalogoComponente[]
+  createdAt   DateTime                 @default(now())
+  updatedAt   DateTime                 @updatedAt
 
   @@index([tipo])
   @@index([categoria])
   @@index([activo])
   @@index([tipoItem])
+  @@index([esBundle])
   @@index([productoId])
 }
 
@@ -605,6 +611,7 @@ model OrdenTrabajo {
   activos             ActivoCliente[]
   fotos               OrdenFoto[]
   timeline            ActivoTimeline[]
+  reservas            ReservaInventario[]
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
@@ -1035,20 +1042,41 @@ model ProductoSerial {
 
 // ─── Reserva de stock al cotizar (TTL 72h por default) ───────────────────────
 model ReservaInventario {
-  id         Int      @id @default(autoincrement())
+  id         Int           @id @default(autoincrement())
   productoId Int
   facturaId  String? // cotización asociada (opcional)
+  ordenId    String? // OT que generó la reserva (opcional)
   cantidad   Int
   expiraEn   DateTime
-  liberada   Boolean  @default(false)
+  liberada   Boolean       @default(false)
   motivo     String?
-  producto   Producto @relation(fields: [productoId], references: [id], onDelete: Cascade)
-  createdAt  DateTime @default(now())
+  producto   Producto      @relation(fields: [productoId], references: [id], onDelete: Cascade)
+  orden      OrdenTrabajo? @relation(fields: [ordenId], references: [id], onDelete: SetNull)
+  createdAt  DateTime      @default(now())
 
   @@index([productoId])
   @@index([facturaId])
+  @@index([ordenId])
   @@index([expiraEn])
   @@index([liberada])
+}
+
+// ─── BOM (Bill of Materials) — receta de bundles ─────────────────────────────
+// Un ItemCatalogo marcado como bundle define N filas aquí, cada una apuntando
+// a un Producto físico con la cantidad que se descuenta cuando se vende el item.
+// Ej: "Kit CCTV 4 cámaras" → [{cámara, qty=4}, {DVR, qty=1}, {cable 50m, qty=1}]
+model ItemCatalogoComponente {
+  id             Int          @id @default(autoincrement())
+  itemCatalogoId String
+  productoId     Int
+  cantidad       Int          @default(1)
+  itemCatalogo   ItemCatalogo @relation(fields: [itemCatalogoId], references: [id], onDelete: Cascade)
+  producto       Producto     @relation(fields: [productoId], references: [id], onDelete: Restrict)
+  createdAt      DateTime     @default(now())
+
+  @@unique([itemCatalogoId, productoId])
+  @@index([itemCatalogoId])
+  @@index([productoId])
 }
 
 // ─── Bundles para cross-sell en POS ──────────────────────────────────────────
