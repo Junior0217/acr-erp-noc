@@ -6856,6 +6856,83 @@ async function billarMoras() {
 
 cron.schedule('10 0 * * *', billarMoras, { timezone: 'America/Santo_Domingo' })
 
+// ─── Pre-render asíncrono de PDFs (latencia cero) ────────────────────────────
+// Cada 5 min escanea facturas/cotizaciones de los últimos 7 días con pdfUrl IS NULL
+// y las renderiza en background. Cuando el usuario clickea "Ver PDF" después,
+// el cache hit es 100% — Puppeteer ni se invoca, redirect directo a Supabase.
+//
+// Guardrails:
+//   - Lock single-flight (_pdfCronRunning) evita overlap si el render se demora.
+//   - Cap por corrida (15 documentos máx) — evita saturar Render Free Tier.
+//   - Concurrency 2 dentro de la corrida — el page pool tiene 2 páginas idle.
+//   - Skip si SUPABASE_STORAGE no configurado (sin destino válido).
+let _pdfCronRunning = false
+const PDF_PRERENDER_BATCH    = 15
+const PDF_PRERENDER_CONCURRENCY = 2
+
+async function prerenderPdfsBatch() {
+  if (_pdfCronRunning) return
+  if (!supabase)       return
+  _pdfCronRunning = true
+  const t0 = Date.now()
+  let ok = 0, fail = 0
+  try {
+    const desde = new Date(Date.now() - 7 * 86_400_000)
+    const candidatos = await prisma.factura.findMany({
+      where:  { pdfUrl: null, deletedAt: null, fechaEmision: { gte: desde } },
+      select: { id: true, esCotizacion: true, noFactura: true },
+      orderBy:{ fechaEmision: 'desc' },
+      take:   PDF_PRERENDER_BATCH,
+    })
+    if (candidatos.length === 0) return
+
+    async function renderOne(c) {
+      try {
+        const f = await prisma.factura.findUnique({
+          where:   { id: c.id },
+          include: {
+            cliente: true,
+            lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
+          },
+        })
+        if (!f || f.deletedAt) return
+        const data    = await buildPdfData(f)
+        const tipo    = f.esCotizacion ? 'cotizacion' : 'factura'
+        const html    = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
+        const pdfBuf  = await generarPdfDocumento(html)
+        const url     = await subirPdfAlStorage(pdfBuf, f)
+        if (url) {
+          await prisma.factura.update({ where: { id: f.id }, data: { pdfUrl: url } })
+          ok++
+        } else fail++
+      } catch (e) {
+        console.error(`[PDF CRON] ${c.noFactura}:`, e.message)
+        fail++
+      }
+    }
+
+    // Worker pool simple: N workers tomando del cursor.
+    let cursor = 0
+    await Promise.all(
+      Array.from({ length: Math.min(PDF_PRERENDER_CONCURRENCY, candidatos.length) }, async () => {
+        while (cursor < candidatos.length) {
+          const idx = cursor++
+          await renderOne(candidatos[idx])
+        }
+      })
+    )
+
+    console.log(`[PDF CRON] batch ${candidatos.length} docs en ${Date.now() - t0}ms · ok=${ok} fail=${fail}`)
+  } catch (e) {
+    console.error('[PDF CRON]', e.message)
+  } finally {
+    _pdfCronRunning = false
+  }
+}
+
+// */5 * * * *  →  cada 5 min en TZ de RD.
+cron.schedule('*/5 * * * *', prerenderPdfsBatch, { timezone: 'America/Santo_Domingo' })
+
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
@@ -7190,7 +7267,14 @@ async function startServer() {
   // empieza a aceptar requests mientras el browser y 2 páginas idle se inicializan.
   // Cold-start primer PDF baja de ~3s a ~50ms si el warmup termina antes.
   const { warmupPages } = require('./services/pdf-generator')
-  warmupPages().catch(err => console.error('[PDF WARMUP]', err.message))
+  warmupPages()
+    .then(() => {
+      // Lanza el primer batch de pre-render 30s después del warmup. Sin esperar
+      // al primer tick del cron de 5min — cubre el caso "deploy reciente y el
+      // user crea facturas inmediatamente que esperan PDF".
+      setTimeout(() => prerenderPdfsBatch().catch(() => {}), 30_000)
+    })
+    .catch(err => console.error('[PDF WARMUP]', err.message))
 
   // Pre-generate RSA challenges so first login after cold start never fails
   await warmChallengeStore(3)

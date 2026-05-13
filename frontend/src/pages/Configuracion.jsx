@@ -547,7 +547,25 @@ function PanelMiPerfil() {
   const [saving2FA,  setSaving2FA]  = useState(false)
   // Backup codes en plano — se muestran UNA VEZ tras enable. null = no mostrar.
   const [backupCodes, setBackupCodes] = useState(null)
+  const [recoveryPin, setRecoveryPin] = useState('')
+  const [regenerandoBackup, setRegenerandoBackup] = useState(false)
   const user = me
+
+  async function regenerarBackupCodes() {
+    if (recoveryPin.length !== 6) { toast.error('PIN de 6 dígitos requerido.'); return }
+    if (!window.confirm('¿Regenerar códigos? Los anteriores quedarán inválidos al instante.')) return
+    setRegenerandoBackup(true)
+    try {
+      const r = await apiFetch('/api/auth/2fa/backup-codes/regenerate', { method: 'POST', body: JSON.stringify({ totp: recoveryPin }) })
+      const j = await r.json().catch(() => ({}))
+      if (r.ok && j.backupCodes) {
+        toast.success('Nuevos códigos generados.')
+        setBackupCodes(j.backupCodes)
+        setRecoveryPin('')
+      } else toast.error(j.error ?? 'Error al regenerar.')
+    } catch { toast.error('Error de conexión.') }
+    finally { setRegenerandoBackup(false) }
+  }
   const [loading2FA, setLoading2FA] = useState(false)
 
   useEffect(() => {
@@ -693,22 +711,45 @@ function PanelMiPerfil() {
             <Loader2 size={13} className="animate-spin" />Cargando...
           </div>
         ) : twoFAEnabled ? (
-          <div className="rounded-xl border border-emerald-600/30 bg-emerald-600/5 p-4 space-y-3 max-w-sm">
+          <div className="rounded-xl border border-emerald-600/30 bg-emerald-600/5 p-4 space-y-4 max-w-sm">
             <div className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse flex-shrink-0" />
               <p className="text-sm font-semibold text-emerald-400">2FA Activo</p>
             </div>
-            <p className="text-xs text-slate-500">Para desactivar, confirma con tu app autenticadora.</p>
-            <div className="flex gap-2">
-              <input type="text" inputMode="numeric" maxLength={6}
-                value={totpPin} onChange={e => setTotpPin(e.target.value.replace(/\D/g,'').slice(0,6))}
-                placeholder="000000"
-                className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-center text-lg tracking-[0.4em] text-slate-100 placeholder-slate-700 focus:outline-none focus:border-red-500/50 transition-colors font-mono" />
-              <button onClick={disable2FA} disabled={saving2FA || totpPin.length !== 6}
-                className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-600/30 text-sm font-medium transition-colors disabled:opacity-40">
-                {saving2FA ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />}
-                Desactivar
-              </button>
+
+            {/* Recuperar / Regenerar códigos de respaldo */}
+            <div className="bg-slate-900 border border-slate-700 rounded-lg p-3 space-y-2">
+              <p className="text-[11px] font-semibold text-slate-300 uppercase tracking-wider">Códigos de respaldo</p>
+              <p className="text-[10px] text-slate-500 leading-snug">
+                Si perdiste los códigos originales o usaste algunos, puedes generar un nuevo set
+                de 8 códigos. <strong className="text-amber-400">Esto invalida los anteriores.</strong>
+              </p>
+              <div className="flex gap-2">
+                <input type="text" inputMode="numeric" maxLength={6}
+                  value={recoveryPin} onChange={e => setRecoveryPin(e.target.value.replace(/\D/g,'').slice(0,6))}
+                  placeholder="PIN actual"
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-center text-sm tracking-[0.3em] text-slate-100 placeholder-slate-600 focus:outline-none focus:border-amber-500/50 transition-colors font-mono" />
+                <button onClick={regenerarBackupCodes} disabled={regenerandoBackup || recoveryPin.length !== 6}
+                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600/15 hover:bg-amber-600/25 text-amber-300 border border-amber-600/30 text-xs font-semibold transition-colors disabled:opacity-40">
+                  {regenerandoBackup ? <Loader2 size={12} className="animate-spin" /> : <ShieldCheck size={12} />}
+                  Regenerar
+                </button>
+              </div>
+            </div>
+
+            <div className="border-t border-slate-700/50 pt-3">
+              <p className="text-xs text-slate-500 mb-2">Para desactivar 2FA, confirma con tu app autenticadora.</p>
+              <div className="flex gap-2">
+                <input type="text" inputMode="numeric" maxLength={6}
+                  value={totpPin} onChange={e => setTotpPin(e.target.value.replace(/\D/g,'').slice(0,6))}
+                  placeholder="000000"
+                  className="flex-1 bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-center text-lg tracking-[0.4em] text-slate-100 placeholder-slate-700 focus:outline-none focus:border-red-500/50 transition-colors font-mono" />
+                <button onClick={disable2FA} disabled={saving2FA || totpPin.length !== 6}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-red-600/15 hover:bg-red-600/25 text-red-400 border border-red-600/30 text-sm font-medium transition-colors disabled:opacity-40">
+                  {saving2FA ? <Loader2 size={13} className="animate-spin" /> : <Ban size={13} />}
+                  Desactivar
+                </button>
+              </div>
             </div>
           </div>
         ) : qrCode ? (
