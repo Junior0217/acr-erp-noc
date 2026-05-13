@@ -28,15 +28,24 @@ export function CartProvider({ children }) {
   const posItemsCount = posCart.reduce((s, l) => s + (l.cantidad ?? 0), 0)
 
   function posAddItem(item, qty = 1) {
+    // Discrimina la fuente:
+    //   item.id (UUID)        -> venta desde ItemCatalogo
+    //   item.productoId (Int) -> venta directa de Producto físico (cross-sell, scanner)
+    // Cada modo se identifica por línea via itemCatalogoId XOR productoId
+    // (el backend valida exactly-one-of con Zod).
+    const isProducto = !item.id && item.productoId != null
     setPosCart(prev => {
-      const idx = prev.findIndex(l => l.itemCatalogoId === item.id)
-      if (idx >= 0) {
+      const matchIdx = isProducto
+        ? prev.findIndex(l => l.productoId === item.productoId)
+        : prev.findIndex(l => l.itemCatalogoId === item.id)
+      if (matchIdx >= 0) {
         const next = [...prev]
-        next[idx] = { ...next[idx], cantidad: next[idx].cantidad + qty }
+        next[matchIdx] = { ...next[matchIdx], cantidad: next[matchIdx].cantidad + qty }
         return next
       }
       return [...prev, {
-        itemCatalogoId: item.id,
+        itemCatalogoId: isProducto ? null : item.id,
+        productoId:     isProducto ? item.productoId : null,
         nombre:         item.nombre,
         cantidad:       qty,
         precioUnitario: Number(item.precio),

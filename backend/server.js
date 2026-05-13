@@ -712,8 +712,15 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
   const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : IDLE_TTL_MS
   const jwtTTL    = rememberMe ? '30d' : '30m'
   const expiresAt = new Date(Date.now() + ttl)
-  // Single-session enforcement: revoke all prior sessions of this user
-  return prisma.sessionToken.deleteMany({ where: { empleadoId: empleado.id } }).then(() =>
+  // Single-session enforcement: revoke all prior sessions de este empleado.
+  // Excepción: el Owner (Propietario) puede tener varias sesiones activas
+  // (laptop + tablet + móvil) sin invalidarse entre sí. Detectamos por nombre
+  // de rol; soporta variantes "Propietario" / "Owner".
+  const esOwner = (empleado.roles ?? []).some(r => /^(propietario|owner)$/i.test(r.nombre ?? ''))
+  const revokePromise = esOwner
+    ? Promise.resolve()  // skip wipe
+    : prisma.sessionToken.deleteMany({ where: { empleadoId: empleado.id } })
+  return revokePromise.then(() =>
   prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip } })).then(() => {
     const permisos = [...new Set([
       ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
@@ -2963,6 +2970,11 @@ app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_co
     if (cached && !cached.esCotizacion) return res.status(400).json({ error: 'Este documento es una factura, usa /facturas/:id/pdf.' })
     if (cached?.pdfUrl && req.query.fresh !== '1') {
       auditReq('pdf:cotizacion:cache_hit', req, { id: req.params.id, noFactura: cached.noFactura })
+      // Si el cliente pide JSON (apiFetch desde SPA), devuelve la URL Supabase
+      // y el frontend hace fetch directo sin credenciales -> evita CORS por
+      // el redirect 302 cuando el browser propaga credentials: include.
+      const wantsJson = req.query.json === '1' || (req.headers.accept ?? '').includes('application/json')
+      if (wantsJson) return res.json({ url: cached.pdfUrl, cached: true })
       return res.redirect(302, cached.pdfUrl)
     }
 
@@ -3005,6 +3017,8 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
     if (cached.esCotizacion)         return res.status(400).json({ error: 'Este documento es cotización, usa /cotizaciones/:id/pdf.' })
     if (cached.pdfUrl && req.query.fresh !== '1') {
       auditReq('pdf:factura:cache_hit', req, { id: req.params.id, noFactura: cached.noFactura, ncf: cached.ncf })
+      const wantsJson = req.query.json === '1' || (req.headers.accept ?? '').includes('application/json')
+      if (wantsJson) return res.json({ url: cached.pdfUrl, cached: true })
       return res.redirect(302, cached.pdfUrl)
     }
 
@@ -5800,13 +5814,22 @@ app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('
 
 // ─── POS — Venta directa desde ItemCatalogo ───────────────────────────────────
 
+// Línea POS acepta DOS modos:
+//   1) itemCatalogoId (UUID): venta desde el catálogo comercial (ItemCatalogo).
+//   2) productoId    (Int) : venta DIRECTA de inventario físico (Producto) — usado
+//      por el banner de cross-sell que sugiere productos no atados a un item.
+// Exactly-one-of validado abajo con .refine.
 const lineaPOSCatalogoSchema = z.object({
-  itemCatalogoId:      z.string().uuid(),
+  itemCatalogoId:      z.string().uuid().optional(),
+  productoId:          z.number().int().positive().optional(),
   cantidad:            z.number().int().positive(),
   precioUnitario:      z.number().positive().optional(),
   descuentoPorcentaje: z.number().min(0).max(100).optional().default(0),
   descuentoMonto:      z.number().min(0).optional().default(0),
-})
+}).refine(
+  l => (l.itemCatalogoId && !l.productoId) || (!l.itemCatalogoId && l.productoId),
+  { message: 'Cada línea debe traer itemCatalogoId (UUID) o productoId (Int), no ambos.' }
+)
 
 const pagoMetodoSchema = z.object({
   metodo: z.enum(['Efectivo', 'Transferencia', 'Tarjeta', 'Cheque', 'Otro']),
@@ -5889,21 +5912,40 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         })
       }
 
-      // 2. Load catalog items
-      const ids = [...new Set(lineas.map(l => l.itemCatalogoId))]
-      const items = await tx.itemCatalogo.findMany({ where: { id: { in: ids } }, select: { id: true, nombre: true, precio: true, tipoItem: true, stock: true } })
+      // 2. Carga ItemCatalogos + Productos físicos según lo que traiga cada línea.
+      const itemIds = [...new Set(lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))]
+      const prodIds = [...new Set(lineas.filter(l => l.productoId).map(l => l.productoId))]
+      const [items, prods] = await Promise.all([
+        itemIds.length ? tx.itemCatalogo.findMany({ where: { id: { in: itemIds } }, select: { id: true, nombre: true, precio: true, tipoItem: true, stock: true, productoId: true } }) : [],
+        prodIds.length ? tx.producto.findMany({ where: { id: { in: prodIds } }, select: { id: true, nombre: true, precio: true, stockActual: true } }) : [],
+      ])
       const iMap = Object.fromEntries(items.map(i => [i.id, i]))
+      const pMap = Object.fromEntries(prods.map(p => [p.id, p]))
       for (const l of lineas) {
-        if (!iMap[l.itemCatalogoId]) throw Object.assign(new Error(`Item ${l.itemCatalogoId} no encontrado.`), { status: 404 })
+        if (l.itemCatalogoId && !iMap[l.itemCatalogoId]) throw Object.assign(new Error(`Item catálogo ${l.itemCatalogoId} no encontrado.`), { status: 404 })
+        if (l.productoId     && !pMap[l.productoId])     throw Object.assign(new Error(`Producto ${l.productoId} no encontrado.`), { status: 404 })
       }
 
       // 3. Build enriched lines + totals
       const lineasEnriquecidas = lineas.map(l => {
+        if (l.productoId) {
+          const p = pMap[l.productoId]
+          const pu  = l.precioUnitario ?? Number(p.precio)
+          return {
+            descripcion: p.nombre, cantidad: l.cantidad, precioUnitario: pu,
+            productoId:  p.id,
+            descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
+            descuentoMonto:      l.descuentoMonto ?? 0,
+            _isProducto: true,  // marca para deducción de stock más abajo
+          }
+        }
         const item = iMap[l.itemCatalogoId]
-        const pu  = l.precioUnitario ?? Number(item.precio)
-        const pct = l.descuentoPorcentaje ?? 0
-        const mon = l.descuentoMonto ?? 0
-        return { descripcion: item.nombre, cantidad: l.cantidad, precioUnitario: pu, descuentoPorcentaje: pct, descuentoMonto: mon }
+        const pu   = l.precioUnitario ?? Number(item.precio)
+        return {
+          descripcion: item.nombre, cantidad: l.cantidad, precioUnitario: pu,
+          descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
+          descuentoMonto:      l.descuentoMonto ?? 0,
+        }
       })
       const subtotalBruto = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100
       const globalDesc    = descuentoGlobalPct > 0 ? Math.round(subtotalBruto * (descuentoGlobalPct / 100) * 100) / 100 : Math.min(descuentoGlobalMonto, subtotalBruto)
@@ -5956,7 +5998,8 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
               ? `[WALK-IN] ${nombreTemporal} — ${lineas.length} línea(s)`
               : `Factura POS (catálogo) — ${lineas.length} línea(s)`,
           fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
-          lineas: { createMany: { data: lineasEnriquecidas } },
+          // Strip marker interno (_isProducto) antes de Prisma. productoId pasa intacto al schema.
+          lineas: { createMany: { data: lineasEnriquecidas.map(({ _isProducto, ...rest }) => rest) } },
         },
         include: {
           cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
@@ -5972,14 +6015,21 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
     // efectivo será stockActual - SUM(reservas activas) → evita doble venta.
     if (esCotizacion) {
       try {
-        const ids = [...new Set(lineas.map(l => l.itemCatalogoId))]
-        const itemsLink = await prisma.itemCatalogo.findMany({
-          where: { id: { in: ids } }, select: { id: true, productoId: true },
-        })
-        const linkMap = Object.fromEntries(itemsLink.map(i => [i.id, i.productoId]))
+        // ItemCatalogo vinculados a producto físico:
+        const catIds = [...new Set(lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))]
+        let linkMap = {}
+        if (catIds.length > 0) {
+          const itemsLink = await prisma.itemCatalogo.findMany({
+            where: { id: { in: catIds } }, select: { id: true, productoId: true },
+          })
+          linkMap = Object.fromEntries(itemsLink.map(i => [i.id, i.productoId]))
+        }
         const exp = new Date(Date.now() + 72 * 3600_000)
         const reservas = lineas
-          .map(l => ({ productoId: linkMap[l.itemCatalogoId], cantidad: l.cantidad }))
+          .map(l => ({
+            productoId: l.productoId ?? linkMap[l.itemCatalogoId] ?? null,
+            cantidad:   l.cantidad,
+          }))
           .filter(r => r.productoId)
         if (reservas.length > 0) {
           await prisma.reservaInventario.createMany({
@@ -5991,6 +6041,26 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
           })
         }
       } catch (e) { console.error('[RESERVA]', e.message) }
+    }
+
+    // Deducción de stock + Kardex para líneas con productoId real (ventas directas
+    // de inventario, no cotizaciones). Itemcatalogo→producto se maneja aparte si aplica.
+    if (!esCotizacion) {
+      try {
+        const ventasProducto = lineas.filter(l => l.productoId)
+        for (const v of ventasProducto) {
+          const rows = await prisma.$queryRaw`
+            UPDATE "Producto" SET "stockActual" = "stockActual" - ${v.cantidad}
+            WHERE id = ${v.productoId} AND "stockActual" >= ${v.cantidad}
+            RETURNING id, "stockActual"
+          `
+          if (!rows || rows.length === 0) {
+            console.warn(`[POS] stock insuficiente producto ${v.productoId} (cantidad ${v.cantidad}); venta facturada igual`)
+            continue
+          }
+          await prisma.movimientoInventario.create({ data: { productoId: v.productoId, tipo: 'Salida', cantidad: v.cantidad } })
+        }
+      } catch (e) { console.error('[POS STOCK]', e.message) }
     }
 
     // AuditCaja: log venta concretada (no cotización) para fraud trail.

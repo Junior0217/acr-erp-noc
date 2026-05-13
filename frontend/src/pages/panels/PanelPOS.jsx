@@ -440,9 +440,13 @@ function CrossSellBanner({ cart, onAdd }) {
               {s.motivo && <p className="text-[9px] text-slate-500 italic mt-0.5 line-clamp-1">{s.motivo}</p>}
               <button
                 onClick={() => onAdd({
-                  id: `producto-${s.id}`, // marcador (no hay itemCatalogo)
+                  // No es un ItemCatalogo: usa productoId directo. CartContext
+                  // marca esta línea como _productoDirecto para que el payload
+                  // al backend incluya productoId (Int) en lugar de itemCatalogoId.
+                  id: null,
+                  productoId: s.id,
                   nombre: s.nombre, precio: s.precio, imagenUrl: s.imagenUrl,
-                  sku: s.sku, _crossSellProductoId: s.id,
+                  sku: s.sku,
                 })}
                 disabled={s.stockActual <= 0}
                 className="w-full mt-1.5 px-2 py-1 rounded text-[10px] font-bold bg-blue-600 hover:bg-blue-500 text-white disabled:opacity-40">
@@ -572,7 +576,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         ...(pinSupervisor ? { pinSupervisor } : {}),
         ...(pagos ? { pagos } : {}),
         lineas: cart.map(l => ({
-          itemCatalogoId:      l.itemCatalogoId,
+          // Backend exige exactly-one-of: itemCatalogoId (UUID) o productoId (Int).
+          ...(l.itemCatalogoId ? { itemCatalogoId: l.itemCatalogoId } : { productoId: l.productoId }),
           cantidad:            l.cantidad,
           precioUnitario:      l.precioUnitario,
           descuentoPorcentaje: l.descuentoPorcentaje ?? 0,

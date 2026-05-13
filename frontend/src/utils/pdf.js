@@ -18,14 +18,39 @@ import { toast } from 'sonner'
  */
 export async function fetchPdfBlob(path, filename = 'documento.pdf', opts = {}) {
   const fetchFn = opts.portal ? portalFetch : apiFetch
-  const r = await fetchFn(path, opts.fetchOpts ?? {})
+  // Pide JSON: si el backend tiene el PDF cacheado en Supabase Storage, devolverá
+  // { url } en lugar de redirect 302. Evita el CORS error que ocurre cuando
+  // credentials:include sigue redirects hacia un origen que devuelve `*`.
+  const sep = path.includes('?') ? '&' : '?'
+  const fetchOpts = {
+    ...(opts.fetchOpts ?? {}),
+    headers: { ...(opts.fetchOpts?.headers ?? {}), Accept: 'application/json' },
+  }
+  const r = await fetchFn(`${path}${sep}json=1`, fetchOpts)
   if (!r.ok) {
     let msg = 'No se pudo generar el PDF.'
     try { const j = await r.json(); if (j?.error) msg = j.error } catch {}
     toast.error(msg)
     return null
   }
-  const blob = await r.blob()
+  // Discriminar respuesta: JSON con URL (cache hit) vs PDF binario (generación fresca).
+  const ct = r.headers.get('content-type') ?? ''
+  let blob
+  if (ct.includes('application/json')) {
+    const j = await r.json().catch(() => null)
+    if (!j?.url) { toast.error('Respuesta inválida del servidor.'); return null }
+    // Fetch directo a Supabase Storage SIN credenciales — los buckets son public:true
+    // y el browser no añade el header Origin con cookies, así no choca con CORS.
+    try {
+      const r2 = await fetch(j.url, { credentials: 'omit', cache: 'no-store' })
+      if (!r2.ok) { toast.error('Storage devolvió ' + r2.status); return null }
+      blob = await r2.blob()
+    } catch (e) {
+      console.error('[pdf:fetch storage]', e); toast.error('Error descargando del Storage.'); return null
+    }
+  } else {
+    blob = await r.blob()
+  }
   if (!blob || blob.size === 0) { toast.error('PDF vacío recibido del servidor.'); return null }
   return { blob, blobUrl: URL.createObjectURL(blob), filename }
 }

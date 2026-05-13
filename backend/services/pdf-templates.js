@@ -54,58 +54,83 @@ function mdToHtml(s) {
 //   - Si tiene **título** o ## título en la primera línea, ese es desc-main.
 //   - Si no hay título, la 1ra línea no-vacía es desc-main; el resto va a sub.
 //   - Si llega `detalle` separado (legacy), pasa entero a desc-sub.
+// Extrae "SKU: XXX" / "SKU XXX" / "SKU - XXX" desde cualquier posición del string
+// y devuelve el SKU + el texto limpio (sin la frase del SKU). Permite al usuario
+// escribir el SKU en cualquier lugar y el template lo renderice en su línea propia.
+function extraerSku(text) {
+  const m = String(text).match(/\s*\bSKU\s*[:#\-]?\s*([A-Z0-9][A-Z0-9_\-]{2,40})\b\.?\s*/i)
+  if (!m) return { texto: text, sku: null }
+  return { texto: (text.slice(0, m.index) + text.slice(m.index + m[0].length)).trim(), sku: m[1] }
+}
+
+// Delimitadores inline reconocidos como separador título/detalles cuando NO hay
+// saltos de línea. Orden importa: el PRIMERO encontrado parte el título.
+const INLINE_SEPS = [' — ', ' – ', ' · ', ' - ', ' | ', ': ']
+
+function splitInlineTituloDetalles(text) {
+  let bestIdx = -1, bestSep = null
+  for (const sep of INLINE_SEPS) {
+    const i = text.indexOf(sep)
+    if (i > 0 && (bestIdx === -1 || i < bestIdx)) { bestIdx = i; bestSep = sep }
+  }
+  if (bestIdx === -1) return { titulo: text, resto: '' }
+  return { titulo: text.slice(0, bestIdx).trim(), resto: text.slice(bestIdx + bestSep.length).trim() }
+}
+
 function parseDescripcionEstructurada(descRaw, detalleRaw) {
-  if (!descRaw && !detalleRaw) return { main: '', sub: '' }
-  if (!descRaw) return { main: escape(detalleRaw), sub: '' }
+  if (!descRaw && !detalleRaw) return { main: '', sub: '', sku: null }
+  if (!descRaw) return { main: escape(detalleRaw), sub: '', sku: null }
 
-  const text = String(descRaw).trim()
+  // 1) Extrae SKU primero — puede venir en cualquier parte del texto.
+  const skuOut = extraerSku(String(descRaw))
+  const text   = skuOut.texto.trim()
+  const skuExtraido = skuOut.sku
+
+  // 2) Modo vertical: hay saltos de línea -> trata cada línea.
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
-  if (lines.length === 0) return { main: '', sub: '' }
-
-  // Detección título explícito: **bold** completo o '# heading'.
   let main = ''
-  let rest = []
-  const first = lines[0]
-  const mBold = first.match(/^\*\*(.+)\*\*\s*$/)
-  const mHead = first.match(/^#{1,6}\s+(.+)$/)
-  if (mBold || mHead) {
-    main = (mBold ? mBold[1] : mHead[1]).trim()
-    rest = lines.slice(1)
-  } else {
-    // Smart mode: si NO hay markdown explícito pero hay múltiples líneas, asume
-    // que la 1ra línea es título y el resto son detalles. Si todas las líneas
-    // empiezan con guion/asterisco/bullet, ahí la 1ra ES un bullet y NO hay título.
-    const allBullets = lines.every(l => /^[-*•·]\s+/.test(l) || /^\d+\.\s+/.test(l))
-    if (allBullets) {
-      // Lista pura sin título — la línea 1 va al sub como primer bullet.
-      main = '' // sin título → main vacío; el caller mostrará solo desc-sub
-      rest = lines
+  let bulletsRaw = []
+  let otrosRaw   = []
+
+  if (lines.length >= 2) {
+    const first = lines[0]
+    const mBold = first.match(/^\*\*(.+)\*\*\s*$/)
+    const mHead = first.match(/^#{1,6}\s+(.+)$/)
+    if (mBold || mHead) { main = (mBold ? mBold[1] : mHead[1]).trim() }
+    else {
+      const allBullets = lines.every(l => /^[-*•·]\s+/.test(l) || /^\d+\.\s+/.test(l))
+      if (!allBullets) main = first
+    }
+    const rest = main ? lines.slice(1) : lines
+    for (const l of rest) {
+      const m = l.match(/^[-*•·]\s+(.+)$/) || l.match(/^\d+\.\s+(.+)$/)
+      if (m) bulletsRaw.push(m[1].trim()); else otrosRaw.push(l)
+    }
+  } else if (lines.length === 1) {
+    // 3) Modo horizontal: el usuario escribió todo de corrido. Detecta el primer
+    // separador inline (` — `, ` - `, ` · `, ` | `, `: `, ` – `) y divide en
+    // título/detalles. Los detalles se aplanan por los mismos separadores.
+    const only = lines[0]
+    const split = splitInlineTituloDetalles(only)
+    if (split.resto) {
+      main = split.titulo
+      bulletsRaw = split.resto
+        .split(/\s+[-·—–|]\s+|\s*,\s+(?=[A-ZÁÉÍÓÚÑa-z])/)
+        .map(s => s.trim()).filter(Boolean)
     } else {
-      main = first
-      rest = lines.slice(1)
+      main = only
     }
   }
 
-  // Detecta bullets en cualquier formato común; el resto cae a "otros".
-  const bullets = []
-  const otros = []
-  for (const l of rest) {
-    const m = l.match(/^[-*•·]\s+(.+)$/) || l.match(/^\d+\.\s+(.+)$/)
-    if (m) bullets.push(m[1].trim())
-    else if (l) otros.push(l)
-  }
-  if (detalleRaw && String(detalleRaw).trim()) otros.unshift(String(detalleRaw).trim())
-
-  // Construye sub: junta otros + bullets con separador ` · ` para densidad vertical.
+  if (detalleRaw && String(detalleRaw).trim()) otrosRaw.unshift(String(detalleRaw).trim())
   const subPieces = []
-  if (otros.length)   subPieces.push(otros.join(' '))
-  if (bullets.length) subPieces.push(bullets.join(' · '))
+  if (otrosRaw.length)   subPieces.push(otrosRaw.join(' '))
+  if (bulletsRaw.length) subPieces.push(bulletsRaw.join(' · '))
 
-  // Si no hay título explícito y main quedó vacío, deja vacío main para que la
-  // celda solo muestre desc-sub (lista pura sin jerarquía).
   return {
     main: main ? mdToHtml(main) : '',
     sub:  subPieces.length ? mdToHtml(subPieces.join(' · ')) : '',
+    sku:  skuExtraido,
   }
 }
 
@@ -484,13 +509,14 @@ function renderDocumento(opts) {
 
   const itemsRows = (items ?? []).map((it, idx) => {
     const importe = Number(it.cantidad) * Number(it.precioUnitario)
-    const { main, sub } = parseDescripcionEstructurada(it.descripcion, it.detalle)
+    const { main, sub, sku: skuParsed } = parseDescripcionEstructurada(it.descripcion, it.detalle)
+    const skuFinal = it.sku ?? skuParsed
     return `<tr>
       <td class="num center">${String(idx + 1).padStart(2, '0')}</td>
       <td>
-        ${main     ? `<div class="desc-main">${main}</div>` : ''}
-        ${sub      ? `<div class="desc-sub">${sub}</div>` : ''}
-        ${it.sku   ? `<div class="sku mono">SKU: ${escape(it.sku)}</div>` : ''}
+        ${main      ? `<div class="desc-main">${main}</div>` : ''}
+        ${sub       ? `<div class="desc-sub">${sub}</div>` : ''}
+        ${skuFinal  ? `<div class="sku mono">SKU: ${escape(skuFinal)}</div>` : ''}
       </td>
       <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
       <td class="right mono">${fmtMoney(it.precioUnitario)}</td>
