@@ -1,11 +1,12 @@
 import { useEffect, useState } from 'react'
 import { toast } from 'sonner'
 import {
-  Building2, FileText, Phone, MapPin, User, Save, Loader2, ShieldCheck, Globe, Image as ImageIcon, AlertTriangle,
+  Building2, FileText, Phone, MapPin, User, Save, Loader2, ShieldCheck, Globe, Image as ImageIcon, AlertTriangle, Hash,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useEmpresa } from '../../contexts/EmpresaContext'
 import { useAuth } from '../../contexts/AuthContext'
+import PanelSecuencias from './PanelSecuencias'
 
 const INPUT  = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500'
 const LABEL  = 'block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1'
@@ -57,6 +58,7 @@ export default function PanelMiEmpresa() {
   const [form, setForm]       = useState(empresa)
   const [busy, setBusy]       = useState(false)
   const [dirty, setDirty]     = useState(false)
+  const [subTab, setSubTab]   = useState('datos')
 
   const isOwner = tienePermiso('sistema:owner')
 
@@ -110,7 +112,23 @@ export default function PanelMiEmpresa() {
   }
 
   return (
-    <form onSubmit={guardar} className="space-y-5 max-w-4xl">
+    <div className="space-y-5 max-w-4xl">
+      {/* Sub-tabs: Datos | Secuencias */}
+      <div className="flex gap-1 bg-slate-800/50 rounded-xl p-1 w-fit border border-slate-700/50">
+        <button type="button" onClick={() => setSubTab('datos')}
+          className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${subTab === 'datos' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'}`}>
+          <Building2 size={14} />Datos de Empresa
+        </button>
+        {isOwner && (
+          <button type="button" onClick={() => setSubTab('secuencias')}
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all ${subTab === 'secuencias' ? 'bg-blue-600 text-white shadow-sm' : 'text-slate-400 hover:text-slate-100'}`}>
+            <Hash size={14} />Secuencias y Nomenclaturas
+          </button>
+        )}
+      </div>
+
+      {subTab === 'secuencias' && isOwner ? <PanelSecuencias /> : (
+      <form onSubmit={guardar} className="space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div className="flex items-center gap-2">
           <Building2 size={20} className="text-blue-400" />
@@ -155,6 +173,8 @@ export default function PanelMiEmpresa() {
           </section>
         )
       })}
-    </form>
+      </form>
+      )}
+    </div>
   )
 }

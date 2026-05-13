@@ -1,31 +1,44 @@
 import { useState, useEffect } from 'react'
-import { X, Loader2, Info } from 'lucide-react'
+import { X, Loader2, Info, Sparkles } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import ImageDropzone from '../ImageDropzone'
+import EditorDescripcion from '../EditorDescripcion'
 
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
 
+// Si el producto trae descripcion legacy (string) la pasa tal cual al editor —
+// éste detecta el formato y ofrece migración. Si es JSON v=1, lo parsea.
+function descParseInicial(raw) {
+  if (!raw) return null
+  if (typeof raw === 'string' && raw.length > 1 && raw[0] === '{') {
+    try { const o = JSON.parse(raw); if (o?.v === 1) return o } catch {}
+  }
+  return raw   // legacy markdown queda en string
+}
+
 export default function FormularioProducto({ producto, onClose, onSaved }) {
   const [form, setForm] = useState({
-    sku:         producto?.sku ?? '',
     nombre:      producto?.nombre ?? '',
     precio:      producto?.precio ?? '',
     categoriaId: producto?.categoriaId ?? '',
     imagenUrl:   producto?.imagenUrl ?? '',
-    descripcion: producto?.descripcion ?? '',
+    descripcion: descParseInicial(producto?.descripcion),
   })
+  const [proximoSku, setProximoSku] = useState(null)
   const [categorias, setCategorias] = useState([])
   const [saving, setSaving]   = useState(false)
   const [error, setError]     = useState('')
 
   useEffect(() => {
-    // apiFetch para hidratar categorías (GET no exige CSRF pero conserva cookie auth).
-    apiFetch('/api/categorias')
-      .then(r => r.json())
-      .then(j => setCategorias(j.data ?? []))
-      .catch(() => {})
-  }, [])
+    apiFetch('/api/categorias').then(r => r.json()).then(j => setCategorias(j.data ?? [])).catch(() => {})
+    if (!producto) {
+      // Preview de SKU auto-generado (no consume secuencia).
+      apiFetch('/api/configuracion/secuencias/preview/producto').then(r => r.ok ? r.json() : null)
+        .then(j => j?.proximo && setProximoSku(j.proximo))
+        .catch(() => {})
+    }
+  }, [producto])
 
   function set(k, v) { setForm(f => ({ ...f, [k]: v })) }
 
@@ -37,9 +50,10 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
         precio:      parseFloat(form.precio) || 0,
         categoriaId: parseInt(form.categoriaId),
         imagenUrl:   form.imagenUrl || null,
-        descripcion: form.descripcion || null,
+        descripcion: form.descripcion ?? null,
       }
-      if (!producto) body.sku = form.sku
+      // sku se omite -> backend autogenera. Si quieres importación legacy con SKU
+      // externo, expón un toggle más adelante.
 
       const path   = producto ? `/api/productos/${producto.id}` : '/api/productos'
       const method = producto ? 'PUT' : 'POST'
@@ -51,7 +65,7 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
     finally { setSaving(false) }
   }
 
-  const canSave = form.nombre.trim() && form.categoriaId && (!producto ? form.sku.trim() : true)
+  const canSave = form.nombre.trim() && form.categoriaId
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -70,18 +84,13 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className={LABEL}>SKU</label>
-              {producto ? (
-                <div className="px-3 py-2 rounded-lg bg-slate-800/50 border border-slate-700 text-sm text-slate-400 font-mono">
-                  {producto.sku}
-                </div>
-              ) : (
-                <input
-                  className={INPUT}
-                  value={form.sku}
-                  onChange={e => set('sku', e.target.value)}
-                  placeholder="Ej. CAM-4MP-HIKVISION"
-                />
-              )}
+              <div className="px-3 py-2 rounded-lg bg-blue-900/15 border border-blue-700/30 text-sm text-blue-300 font-mono flex items-center gap-2">
+                <Sparkles size={12} className="text-blue-400" />
+                {producto ? producto.sku : (proximoSku ?? 'Auto-generado al guardar')}
+              </div>
+              <p className="text-[10px] text-slate-600 mt-1">
+                {producto ? 'SKU inmutable post-creación.' : 'El sistema asigna el siguiente SKU disponible (Configuración → Secuencias).'}
+              </p>
             </div>
             <div>
               <label className={LABEL}>Precio (RD$)</label>
@@ -122,16 +131,17 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
             onChange={u => set('imagenUrl', u)}
             kind="producto"
             label="Imagen del producto"
-            desc="Arrastra una foto · PNG/JPG/WebP/SVG · max 2MB (se comprime a 800px)"
+            desc="Arrastra una foto · PNG/JPG/WebP · max 2MB (se comprime a 800px)"
             height={180}
           />
 
           <div>
-            <label className={LABEL}>Descripción (admite Markdown ligero)</label>
-            <textarea className={INPUT + ' min-h-[80px] font-mono text-xs'} value={form.descripcion}
-              onChange={e => set('descripcion', e.target.value)} rows={3}
-              placeholder={'**Cámara IP 4MP**\n- Visión nocturna IR 30m\n- WDR 120dB\n- POE 802.3af'} maxLength={1000} />
-            <p className="text-[10px] text-slate-600 mt-1">Soporta **negrita**, *cursiva*, - listas. Se ve en POS + PDF.</p>
+            <label className={LABEL}>Descripción Comercial</label>
+            <EditorDescripcion
+              value={form.descripcion}
+              onChange={v => set('descripcion', v)}
+              mostrarImagen={false}
+            />
           </div>
 
           <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-blue-900/20 border border-blue-700/30">

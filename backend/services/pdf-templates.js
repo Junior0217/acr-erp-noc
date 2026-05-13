@@ -77,9 +77,30 @@ function splitInlineTituloDetalles(text) {
   return { titulo: text.slice(0, bestIdx).trim(), resto: text.slice(bestIdx + bestSep.length).trim() }
 }
 
+// Formato estructurado nativo: la UI Producto/Servicio/ItemCatalogo guarda
+// JSON.stringify({v:1, titulo, bullets:[], imagenUrl?}). Si lo detectamos,
+// renderizamos directo sin pasar por el parser Markdown legacy.
+function _tryParseEstructurada(raw) {
+  if (typeof raw !== 'string' || raw.length < 2 || raw[0] !== '{') return null
+  try {
+    const obj = JSON.parse(raw)
+    if (obj && obj.v === 1 && typeof obj.titulo === 'string') return obj
+  } catch {}
+  return null
+}
+
 function parseDescripcionEstructurada(descRaw, detalleRaw) {
   if (!descRaw && !detalleRaw) return { main: '', sub: '', sku: null }
   if (!descRaw) return { main: escape(detalleRaw), sub: '', sku: null }
+
+  // Formato estructurado nativo (UI nueva). Lo procesamos sin tocar el parser legacy.
+  const estructurado = _tryParseEstructurada(descRaw)
+  if (estructurado) {
+    const main = estructurado.titulo ? escape(estructurado.titulo) : ''
+    const bullets = Array.isArray(estructurado.bullets) ? estructurado.bullets : []
+    const sub  = bullets.length ? bullets.map(b => escape(b)).join(' · ') : ''
+    return { main, sub, sku: null }
+  }
 
   // 1) Extrae SKU primero — puede venir en cualquier parte del texto.
   const skuOut = extraerSku(String(descRaw))

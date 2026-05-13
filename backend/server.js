@@ -467,7 +467,9 @@ const asistenciaSchema = z.object({
 });
 
 const clienteBaseShape = z.object({
-  noCliente:           z.string().min(1).max(20),
+  // noCliente ahora es OPCIONAL en POST — el backend autogenera vía generarSiguienteCodigo
+  // si el cliente no lo envía. Para PUT sigue siendo aceptado tal cual está en DB.
+  noCliente:           z.string().min(1).max(20).optional(),
   razonSocial:         z.string().min(2).max(200),
   nombreComercial:     nullStr(100),
   rnc:                 optIdent(20),
@@ -1695,7 +1697,7 @@ app.get('/api/taller', verificarJWT, requerirPermiso('ot:ver'), async (req, res)
 app.post('/api/taller', verificarJWT, requerirPermiso('ot:crear'), async (req, res) => {
   try {
     const data = ticketTallerSchema.parse(req.body)
-    let pin, noTicket, intento = 0
+    let pin, intento = 0
     while (intento < 5) {
       pin = generarPin()
       const colide = await prisma.ticketTaller.findUnique({ where: { codigoPin: pin } })
@@ -1703,11 +1705,13 @@ app.post('/api/taller', verificarJWT, requerirPermiso('ot:crear'), async (req, r
       intento++
     }
     if (intento >= 5) return res.status(503).json({ error: 'No se pudo generar PIN único. Reintenta.' })
-    const count = await prisma.ticketTaller.count()
-    noTicket = `TLR-${String(count + 1).padStart(5, '0')}`
-    const ticket = await prisma.ticketTaller.create({
-      data: { ...data, noTicket, codigoPin: pin },
-      include: { cliente: { select: { razonSocial: true } } },
+    const ticket = await prisma.$transaction(async (tx) => {
+      // Auto-secuenciador centralizado: prefijo + número configurables por owner.
+      const noTicket = await generarSiguienteCodigo('rma', tx)
+      return tx.ticketTaller.create({
+        data: { ...data, noTicket, codigoPin: pin },
+        include: { cliente: { select: { razonSocial: true } } },
+      })
     })
     auditReq('taller:crear', req, { ticketId: ticket.id, clienteId: data.clienteId })
     res.status(201).json(ticket)
@@ -3552,6 +3556,76 @@ app.get('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:ver
   }
 })
 
+// ─── Configurador secuencias (owner edita prefijos + actual + padding) ────────
+app.get('/api/configuracion/secuencias', verificarJWT, requerirPermiso('empresa:ver'), async (req, res) => {
+  try {
+    const e = await prisma.empresaPerfil.findUnique({
+      where:  { id: 1 },
+      select: { secuenciasConfig: true },
+    })
+    const config = (e?.secuenciasConfig && typeof e.secuenciasConfig === 'object') ? e.secuenciasConfig : {}
+    // Merge defaults para que el frontend siempre reciba la lista completa, aunque
+    // el owner solo haya configurado algunas entidades.
+    const merged = {}
+    for (const k of Object.keys(SECUENCIA_DEFAULTS)) {
+      merged[k] = { ...SECUENCIA_DEFAULTS[k], ...(config[k] ?? {}) }
+    }
+    res.json({ secuencias: merged, defaults: SECUENCIA_DEFAULTS })
+  } catch (e) {
+    console.error('[GET secuencias]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+const secuenciaEntradaSchema = z.object({
+  prefijo: z.string().min(1).max(10).regex(/^[A-Z0-9]+$/, 'Solo mayúsculas y dígitos.'),
+  actual:  z.coerce.number().int().min(0).max(99_999_999),
+  padding: z.coerce.number().int().min(3).max(10),
+})
+const secuenciasPatchSchema = z.object({
+  factura:    secuenciaEntradaSchema.optional(),
+  cotizacion: secuenciaEntradaSchema.optional(),
+  producto:   secuenciaEntradaSchema.optional(),
+  servicio:   secuenciaEntradaSchema.optional(),
+  cliente:    secuenciaEntradaSchema.optional(),
+  rma:        secuenciaEntradaSchema.optional(),
+}).strict()
+
+app.patch('/api/configuracion/secuencias', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const data = secuenciasPatchSchema.parse(req.body)
+    const current = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { secuenciasConfig: true } })
+    const baseConfig = (current?.secuenciasConfig && typeof current.secuenciasConfig === 'object') ? current.secuenciasConfig : {}
+    const next = { ...baseConfig, ...data }
+    await prisma.empresaPerfil.upsert({
+      where:  { id: 1 },
+      update: { secuenciasConfig: next },
+      create: { id: 1, rnc: '', razonSocial: 'Empresa', secuenciasConfig: next },
+    })
+    auditReq('empresa:secuencias_update', req, { entidades: Object.keys(data) })
+    res.json({ secuencias: next })
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    console.error('[PATCH secuencias]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// Endpoint de preview: muestra cómo lucirá el próximo código sin consumir secuencia.
+app.get('/api/configuracion/secuencias/preview/:entidad', verificarJWT, requerirPermiso('empresa:ver'), async (req, res) => {
+  try {
+    const entidad = req.params.entidad
+    const def = SECUENCIA_DEFAULTS[entidad]
+    if (!def) return res.status(400).json({ error: 'Entidad desconocida.' })
+    const e = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { secuenciasConfig: true } })
+    const cfg = (e?.secuenciasConfig?.[entidad] ?? def)
+    const next = Number(cfg.actual ?? def.actual) + 1
+    res.json({ entidad, prefijo: cfg.prefijo, actual: cfg.actual, padding: cfg.padding, proximo: `${cfg.prefijo}-${String(next).padStart(cfg.padding, '0')}` })
+  } catch (e) {
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // PATCH — permiso granular empresa:editar (puede asignarse a Owner o Admin desde UI roles).
 // Telefono permite formato múltiple "X / Y" (ACR usa 2 líneas).
 const empresaPatchSchema = z.object({
@@ -4574,18 +4648,19 @@ app.post('/api/clientes', verificarJWT, requerirPermiso('crm:editar'), async (re
   try {
     const { prospectoOrigenId, ...body } = req.body;
     const data = clienteSchema.parse(body);
-    if (prospectoOrigenId) {
-      if (!validUUID(prospectoOrigenId)) return res.status(400).json({ error: 'prospectoOrigenId inválido.' });
-      const cliente = await prisma.$transaction(async (tx) => {
-        const c = await tx.cliente.create({ data });
+    const cliente = await prisma.$transaction(async (tx) => {
+      // Auto-generación si el cliente no envía noCliente (UI nueva es read-only).
+      if (!data.noCliente) data.noCliente = await generarSiguienteCodigo('cliente', tx)
+      const c = await tx.cliente.create({ data });
+      if (prospectoOrigenId) {
+        if (!validUUID(prospectoOrigenId)) throw Object.assign(new Error('prospectoOrigenId inválido.'), { status: 400 })
         await tx.prospecto.update({ where: { id: prospectoOrigenId }, data: { estado: 'Convertido' } });
-        return c;
-      });
-      return res.status(201).json(formatCliente(cliente));
-    }
-    const cliente = await prisma.cliente.create({ data });
+      }
+      return c
+    });
     res.status(201).json(formatCliente(cliente));
   } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message })
     if (error.code === 'P2002') return res.status(409).json({ error: 'El RNC o número de cliente ya existe.' });
     res.status(400).json({ error: 'Datos inválidos' });
   }
@@ -4859,13 +4934,16 @@ const categoriaSchema = z.object({
 });
 
 const productoSchema = z.object({
-  sku:            z.string().min(1).max(50).transform(stripTags),
+  // sku ahora es OPCIONAL — backend autogenera si no viene (recomendado).
+  // Si viene, se respeta para permitir importación con SKUs externos legacy.
+  sku:            z.string().min(1).max(50).transform(stripTags).optional(),
   nombre:         z.string().min(2).max(200).transform(stripTags),
   precio:         z.coerce.number().nonnegative(),
   categoriaId:    z.number().int().positive(),
   tipoItem:       z.enum(['ARTICULO', 'SERVICIO']).optional(),
   esCanibalizado: z.boolean().optional(),
-  descripcion:    z.string().max(1000).optional().nullable().transform(v => v ?? null),
+  // M1-2: acepta string legacy O objeto estructurado {v:1, titulo, bullets[], imagenUrl?}.
+  descripcion:    descripcionFlexSchema,
   imagenUrl:      z.string().max(500).url().optional().nullable().or(z.literal('').transform(() => null)),
 });
 
@@ -4961,8 +5039,13 @@ app.get('/api/productos', async (req, res) => {
 app.post('/api/productos', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = productoSchema.parse(req.body);
-    const producto = await prisma.producto.create({
-      data, include: { categoria: { select: { id: true, nombre: true } } },
+    // Normaliza descripcion estructurada -> JSON serializado (TEXT column).
+    if (data.descripcion !== undefined) data.descripcion = descripcionToRaw(data.descripcion)
+    const producto = await prisma.$transaction(async (tx) => {
+      if (!data.sku) data.sku = await generarSiguienteCodigo('producto', tx)
+      return tx.producto.create({
+        data, include: { categoria: { select: { id: true, nombre: true } } },
+      })
     });
     res.status(201).json(formatProducto(producto));
   } catch (e) {
@@ -4977,6 +5060,7 @@ app.put('/api/productos/:id', verificarJWT, requerirPermiso('catalogo:editar'), 
   if (!id || id < 1) return res.status(400).json({ error: 'ID inválido.' });
   try {
     const data = productoUpdateSchema.parse(req.body);
+    if (data.descripcion !== undefined) data.descripcion = descripcionToRaw(data.descripcion)
     const producto = await prisma.producto.update({
       where: { id }, data,
       include: { categoria: { select: { id: true, nombre: true } } },
@@ -5186,7 +5270,7 @@ app.post('/api/servicios', verificarJWT, requerirPermiso('servicios:crear'), asy
   try {
     const data = servicioSchema.parse(req.body);
     const servicio = await prisma.$transaction(async (tx) => {
-      const noServicio = await nextNomenclatura(tx, 'SV')
+      const noServicio = await generarSiguienteCodigo('servicio', tx)
       return tx.servicio.create({ data: { ...data, noServicio }, include: { cliente: { select: { id: true, razonSocial: true, noCliente: true, telefonoPrincipal: true } }, plan: { select: { id: true, nombre: true, tipo: true } } } })
     })
     res.status(201).json(formatServicio(servicio));
@@ -6048,10 +6132,12 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
           { status: 422 }
         )
 
-      // 4. NCF + noFactura (tied to same atomic sequence — guaranteed unique)
+      // 4. NCF (DGII compliance) + noFactura (interno auto-secuenciador del owner).
       const seq       = String(rows[0].secuenciaActual).padStart(8, '0')
       const ncf       = `${rows[0].prefijo}${seq}`
-      const noFactura = `FAC${new Date().getFullYear()}${seq}`
+      // noFactura ahora usa el secuenciador centralizado configurable por owner.
+      // NCF sigue su lógica DGII independiente (no se mezclan responsabilidades).
+      const noFactura = await generarSiguienteCodigo('factura', tx)
 
       // 5. Cálculo de totales
       const subtotal = ot.lineas.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0)
@@ -6120,6 +6206,95 @@ async function nextNomenclatura(tx, tipo) {
   if (!rows || rows.length === 0) throw new Error(`Contador de nomenclatura "${tipo}" no encontrado.`)
   return `${rows[0].prefijo}${String(rows[0].secuenciaActual).padStart(3, '0')}`
 }
+
+// ─── Auto-secuenciador centralizado (núcleo ERP) ──────────────────────────────
+// Atómico vía UPDATE-RETURNING sobre EmpresaPerfil.id=1 con jsonb_set. La fila
+// se bloquea exclusivamente durante el UPDATE; dos cajeros concurrentes serializan
+// y reciben códigos distintos (no race). Defaults se aplican si la entidad no
+// existe aún en secuenciasConfig — un INSERT diferido no hace falta.
+const SECUENCIA_DEFAULTS = {
+  factura:    { prefijo: 'FAC', actual: 0, padding: 6 },
+  cotizacion: { prefijo: 'COT', actual: 0, padding: 6 },
+  producto:   { prefijo: 'ART', actual: 0, padding: 6 },
+  servicio:   { prefijo: 'SVC', actual: 0, padding: 6 },
+  cliente:    { prefijo: 'CLI', actual: 0, padding: 6 },
+  rma:        { prefijo: 'RMA', actual: 0, padding: 5 },
+}
+
+async function generarSiguienteCodigo(entidad, tx) {
+  const def = SECUENCIA_DEFAULTS[entidad]
+  if (!def) throw new Error(`Entidad de secuencia desconocida: "${entidad}".`)
+  const db = tx ?? prisma
+  // jsonb_set asegura que la rama exista. Si la entidad no había sido configurada,
+  // sembramos con defaults antes de incrementar.
+  const seedPath = `{${entidad}}`
+  const actualPath = `{${entidad},actual}`
+  const rows = await db.$queryRawUnsafe(`
+    UPDATE "EmpresaPerfil"
+    SET    "secuenciasConfig" =
+      jsonb_set(
+        jsonb_set(
+          COALESCE("secuenciasConfig", '{}'::jsonb),
+          '${seedPath}',
+          COALESCE("secuenciasConfig"->'${entidad}', $1::jsonb),
+          true
+        ),
+        '${actualPath}',
+        (
+          (COALESCE(("secuenciasConfig"->'${entidad}'->>'actual')::int, ${def.actual}) + 1)::text
+        )::jsonb,
+        true
+      )
+    WHERE  id = 1
+    RETURNING
+      COALESCE("secuenciasConfig"->'${entidad}'->>'prefijo', $2)        AS prefijo,
+      (("secuenciasConfig"->'${entidad}'->>'actual')::int)              AS actual,
+      COALESCE(("secuenciasConfig"->'${entidad}'->>'padding')::int, $3) AS padding
+  `, JSON.stringify(def), def.prefijo, def.padding)
+  if (!rows || rows.length === 0) {
+    // Fila id=1 no existe — crearla con defaults y reintentar una sola vez.
+    await db.empresaPerfil.upsert({
+      where:  { id: 1 },
+      update: {},
+      create: { id: 1, rnc: '', razonSocial: 'Empresa', secuenciasConfig: { [entidad]: def } },
+    })
+    return generarSiguienteCodigo(entidad, tx)
+  }
+  const { prefijo, actual, padding } = rows[0]
+  return `${prefijo}-${String(actual).padStart(Number(padding) || 6, '0')}`
+}
+
+// Normaliza el campo `descripcion` aceptando string legacy O objeto estructurado
+// { v:1, titulo, bullets:[], imagenUrl? }. El objeto se serializa como JSON
+// dentro de la columna TEXT — el parser de PDF detecta v=1 y renderiza nativo.
+function descripcionToRaw(value) {
+  if (value == null) return null
+  if (typeof value === 'string') return value
+  if (typeof value === 'object') {
+    if (value.v === 1) {
+      const limpio = {
+        v: 1,
+        titulo:    String(value.titulo ?? '').slice(0, 200),
+        bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
+        imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
+      }
+      return JSON.stringify(limpio)
+    }
+  }
+  return null
+}
+
+const descripcionEstructuradaSchema = z.object({
+  v:         z.literal(1),
+  titulo:    z.string().min(1).max(200),
+  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
+  imagenUrl: z.string().max(500).nullable().optional(),
+})
+// Validador reusable: acepta string legacy O el objeto estructurado v=1.
+const descripcionFlexSchema = z.union([
+  z.string().max(2000),
+  descripcionEstructuradaSchema,
+]).nullable().optional()
 
 // Compute effective unit price after sequential discounts (% first, then fixed)
 function efectivoUnitario(pu, pct, monto) {
@@ -6234,7 +6409,7 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
     let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
 
     if (esCotizacion) {
-      noFactura = await nextNomenclatura(tx, 'COT')
+      noFactura = await generarSiguienteCodigo('cotizacion', tx)
       estado    = 'Borrador'
     } else {
       // 5. Smart NCF: override > PYME/Empresa → Fiscal (B01); else → Consumidor Final (B02)
@@ -6252,7 +6427,7 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
         throw Object.assign(new Error(`Sin secuencia NCF disponible para "${tipoNcf}". Verifica Configuración NCF.`), { status: 422 })
       const seq = String(rows[0].secuenciaActual).padStart(8, '0')
       ncf       = `${rows[0].prefijo}${seq}`
-      noFactura = `FAC${new Date().getFullYear()}${seq}`
+      noFactura = await generarSiguienteCodigo('factura', tx)
       estado    = 'Emitida'
     }
 
@@ -6545,6 +6720,17 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       const composeDesc = (titulo, descripcion) => {
         const desc = (descripcion ?? '').trim()
         if (!desc) return titulo
+        // Formato estructurado v=1: lo pasamos íntegro (el renderer PDF lo entiende).
+        // Si el JSON no trae titulo propio, sobreescribimos con el del producto.
+        if (desc.length > 1 && desc[0] === '{') {
+          try {
+            const obj = JSON.parse(desc)
+            if (obj && obj.v === 1) {
+              if (!obj.titulo || !obj.titulo.trim()) obj.titulo = titulo
+              return JSON.stringify(obj)
+            }
+          } catch {}
+        }
         return `**${titulo}**\n${desc}`
       }
       const lineasEnriquecidas = lineas.map(l => {
@@ -6583,10 +6769,10 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       const itbisAmt      = applyItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
       const total         = Math.round((subtotal + itbisAmt) * 100) / 100
 
-      // 4. NCF / noFactura
+      // 4. NCF (DGII) + noFactura (secuenciador centralizado)
       let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado
       if (esCotizacion) {
-        noFactura = await nextNomenclatura(tx, 'COT')
+        noFactura = await generarSiguienteCodigo('cotizacion', tx)
         estado    = 'Borrador'
       } else {
         tipoNcf = tipoNcfOverride || (['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final')
@@ -6602,7 +6788,7 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         if (!rows || rows.length === 0) throw Object.assign(new Error(`Sin secuencia NCF para "${tipoNcf}". Verifica Config NCF.`), { status: 422 })
         const seq = String(rows[0].secuenciaActual).padStart(8, '0')
         ncf       = `${rows[0].prefijo}${seq}`
-        noFactura = `FAC${new Date().getFullYear()}${seq}`
+        noFactura = await generarSiguienteCodigo('factura', tx)
         estado    = 'Emitida'
       }
 
@@ -7296,7 +7482,7 @@ async function billarOTsISP() {
 
           const seq       = String(rows[0].secuenciaActual).padStart(8, '0')
           const ncf       = `${rows[0].prefijo}${seq}`
-          const noFactura = `FAC${hoy.getFullYear()}${seq}`
+          const noFactura = await generarSiguienteCodigo('factura', tx)
           const subtotal  = otFull.lineas.reduce((s, l) => s + Number(l.precioUnitario) * l.cantidad, 0)
           const itbis     = otFull.cliente.itbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
           const total     = Math.round((subtotal + itbis) * 100) / 100
@@ -7803,6 +7989,7 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "ItemCatalogo_codigo_key" ON "ItemCatalogo"("codigo")`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "pinSupervisor"       TEXT NOT NULL DEFAULT '1234'`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "maxDescuentoCajero" INTEGER NOT NULL DEFAULT 15`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil"  ADD COLUMN IF NOT EXISTS "secuenciasConfig"   JSONB NOT NULL DEFAULT '{}'::jsonb`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pagos"               JSONB`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "etapaPipeline"       TEXT NOT NULL DEFAULT 'Borrador'`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_etapaPipeline_idx" ON "Factura"("etapaPipeline")`)

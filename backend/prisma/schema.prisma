@@ -799,6 +799,18 @@ model EmpresaPerfil {
   pinSupervisor         String    @default("1234")
   // Umbral configurable: por encima de este % el POS exige PIN.
   maxDescuentoCajero    Int       @default(15)
+  // Configurador unificado de secuencias auto-numéricas. Shape:
+  // {
+  //   factura:    { prefijo: "FAC", actual: 6,  padding: 6 },
+  //   cotizacion: { prefijo: "COT", actual: 1,  padding: 6 },
+  //   producto:   { prefijo: "ART", actual: 15, padding: 6 },
+  //   servicio:   { prefijo: "SVC", actual: 0,  padding: 6 },
+  //   cliente:    { prefijo: "CLI", actual: 5,  padding: 6 },
+  //   rma:        { prefijo: "RMA", actual: 0,  padding: 5 }
+  // }
+  // Owner edita prefijos + número de inicio desde Configuración > Secuencias.
+  // generarSiguienteCodigo() incrementa atómicamente via UPDATE-RETURNING jsonb.
+  secuenciasConfig      Json      @default("{}")
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 }
