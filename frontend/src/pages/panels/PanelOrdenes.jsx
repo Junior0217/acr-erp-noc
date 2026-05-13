@@ -191,7 +191,7 @@ function LineasPicker({ lineas, setLineas }) {
       {lineas.length > 0 && (
         <div className="bg-slate-800/50 border border-slate-700/40 rounded-lg overflow-hidden">
           <div className="divide-y divide-slate-700/40">
-            {lineas.map((l, i) => (
+            {(Array.isArray(lineas) ? lineas : []).map((l, i) => (
               <div key={i} className="flex items-center gap-2 px-3 py-2">
                 <div className="flex-1 min-w-0">
                   <input value={l.descripcion} onChange={e => upd(i, 'descripcion', e.target.value)}
@@ -286,7 +286,7 @@ function NuevaOTModal({ onClose, onSaved, clienteIdInit, clienteNombreInit }) {
         estado:       form.estado,
         notasTecnicas: form.notasTecnicas || null,
         metadatos:    form.metadatos,
-        lineas:       form.lineas.map(l => ({
+        lineas:       (Array.isArray(form.lineas) ? form.lineas : []).map(l => ({
           itemCatalogoId: l.itemCatalogoId,
           descripcion:    l.descripcion,
           cantidad:       Number(l.cantidad) || 1,

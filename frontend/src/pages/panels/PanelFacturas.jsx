@@ -208,7 +208,7 @@ function ModalFacturaManual({ onClose, onSuccess }) {
         itbis:        applyItbis,
         diasVence:    parseInt(diasVence) || 30,
         esCotizacion,
-        lineas: lineas.map(l => ({
+        lineas: (Array.isArray(lineas) ? lineas : []).map(l => ({
           productoId: l.producto.id,
           cantidad:   parseInt(l.cantidad),
           ...(l.precioOverride !== '' ? { precioUnitario: parseFloat(l.precioOverride) } : {}),
@@ -312,7 +312,7 @@ function ModalFacturaManual({ onClose, onSuccess }) {
               <div className="col-span-2 text-[10px] font-semibold text-slate-600 uppercase text-right pr-5">Subtotal</div>
             </div>
             <div className="space-y-3">
-              {lineas.map((l, i) => (
+              {(Array.isArray(lineas) ? lineas : []).map((l, i) => (
                 <LineaRow key={i} linea={l}
                   onUpdate={u => updateLinea(i, u)}
                   onRemove={() => removeLinea(i)}
@@ -878,7 +878,7 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
                 <div className="divide-y divide-slate-800">
                   {lineas.length === 0 ? (
                     <p className="px-4 py-6 text-center text-xs text-slate-600 italic">Sin líneas de detalle.</p>
-                  ) : lineas.map((l, i) => (
+                  ) : (Array.isArray(lineas) ? lineas : []).map((l, i) => (
                     <div key={l.id ?? i} className="px-4 py-2.5 grid grid-cols-12 gap-2 items-center">
                       <span className="col-span-7 text-xs text-slate-200">{l.descripcion}</span>
                       <span className="col-span-2 text-center text-xs font-mono text-slate-400">×{l.cantidad}</span>

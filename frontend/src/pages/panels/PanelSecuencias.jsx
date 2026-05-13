@@ -10,7 +10,7 @@
  */
 import { useEffect, useState, useCallback } from 'react'
 import { toast } from 'sonner'
-import { Loader2, Save, Hash, AlertCircle, CheckCircle, RefreshCw } from 'lucide-react'
+import { Loader2, Save, Hash, AlertCircle, CheckCircle, RefreshCw, Wand2, AlertTriangle } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500'
@@ -32,6 +32,7 @@ export default function PanelSecuencias() {
   const [busy, setBusy]   = useState(false)
   const [dirty, setDirty] = useState(false)
   const [loading, setLoading] = useState(true)
+  const [migrando, setMigrando] = useState(false)
 
   const cargar = useCallback(async () => {
     setLoading(true)
@@ -91,6 +92,21 @@ export default function PanelSecuencias() {
     finally { setBusy(false) }
   }
 
+  async function migrarDescripciones() {
+    if (!window.confirm('Migrar todas las descripciones legacy a formato estructurado v=1. Esta acción es idempotente (re-ejecutar no daña nada). ¿Continuar?')) return
+    setMigrando(true)
+    try {
+      const r = await apiFetch('/api/admin/migrar-descripciones', { method: 'POST' })
+      const j = await r.json()
+      if (r.ok) {
+        toast.success(j.resumen ?? 'Migración completada.', { duration: 10000 })
+      } else {
+        toast.error(j.error ?? 'Error en la migración.')
+      }
+    } catch { toast.error('Error de red durante la migración.') }
+    finally { setMigrando(false) }
+  }
+
   if (loading) {
     return <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-blue-500" /></div>
   }
@@ -126,7 +142,7 @@ export default function PanelSecuencias() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        {ENTIDADES.map(({ key, label, desc }) => {
+        {(Array.isArray(ENTIDADES) ? ENTIDADES : []).map(({ key, label, desc }) => {
           const s = secuencias[key] ?? { prefijo: '', actual: 0, padding: 6 }
           return (
             <div key={key} className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-4">
@@ -170,6 +186,24 @@ export default function PanelSecuencias() {
             </div>
           )
         })}
+      </div>
+
+      {/* ─── Zona de Mantenimiento ─────────────────────────────────────── */}
+      <div className="mt-6 bg-red-900/10 border border-red-700/30 rounded-xl p-5">
+        <div className="flex items-start gap-3">
+          <AlertTriangle size={18} className="text-red-400 flex-shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <h3 className="text-sm font-bold text-red-300 mb-1">Mantenimiento · Migración de Datos</h3>
+            <p className="text-[11px] text-red-200/70 leading-relaxed mb-3">
+              Convierte todas las descripciones legacy (Markdown manual con <code>**bold**</code> y <code>- bullets</code>) al formato estructurado <code>{`{v:1, titulo, bullets[]}`}</code>. Aplica a Productos e Items de Catálogo. Idempotente — los registros ya migrados se ignoran automáticamente.
+            </p>
+            <button type="button" onClick={migrarDescripciones} disabled={migrando}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-sm font-semibold disabled:opacity-40 transition-colors">
+              {migrando ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
+              {migrando ? 'Migrando…' : 'Migrar Descripciones (Legacy)'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   )

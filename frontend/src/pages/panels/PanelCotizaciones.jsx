@@ -89,7 +89,7 @@ function KanbanColumn({ etapa, items, loading, onOpen, onPDF }) {
           <div className="flex justify-center py-4"><Loader2 size={14} className="animate-spin text-slate-500" /></div>
         ) : items.length === 0 ? (
           <p className="text-[10px] text-slate-700 italic text-center py-3">— vacío —</p>
-        ) : items.map(cot => (
+        ) : (Array.isArray(items) ? items : []).map(cot => (
           <KanbanCard key={cot.id} cot={cot} onOpen={onOpen} onPDF={onPDF} />
         ))}
       </div>
@@ -333,7 +333,7 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                   <div className="col-span-2 text-[10px] font-semibold text-slate-500 uppercase text-center">Cant.</div>
                   <div className="col-span-4 text-[10px] font-semibold text-slate-500 uppercase text-right">Subtotal</div>
                 </div>
-                {preview.lineas.map((l, i) => {
+                {(Array.isArray(preview.lineas) ? preview.lineas : []).map((l, i) => {
                   const lineTotal = Math.round(l.precioUnitario * l.cantidad * 100) / 100
                   return (
                     <div key={i} className="grid grid-cols-12 gap-2 px-3 py-2.5 items-center">

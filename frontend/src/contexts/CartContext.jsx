@@ -61,8 +61,8 @@ export function CartProvider({ children }) {
       }]
     })
   }
-  function posUpdateLine(idx, changes) { setPosCart(prev => prev.map((l, i) => i === idx ? { ...l, ...changes } : l)) }
-  function posRemoveLine(idx)          { setPosCart(prev => prev.filter((_, i) => i !== idx)) }
+  function posUpdateLine(idx, changes) { setPosCart(prev => (Array.isArray(prev) ? prev : []).map((l, i) => i === idx ? { ...l, ...changes } : l)) }
+  function posRemoveLine(idx)          { setPosCart(prev => (Array.isArray(prev) ? prev : []).filter((_, i) => i !== idx)) }
   function posClear()                  { setPosCart([]) }
 
   const fetchCarrito = useCallback(async () => {

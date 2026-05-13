@@ -395,7 +395,7 @@ function CrossSellBanner({ cart, onAdd }) {
     ;(async () => {
       try {
         // Junta bundles de cada item del carrito (dedupe por producto.id).
-        const ids = cart.map(l => l.itemCatalogoId).filter(Boolean).slice(0, 6)
+        const ids = (Array.isArray(cart) ? cart : []).map(l => l.itemCatalogoId).filter(Boolean).slice(0, 6)
         const responses = await Promise.allSettled(
           ids.map(id => apiFetch(`/api/catalogo/${id}/bundles`).then(r => r.ok ? r.json() : { data: [] }))
         )
@@ -409,13 +409,13 @@ function CrossSellBanner({ cart, onAdd }) {
           }
         }
         // Quita items ya en el carrito (por SKU).
-        const skusEnCarrito = new Set(cart.map(l => l.codigo).filter(Boolean))
+        const skusEnCarrito = new Set((Array.isArray(cart) ? cart : []).map(l => l.codigo).filter(Boolean))
         const filtered = all.filter(b => !skusEnCarrito.has(b.sku))
         if (!cancel) setSugerencias(filtered.slice(0, 6))
       } catch {} finally { if (!cancel) setLoading(false) }
     })()
     return () => { cancel = true }
-  }, [cart.length, cart.map(l => l.itemCatalogoId).join('|')])
+  }, [Array.isArray(cart) ? cart.length : 0, (Array.isArray(cart) ? cart : []).map(l => l.itemCatalogoId).join('|')])
 
   if (cart.length === 0 || (sugerencias.length === 0 && !loading)) return null
 
@@ -575,7 +575,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         descuentoGlobalMonto: descGlobalMonto,
         ...(pinSupervisor ? { pinSupervisor } : {}),
         ...(pagos ? { pagos } : {}),
-        lineas: cart.map(l => ({
+        lineas: (Array.isArray(cart) ? cart : []).map(l => ({
           // Backend exige exactly-one-of: itemCatalogoId (UUID) o productoId (Int).
           ...(l.itemCatalogoId ? { itemCatalogoId: l.itemCatalogoId } : { productoId: l.productoId }),
           cantidad:            l.cantidad,
@@ -640,7 +640,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
               <ShoppingBag size={24} className="mb-1.5" />
               <p className="text-xs font-mono">Vacío</p>
             </div>
-          ) : cart.map((l, i) => (
+          ) : (Array.isArray(cart) ? cart : []).map((l, i) => (
             <CartLine key={i} linea={l} onChange={ch => updateLine(i, ch)} onRemove={() => removeLine(i)} />
           ))}
         </div>
@@ -738,12 +738,12 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
   const sumaOk = Math.abs(diff) < 0.01
   const puedeFacturar = sumaOk && (!necesitaPIN || pinSupervisor.trim().length >= 4)
 
-  function addPago()        { setPagos(p => [...p, { metodo: 'Transferencia', monto: Math.max(diff, 0), refer: '' }]) }
-  function removePago(i)    { setPagos(p => p.filter((_, idx) => idx !== i)) }
-  function updatePago(i, c) { setPagos(p => p.map((row, idx) => idx === i ? { ...row, ...c } : row)) }
+  function addPago()        { setPagos(p => [...(Array.isArray(p) ? p : []), { metodo: 'Transferencia', monto: Math.max(diff, 0), refer: '' }]) }
+  function removePago(i)    { setPagos(p => (Array.isArray(p) ? p : []).filter((_, idx) => idx !== i)) }
+  function updatePago(i, c) { setPagos(p => (Array.isArray(p) ? p : []).map((row, idx) => idx === i ? { ...row, ...c } : row)) }
 
   async function confirmar() {
-    const r = await onSubmit(pagos.map(p => ({ ...p, monto: Number(p.monto) })), pinSupervisor || null)
+    const r = await onSubmit((Array.isArray(pagos) ? pagos : []).map(p => ({ ...p, monto: Number(p.monto) })), pinSupervisor || null)
     if (r?.needPin) { setShowPin(true); setPinSupervisor('') }
   }
 
@@ -775,7 +775,7 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
               </button>
             </div>
             <div className="space-y-2">
-              {pagos.map((p, i) => (
+              {(Array.isArray(pagos) ? pagos : []).map((p, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <select value={p.metodo} onChange={e => updatePago(i, { metodo: e.target.value })}
                     className="flex-shrink-0 w-32 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-100 focus:outline-none focus:border-blue-500">
