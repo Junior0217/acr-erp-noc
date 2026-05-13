@@ -6,6 +6,16 @@ import {
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import ImageDropzone from '../../components/ImageDropzone'
+import EditorDescripcion from '../../components/EditorDescripcion'
+
+// Parse descripcion legacy/JSON para el editor estructurado.
+function _descParse(raw) {
+  if (!raw) return null
+  if (typeof raw === 'string' && raw.length > 1 && raw[0] === '{') {
+    try { const o = JSON.parse(raw); if (o?.v === 1) return o } catch {}
+  }
+  return raw   // legacy markdown string queda como string
+}
 import {
   TIPOS, CATEGORIAS,
   TH, LABEL_CLS, INPUT_CLS, SELECT_CLS,
@@ -96,10 +106,12 @@ function ProductoSearchInput({ value, onChange, productoActual }) {
 }
 
 function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
-  const empty = { nombre: '', descripcion: '', imagenUrl: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', productoId: null, activo: true }
+  // tipoItem default: si tipo='Servicio' o 'Recurrente' → SERVICIO. Si VentaUnica → ARTICULO.
+  // El usuario puede sobreescribir explícitamente en el form.
+  const empty = { nombre: '', descripcion: null, imagenUrl: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', productoId: null, activo: true, tipoItem: 'SERVICIO', esBundle: false }
   const [form, setForm] = useState(
     item
-      ? { ...item, precio: String(item.precio), costo: String(item.costo ?? 0), stock: item.stock != null ? String(item.stock) : '', imagenUrl: item.imagenUrl ?? '', productoId: item.productoId ?? null }
+      ? { ...item, precio: String(item.precio), costo: String(item.costo ?? 0), stock: item.stock != null ? String(item.stock) : '', imagenUrl: item.imagenUrl ?? '', productoId: item.productoId ?? null, descripcion: _descParse(item.descripcion), tipoItem: item.tipoItem ?? 'SERVICIO', esBundle: !!item.esBundle }
       : empty
   )
   // El producto físico actual (para mostrar nombre/stock en el badge). Se hidrata
@@ -117,13 +129,15 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
     try {
       const body = {
         nombre:      form.nombre.trim(),
-        descripcion: form.descripcion?.trim() || null,
+        descripcion: form.descripcion ?? null,        // objeto v=1 o string legacy
         imagenUrl:   form.imagenUrl || null,
         tipo:        form.tipo,
         categoria:   form.categoria,
+        tipoItem:    form.tipoItem,
+        esBundle:    form.esBundle,
         precio:      parseFloat(form.precio),
         ...(canSeeCosts ? { costo: parseFloat(form.costo) || 0 } : {}),
-        stock:       form.tipo === 'VentaUnica' && form.stock !== '' && !form.productoId ? parseInt(form.stock) : null,
+        stock:       form.tipoItem === 'ARTICULO' && form.stock !== '' && !form.productoId ? parseInt(form.stock) : null,
         productoId:  form.productoId ?? null,
         activo:      form.activo,
       }
@@ -155,12 +169,32 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
           </div>
 
           <div>
-            <label className={LABEL_CLS}>Descripción (admite Markdown ligero)</label>
-            <textarea value={form.descripcion || ''} onChange={e => set('descripcion', e.target.value)} rows={3}
-              placeholder={'**Cámara IP 4MP**\n- Visión nocturna 30m\n- WDR 120dB\n- POE'}
-              maxLength={1000}
-              className={`${INPUT_CLS} resize-none font-mono text-xs`} />
-            <p className="text-[10px] text-slate-600 mt-1">Soporta **negrita**, *cursiva*, - listas. Aparece en POS + PDF.</p>
+            <label className={LABEL_CLS}>Descripción Comercial</label>
+            <EditorDescripcion
+              value={form.descripcion}
+              onChange={v => set('descripcion', v)}
+              mostrarImagen={false}
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className={LABEL_CLS}>Naturaleza del item *</label>
+              <select value={form.tipoItem} onChange={e => set('tipoItem', e.target.value)} className={SELECT_CLS}>
+                <option value="SERVICIO">🛠️ Servicio (sin stock)</option>
+                <option value="ARTICULO">📦 Artículo Físico (con stock)</option>
+              </select>
+              <p className="text-[10px] text-slate-600 mt-1 leading-tight">
+                {form.tipoItem === 'SERVICIO' ? 'No consume inventario. Cantidad libre en factura.' : 'Consume stock. Vincúlalo a un Producto físico para Kardex.'}
+              </p>
+            </div>
+            <div className="flex items-end pb-1">
+              <label className="flex items-center gap-2 text-xs text-slate-300 cursor-pointer">
+                <input type="checkbox" checked={form.esBundle} onChange={e => set('esBundle', e.target.checked)}
+                  className="w-4 h-4 accent-blue-600" />
+                <span>Es un Bundle (kit con BOM)</span>
+              </label>
+            </div>
           </div>
 
           <ImageDropzone
@@ -223,7 +257,7 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
             )}
           </div>
 
-          {form.tipo === 'VentaUnica' && !form.productoId && (
+          {form.tipoItem === 'ARTICULO' && !form.productoId && (
             <div>
               <label className={LABEL_CLS}>Stock manual (unidades)</label>
               <input type="number" min="0" value={form.stock} onChange={e => set('stock', e.target.value)}

@@ -191,12 +191,12 @@ function useNocAlerts() {
 
 const navItems = [
   { to: '/',             label: 'Dashboard',     icon: LayoutDashboard, sub: null,                        permiso: 'dashboard:ver'  },
-  { to: '/ventas',       label: 'Ventas',         icon: ShoppingCart,    sub: 'Cotizaciones · Facturas ISP', permiso: null             },
+  { to: '/ventas',       label: 'Ventas',         icon: ShoppingCart,    sub: 'Catálogo Universal · POS · Facturas', permiso: null             },
   { to: '/compras',      label: 'Compras',        icon: PackageSearch,   sub: 'Órdenes · Proveedores',       permiso: null             },
-  { to: '/inventario',   label: 'Inventario',     icon: Boxes,           sub: 'Fibra · Equipos · CCTV',     permiso: 'inventario:ver' },
+  { to: '/inventario',   label: 'Inventario',     icon: Boxes,           sub: 'Solo artículos físicos · Kardex', permiso: 'inventario:ver' },
   { to: '/contabilidad', label: 'Contabilidad',   icon: BookOpen,        sub: 'Cuentas · Balances',         permiso: null             },
   { to: '/rrhh',         label: 'RRHH',           icon: Users,           sub: 'Técnicos · Nómina',          permiso: 'rrhh:ver'       },
-  { to: '/servicios',    label: 'Servicios',      icon: Wrench,          sub: 'Planes · Instalaciones',     permiso: 'servicios:ver'  },
+  { to: '/servicios',    label: 'Servicios',      icon: Wrench,          sub: 'Suscripciones cliente · Planes ISP', permiso: 'servicios:ver'  },
   { to: '/taller',       label: 'Taller',         icon: ClipboardList,   sub: 'RMA · Reparaciones',         permiso: 'ot:ver'         },
   { to: '/crm',          label: 'CRM',            icon: Handshake,       sub: 'Clientes · Suplidores',      permiso: 'crm:ver'        },
   { to: '/mapa',         label: 'Mapa NOC',       icon: Globe,           sub: 'Cobertura · Geo',            permiso: 'mapa:ver'       },

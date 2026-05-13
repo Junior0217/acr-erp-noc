@@ -6042,7 +6042,9 @@ app.delete('/api/admin/sessions/:empleadoId', verificarJWT, requerirPermiso('sis
 
 const itemCatalogoSchema = z.object({
   nombre:      z.string().min(1).max(120),
-  descripcion: z.string().max(1000).optional().nullable(),
+  // Acepta string legacy O objeto estructurado {v:1, titulo, bullets[], imagenUrl?}
+  // que el EditorDescripcion envía. descripcionToRaw normaliza a JSON serializado.
+  descripcion: descripcionFlexSchema,
   imagenUrl:   z.string().max(500).url().optional().nullable().or(z.literal('').transform(() => null)),
   tipo:        z.enum(['Recurrente', 'VentaUnica', 'Servicio']),
   categoria:   z.enum(['WISP', 'CCTV', 'Redes', 'CercoElectrico', 'VentaDirecta', 'Mixto', 'SoporteTecnico', 'Reparacion', 'ProyectoCCTV']),
@@ -6050,6 +6052,10 @@ const itemCatalogoSchema = z.object({
   costo:       z.number().min(0).optional().default(0),
   stock:       z.number().int().optional().nullable(),
   productoId:  z.number().int().positive().optional().nullable(),
+  // tipoItem distingue ARTICULO (consume stock) vs SERVICIO (intangible, sin stock).
+  // Default SERVICIO para que items nuevos sin tipo explícito asuman lo más común.
+  tipoItem:    z.enum(['ARTICULO', 'SERVICIO']).optional().default('SERVICIO'),
+  esBundle:    z.boolean().optional().default(false),
   activo:      z.boolean().default(true),
 })
 
@@ -6132,8 +6138,10 @@ async function generarCodigoCatalogo(tipo) {
 app.post('/api/catalogo', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = itemCatalogoSchema.parse(req.body)
+    if (data.descripcion !== undefined) data.descripcion = descripcionToRaw(data.descripcion)
     const codigo = await generarCodigoCatalogo(data.tipo)
     const item = await prisma.itemCatalogo.create({ data: { ...data, codigo } })
+    auditReq('catalogo:crear', req, { id: item.id, codigo, tipo: data.tipo, tipoItem: data.tipoItem })
     res.status(201).json(item)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
@@ -6144,6 +6152,7 @@ app.post('/api/catalogo', verificarJWT, requerirPermiso('catalogo:editar'), asyn
 app.put('/api/catalogo/:id', verificarJWT, requerirPermiso('catalogo:editar'), async (req, res) => {
   try {
     const data = itemCatalogoSchema.parse(req.body)
+    if (data.descripcion !== undefined) data.descripcion = descripcionToRaw(data.descripcion)
     const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     const canSeeCosts = permisos.includes('sistema:owner') || permisos.includes('catalogo:ver_costos')
     if (!canSeeCosts) {
@@ -6151,9 +6160,131 @@ app.put('/api/catalogo/:id', verificarJWT, requerirPermiso('catalogo:editar'), a
       if (existing) data.costo = Number(existing.costo)
     }
     const item = await prisma.itemCatalogo.update({ where: { id: req.params.id }, data })
+    auditReq('catalogo:editar', req, { id: item.id, codigo: item.codigo })
     res.json(item)
   } catch (e) {
     if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// ─── Catálogo UNIVERSAL: búsqueda unificada (POS / Facturas / Cotizaciones) ──
+// Devuelve resultados mezclados de tres fuentes con shape común:
+//   ItemCatalogo (la vitrina comercial)  → kind=item
+//   Producto físico no vinculado a item  → kind=producto (entradas legacy)
+//   Plan ISP                             → kind=plan
+// El consumidor (PanelPOS, FormularioFactura) renderiza un badge por `kind`.
+app.get('/api/catalogo/buscar', verificarJWT, async (req, res) => {
+  try {
+    const q = String(req.query.q ?? '').trim()
+    const limit = Math.min(Math.max(parseInt(req.query.limit) || 20, 1), 50)
+    const incluir = String(req.query.incluir ?? 'item,producto,plan').split(',').map(s => s.trim()).filter(Boolean)
+    const onlyActivos = req.query.activo !== 'false'
+
+    const tasks = []
+
+    if (incluir.includes('item')) {
+      tasks.push(
+        prisma.itemCatalogo.findMany({
+          where: {
+            ...(onlyActivos ? { activo: true } : {}),
+            ...(q ? { OR: [
+              { nombre:      { contains: q, mode: 'insensitive' } },
+              { codigo:      { contains: q, mode: 'insensitive' } },
+              { descripcion: { contains: q, mode: 'insensitive' } },
+            ] } : {}),
+          },
+          take: limit,
+          orderBy: [{ tipoItem: 'asc' }, { nombre: 'asc' }],
+          include: { producto: { select: { id: true, sku: true, stockActual: true, imagenUrl: true } } },
+        }).then(rows => rows.map(it => ({
+          kind:          'item',
+          id:            it.id,
+          codigo:        it.codigo,
+          nombre:        it.nombre,
+          descripcion:   it.descripcion,
+          imagenUrl:     it.imagenUrl ?? it.producto?.imagenUrl ?? null,
+          tipo:          it.tipo,
+          categoria:     it.categoria,
+          tipoItem:      it.tipoItem,        // ARTICULO o SERVICIO
+          esBundle:      it.esBundle,
+          precio:        Number(it.precio),
+          productoId:    it.productoId,
+          stockActual:   it.producto?.stockActual ?? null,
+          sku:           it.producto?.sku ?? null,
+          activo:        it.activo,
+        })))
+      )
+    }
+
+    if (incluir.includes('producto')) {
+      // Solo productos que NO están vinculados a un ItemCatalogo (evita duplicar).
+      tasks.push(
+        prisma.producto.findMany({
+          where: {
+            ...(q ? { OR: [
+              { nombre: { contains: q, mode: 'insensitive' } },
+              { sku:    { contains: q, mode: 'insensitive' } },
+            ] } : {}),
+            // Excluye productos ya vinculados desde algún ItemCatalogo activo
+            itemsCatalogo: { none: onlyActivos ? { activo: true } : {} },
+          },
+          take: limit,
+          orderBy: { nombre: 'asc' },
+          select: { id: true, sku: true, nombre: true, descripcion: true, precio: true, stockActual: true, tipoItem: true, imagenUrl: true },
+        }).then(rows => rows.map(p => ({
+          kind:        'producto',
+          id:          p.id,
+          codigo:      p.sku,
+          nombre:      p.nombre,
+          descripcion: p.descripcion,
+          imagenUrl:   p.imagenUrl ?? null,
+          tipo:        'VentaUnica',
+          tipoItem:    p.tipoItem,
+          precio:      Number(p.precio),
+          productoId:  p.id,
+          stockActual: p.stockActual,
+          sku:         p.sku,
+          activo:      true,
+        })))
+      )
+    }
+
+    if (incluir.includes('plan')) {
+      tasks.push(
+        prisma.plan.findMany({
+          where: {
+            ...(onlyActivos ? { activo: true } : {}),
+            ...(q ? { OR: [
+              { nombre: { contains: q, mode: 'insensitive' } },
+              { sku:    { contains: q, mode: 'insensitive' } },
+            ] } : {}),
+          },
+          take: limit,
+          orderBy: { nombre: 'asc' },
+          select: { id: true, sku: true, nombre: true, tipo: true, precioMensualBase: true, activo: true },
+        }).then(rows => rows.map(pl => ({
+          kind:        'plan',
+          id:          pl.id,
+          codigo:      pl.sku,
+          nombre:      pl.nombre,
+          descripcion: null,
+          imagenUrl:   null,
+          tipo:        'Recurrente',
+          categoria:   pl.tipo,
+          tipoItem:    'SERVICIO',
+          precio:      Number(pl.precioMensualBase),
+          stockActual: null,
+          activo:      pl.activo,
+        })))
+      )
+    }
+
+    const buckets = await Promise.all(tasks)
+    const unificado = buckets.flat().slice(0, limit * 3)
+    res.json({ data: unificado, total: unificado.length, fuentes: incluir })
+  } catch (e) {
+    console.error('[GET /api/catalogo/buscar]', e.message)
     res.status(500).json({ error: 'Error interno.' })
   }
 })

@@ -338,11 +338,35 @@ function CatalogSearch({ onAdd }) {
             {filtered.map(item => {
               const meta = catMeta(item.categoria)
               const Icon = meta.icon
-              const sinStock = item.tipo === 'VentaUnica' && (item.stock == null || item.stock <= 0)
+              // tipoItem ARTICULO consume stock; SERVICIO no. Si el item está vinculado
+              // a un Producto físico (productoId), también validamos stock aunque sea VentaUnica.
+              const esArticulo = item.tipoItem === 'ARTICULO' || (item.tipo === 'VentaUnica' && item.productoId)
+              const sinStock = esArticulo && (item.stock == null || item.stock <= 0)
+              // Preview de descripción: si es JSON v=1, muestra el título; si es markdown, strip.
+              let descPreview = ''
+              if (item.descripcion) {
+                if (typeof item.descripcion === 'string' && item.descripcion.startsWith('{')) {
+                  try { const o = JSON.parse(item.descripcion); if (o?.v === 1) descPreview = o.titulo ?? '' } catch {}
+                }
+                if (!descPreview) descPreview = String(item.descripcion).replace(/[*_`#-]/g, '').trim()
+              }
               return (
                 <button key={item.id}
                   onClick={() => setDetailItem(item)}
                   className={`group relative text-left bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : ''}`}>
+                  {/* Badge tipoItem (esquina superior derecha) */}
+                  <span className={`absolute top-1.5 right-1.5 z-10 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider ${
+                    esArticulo
+                      ? 'bg-blue-600/25 text-blue-300 border border-blue-500/40'
+                      : 'bg-purple-600/25 text-purple-300 border border-purple-500/40'
+                  }`}>
+                    {esArticulo ? '📦 ART' : '🛠️ SVC'}
+                  </span>
+                  {item.esBundle && (
+                    <span className="absolute top-1.5 left-1.5 z-10 inline-flex items-center px-1.5 py-0.5 rounded text-[8px] font-bold uppercase bg-amber-600/25 text-amber-300 border border-amber-500/40">
+                      ⊞ KIT
+                    </span>
+                  )}
                   <div className={`aspect-square w-full rounded-lg overflow-hidden flex items-center justify-center ${meta.bg}`}>
                     {item.imagenUrl ? (
                       <img src={item.imagenUrl} alt={item.nombre} className="w-full h-full object-cover"
@@ -353,15 +377,17 @@ function CatalogSearch({ onAdd }) {
                   </div>
                   <div className="min-w-0">
                     <p className="text-xs font-semibold text-slate-100 leading-tight line-clamp-2">{item.nombre}</p>
-                    {item.descripcion && (
-                      <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">{item.descripcion.replace(/[*_`#-]/g, '').trim()}</p>
+                    {descPreview && (
+                      <p className="text-[10px] text-slate-500 line-clamp-1 mt-0.5">{descPreview}</p>
                     )}
                     <div className="flex items-center justify-between mt-1">
                       <span className="text-xs font-bold font-mono text-emerald-400">RD$ {fmt(item.precio)}</span>
-                      {item.tipo === 'VentaUnica' && (
+                      {esArticulo ? (
                         <span className={`text-[9px] font-mono ${sinStock ? 'text-red-400' : item.stock <= 5 ? 'text-amber-400' : 'text-slate-500'}`}>
                           {sinStock ? 'Sin stock' : `Stk ${item.stock}`}
                         </span>
+                      ) : (
+                        <span className="text-[9px] font-mono text-purple-400">Sin stock</span>
                       )}
                     </div>
                   </div>

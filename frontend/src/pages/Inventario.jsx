@@ -799,9 +799,11 @@ function TabCatalogoWeb({ canCreate }) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
+// Inventario ahora gestiona SOLO artículos físicos (con stock + kardex). Los
+// "servicios" intangibles viven en Ventas → Catálogo Universal (ItemCatalogo).
+// El tab Servicios fue retirado para eliminar la desconexión semántica.
 const TABS = [
   { key: 'articulos',    label: '📦 Productos Físicos', Icon: Package,     tipoItem: 'ARTICULO' },
-  { key: 'servicios',    label: '🛠️ Servicios',          Icon: Wrench,      tipoItem: 'SERVICIO' },
   { key: 'categorias',   label: 'Categorías',            Icon: Tag,         tipoItem: null       },
   { key: 'movimientos',  label: 'Movimientos (Kardex)',  Icon: BarChart2,   tipoItem: null       },
   { key: 'catalogo_web', label: '🛒 Catálogo Web',       Icon: ShoppingCart, tipoItem: null      },
@@ -840,7 +842,12 @@ export default function Inventario() {
     <div className="space-y-4">
       <div>
         <h1 className="text-2xl font-bold text-slate-100 font-mono tracking-tight">Inventario</h1>
-        <p className="text-sm text-slate-500 mt-0.5">Artículos Físicos · Servicios · Kardex</p>
+        <p className="text-sm text-slate-500 mt-0.5">
+          Artículos físicos · Categorías · Kardex
+          <span className="ml-2 text-[11px] text-slate-600">
+            (los servicios intangibles se gestionan en <span className="text-blue-400">Ventas → Catálogo</span>)
+          </span>
+        </p>
       </div>
 
       <div className="bg-slate-900 border border-slate-700/50 rounded-xl overflow-hidden">
