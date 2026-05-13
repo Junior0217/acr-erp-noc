@@ -1,12 +1,13 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { toast } from 'sonner'
 import {
   RefreshCw, Loader2, FileText, RotateCcw, AlertTriangle,
-  Search, X, Printer,
+  Search, X, Printer, CheckSquare, Square, FileArchive,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
-import { abrirPdfServidor } from '../../utils/pdf'
+import { fetchPdfBlob, descargarBulkZip } from '../../utils/pdf'
 import { useCart } from '../../contexts/CartContext'
+import PdfPreviewDrawer from '../../components/PdfPreviewDrawer'
 
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 const fmtDate = d => new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
@@ -15,7 +16,7 @@ const fmtFull = d => new Date(d).toLocaleString('es-DO', { day: '2-digit', month
 const TH = 'px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap bg-slate-800/60'
 const TD = 'px-4 py-3 text-sm text-slate-300'
 
-function ModalCotizacion({ cot, onClose, onLoaded }) {
+function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
   const { clearCart, updateCartMeta, addItem, setOpen } = useCart()
   const [loading, setLoading]   = useState(true)
   const [preview, setPreview]   = useState(null)
@@ -34,10 +35,11 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
       .finally(() => setLoading(false))
   }, [cot.id])
 
+  // Delegar al padre: abre el Drawer compartido con el PDF server-side.
   async function descargarPDF() {
     if (downloading) return
     setDownloading(true)
-    await abrirPdfServidor(`/api/ventas/cotizaciones/${cot.id}/pdf`, `cotizacion-${cot.noFactura}.pdf`)
+    await onPreviewPDF?.(cot)
     setDownloading(false)
   }
 
@@ -228,13 +230,50 @@ export default function PanelCotizaciones() {
   const [loading, setLoading]   = useState(false)
   const [modalCot, setModalCot] = useState(null)
   const [pdfId, setPdfId]       = useState(null)
+  const [drawer, setDrawer] = useState({ open: false, blob: null, blobUrl: null, filename: null, title: null, subtitle: null, loading: false })
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
   const LIMIT = 20
 
-  async function descargarPDFRow(c) {
+  function cerrarDrawer() {
+    setDrawer(d => {
+      if (d.blobUrl) URL.revokeObjectURL(d.blobUrl)
+      return { open: false, blob: null, blobUrl: null, filename: null, title: null, subtitle: null, loading: false }
+    })
+  }
+  async function previewPDF(c) {
     if (pdfId) return
     setPdfId(c.id)
-    await abrirPdfServidor(`/api/ventas/cotizaciones/${c.id}/pdf`, `cotizacion-${c.noFactura}.pdf`)
+    const filename = `cotizacion-${c.noFactura}.pdf`
+    cerrarDrawer()
+    setDrawer({ open: true, blob: null, blobUrl: null, filename,
+      title: `Cotización · ${c.noFactura}`,
+      subtitle: c.cliente?.razonSocial ?? 'Consumidor Final', loading: true })
+    const result = await fetchPdfBlob(`/api/ventas/cotizaciones/${c.id}/pdf`, filename)
     setPdfId(null)
+    if (!result) { setDrawer(d => ({ ...d, open: false, loading: false })); return }
+    setDrawer(d => ({ ...d, blob: result.blob, blobUrl: result.blobUrl, loading: false }))
+  }
+
+  // Bulk select
+  const visibleIds = useMemo(() => rows.map(r => r.id), [rows])
+  const allSelected = visibleIds.length > 0 && visibleIds.every(id => selected.has(id))
+  function toggleSel(id) {
+    setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  }
+  function toggleAll() {
+    setSelected(prev => {
+      if (allSelected) { const n = new Set(prev); visibleIds.forEach(id => n.delete(id)); return n }
+      const n = new Set(prev); visibleIds.forEach(id => n.add(id)); return n
+    })
+  }
+  async function exportZip() {
+    if (selected.size === 0) return
+    if (selected.size > 50) { toast.error('Máximo 50 cotizaciones por ZIP.'); return }
+    setBulkBusy(true)
+    const ok = await descargarBulkZip([...selected], 'cotizacion')
+    setBulkBusy(false)
+    if (ok) setSelected(new Set())
   }
 
   const fetch_ = useCallback(async (off) => {
@@ -314,6 +353,12 @@ export default function PanelCotizaciones() {
         <table className="w-full min-w-[640px]">
           <thead className="sticky top-0 z-10">
             <tr>
+              <th className="px-3 py-3 w-10 bg-slate-800/60">
+                <button onClick={toggleAll} title={allSelected ? 'Quitar selección' : 'Seleccionar visibles'}
+                  className="text-slate-500 hover:text-blue-400 transition-colors">
+                  {allSelected ? <CheckSquare size={15} /> : <Square size={15} />}
+                </button>
+              </th>
               <th className={TH}>No. Cotización</th>
               <th className={TH}>Cliente</th>
               <th className={TH}>Fecha</th>
@@ -324,13 +369,19 @@ export default function PanelCotizaciones() {
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading && rows.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-600">Sin cotizaciones.</td></tr>
+              <tr><td colSpan={7} className="px-4 py-8 text-center text-sm text-slate-600">Sin cotizaciones.</td></tr>
             )}
             {rows.map(c => (
-              <tr key={c.id} onClick={() => setModalCot(c)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
+              <tr key={c.id} onClick={() => setModalCot(c)}
+                className={`hover:bg-slate-800/40 transition-colors cursor-pointer ${selected.has(c.id) ? 'bg-blue-900/15' : ''}`}>
+                <td className="px-3 py-3" onClick={e => { e.stopPropagation(); toggleSel(c.id) }}>
+                  <button className="text-slate-500 hover:text-blue-400 transition-colors">
+                    {selected.has(c.id) ? <CheckSquare size={15} className="text-blue-400" /> : <Square size={15} />}
+                  </button>
+                </td>
                 <td className={TD + ' font-mono font-medium text-slate-200'}>{c.noFactura}</td>
                 <td className={TD}>
                   <div className="text-slate-200 leading-tight">{c.cliente?.razonSocial ?? 'Consumidor Final'}</div>
@@ -340,8 +391,8 @@ export default function PanelCotizaciones() {
                 <td className={TD + ' text-right tabular-nums'}>RD$ {fmt(c.subtotal)}</td>
                 <td className={TD + ' text-right tabular-nums font-semibold text-slate-100'}>RD$ {fmt(c.total)}</td>
                 <td className="px-2 py-3 text-center" onClick={e => e.stopPropagation()}>
-                  <button onClick={() => descargarPDFRow(c)} disabled={pdfId === c.id}
-                    title="Descargar PDF"
+                  <button onClick={() => previewPDF(c)} disabled={pdfId === c.id}
+                    title="Previsualizar PDF"
                     className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
                     {pdfId === c.id ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />}
                   </button>
@@ -373,8 +424,40 @@ export default function PanelCotizaciones() {
           cot={modalCot}
           onClose={() => setModalCot(null)}
           onLoaded={() => fetch_(offset)}
+          onPreviewPDF={previewPDF}
         />
       )}
+
+      {selected.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-2xl shadow-2xl shadow-blue-600/20 px-4 py-3 flex items-center gap-3">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-600/30">
+            <CheckSquare size={13} className="text-blue-400" />
+            <span className="text-xs font-bold text-blue-300 font-mono">{selected.size}</span>
+            <span className="text-[10px] text-slate-400">seleccionada{selected.size !== 1 ? 's' : ''}</span>
+          </div>
+          <span className="text-[10px] text-slate-600">máx 50 por exportación</span>
+          <button onClick={() => setSelected(new Set())}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            Limpiar
+          </button>
+          <button onClick={exportZip} disabled={bulkBusy || selected.size > 50}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 shadow-md shadow-blue-600/30">
+            {bulkBusy ? <Loader2 size={12} className="animate-spin" /> : <FileArchive size={12} />}
+            Descargar ZIP ({selected.size})
+          </button>
+        </div>
+      )}
+
+      <PdfPreviewDrawer
+        open={drawer.open}
+        blob={drawer.blob}
+        blobUrl={drawer.blobUrl}
+        filename={drawer.filename}
+        title={drawer.title}
+        subtitle={drawer.subtitle}
+        loading={drawer.loading}
+        onClose={cerrarDrawer}
+      />
     </div>
   )
 }

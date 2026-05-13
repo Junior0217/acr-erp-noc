@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import {
   Building2, FileText, Phone, MapPin, User, Save, Loader2, ShieldCheck,
   Image as ImageIcon, AlertTriangle, ShieldOff, Stamp, PenTool, Lock, Upload, X, Trash2,
+  ScrollText,
 } from 'lucide-react'
 import { apiFetch } from '../utils/api'
 import { useEmpresa } from '../contexts/EmpresaContext'
@@ -188,6 +189,33 @@ export default function MiEmpresa() {
             <span className="ml-auto text-[10px] text-slate-500">Sube directo · PNG/JPG/SVG · max 2MB</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{ASSETS.map(renderAsset)}</div>
+        </section>
+
+        <section className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
+          <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
+            <ScrollText size={15} className="text-blue-400" />
+            <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest">Condiciones Comerciales por Defecto</h3>
+            <span className="ml-auto text-[10px] text-slate-500">Aparecen en PDFs · pueden sobrescribirse por documento</span>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            {['validez','pago','entrega','garantia'].map(k => (
+              <div key={k}>
+                <label className={LABEL}>{k}</label>
+                {canEdit ? (
+                  <input type="text" maxLength={280}
+                    value={form.condicionesDefault?.[k] ?? ''}
+                    onChange={e => { setForm(f => ({ ...f, condicionesDefault: { ...(f.condicionesDefault ?? {}), [k]: e.target.value } })); setDirty(true) }}
+                    placeholder={k === 'validez' ? '15 días calendario desde la emisión.' :
+                                 k === 'pago'    ? '50% al iniciar · 50% contra entrega.' :
+                                 k === 'entrega' ? '5 a 10 días laborables tras anticipo.' :
+                                                   '1 año sobre instalación.'}
+                    className={INPUT} />
+                ) : (
+                  <div className={READONLY}>{form.condicionesDefault?.[k] || <span className="text-slate-700 italic">—</span>}</div>
+                )}
+              </div>
+            ))}
+          </div>
         </section>
 
         <div className="text-xs text-slate-600 text-center pt-4 border-t border-slate-800">

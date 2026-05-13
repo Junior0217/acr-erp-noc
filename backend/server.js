@@ -2633,6 +2633,20 @@ app.post(
 
 // ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
 
+// Merge per-doc condiciones over EmpresaPerfil defaults. null/empty fields del doc
+// caen al default. Si el default tampoco existe, no se renderiza la fila.
+function mergeCondiciones(empresa, factura) {
+  const defs = empresa?.condicionesDefault ?? {}
+  const own  = factura?.condiciones ?? {}
+  const pick = (k) => (own?.[k] && String(own[k]).trim()) || (defs?.[k] && String(defs[k]).trim()) || null
+  return {
+    validez:  pick('validez'),
+    pago:     pick('pago'),
+    entrega:  pick('entrega'),
+    garantia: pick('garantia'),
+  }
+}
+
 async function buildPdfData(facturaOrCotizacion) {
   // Carga empresa singleton (zero-hardcode) + estructura datos comunes
   const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
@@ -2675,6 +2689,7 @@ async function buildPdfData(facturaOrCotizacion) {
     fechaVence:   f.fechaVence,
     estado:       f.estado,
     notas:        f.notas,
+    condiciones:  mergeCondiciones(empresa, f),
   }
 }
 
@@ -2698,12 +2713,6 @@ app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_co
       tipo:        'cotizacion',
       numero:      cot.noFactura,
       ...data,
-      condiciones: {
-        validez:  '15 días calendario desde la emisión.',
-        pago:     '50% al iniciar trabajos · 50% contra entrega.',
-        entrega:  '5 a 10 días laborables tras anticipo.',
-        garantia: '1 año sobre instalación · 6 meses sobre red.',
-      },
     })
     const pdfBuf = await generarPdfDocumento(html)
     res.setHeader('Content-Type', 'application/pdf')
@@ -2736,11 +2745,6 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
       tipo:        'factura',
       numero:      fact.noFactura,
       ...data,
-      condiciones: {
-        validez:  `Vence: ${fact.fechaVence ? new Date(fact.fechaVence).toLocaleDateString('es-DO') : '—'}`,
-        pago:     fact.estado === 'Pagada' ? 'PAGADA ✓' : 'Transferencia / Tarjeta',
-        garantia: '1 año sobre instalación.',
-      },
     })
     const pdfBuf = await generarPdfDocumento(html)
     res.setHeader('Content-Type', 'application/pdf')
@@ -2753,6 +2757,138 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
     res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
   }
 })
+
+// ─── Bulk PDF export (ZIP stream) ─────────────────────────────────────────────
+// Genera múltiples PDFs y los empaqueta en un archivo ZIP, escribiendo
+// directamente al stream de respuesta (sin acumular en RAM). Limita 50 docs
+// por request + concurrencia 4 Puppeteer pages -> evita OOM en Free Tier.
+const archiver = require('archiver')
+
+const BULK_PDF_MAX     = 50
+const BULK_PDF_PARALLEL = 4
+const bulkPdfLimiter   = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false })
+
+const bulkPdfSchema = z.object({
+  ids:  z.array(z.string().uuid()).min(1).max(BULK_PDF_MAX),
+  tipo: z.enum(['factura', 'cotizacion']),
+})
+
+async function generarPdfDeFactura(id, tipo) {
+  const f = await prisma.factura.findUnique({
+    where: { id },
+    include: {
+      cliente: true,
+      lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
+    },
+  })
+  if (!f || f.deletedAt) return null
+  if (tipo === 'cotizacion' && !f.esCotizacion) return null
+  if (tipo === 'factura'    && f.esCotizacion)  return null
+  const data = await buildPdfData(f)
+  const html = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
+  const buf  = await generarPdfDocumento(html)
+  return { buf, noFactura: f.noFactura }
+}
+
+// Ejecuta promesas con concurrencia controlada. Devuelve resultados en orden.
+async function mapWithConcurrency(items, limit, fn) {
+  const results = new Array(items.length)
+  let cursor = 0
+  async function worker() {
+    while (cursor < items.length) {
+      const i = cursor++
+      try { results[i] = { status: 'fulfilled', value: await fn(items[i], i) } }
+      catch (err) { results[i] = { status: 'rejected', reason: err } }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return results
+}
+
+// Ruta neutra (sin alias) para evitar el rewrite /api/ventas/* -> /api/*.
+// Soporta tipo=factura|cotizacion vía body. Frontend llama directo a este path.
+app.post('/api/pdf/bulk',
+  bulkPdfLimiter,
+  verificarJWT,
+  requerirPermiso('factura:ver'),
+  async (req, res) => {
+    let archive
+    try {
+      const { ids, tipo } = bulkPdfSchema.parse(req.body)
+      // Permisos finos por tipo
+      const permReq = tipo === 'cotizacion' ? 'venta:ver_cotizaciones' : 'factura:ver'
+      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+      if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
+        return res.status(403).json({ error: `Se requiere permiso "${permReq}".` })
+
+      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
+      const filename = `${tipo === 'cotizacion' ? 'cotizaciones' : 'facturas'}-${stamp}.zip`
+
+      res.setHeader('Content-Type', 'application/zip')
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+      // No usar transfer-encoding manual; Node/archiver lo maneja en streaming
+      archive = archiver('zip', { zlib: { level: 6 } })
+      archive.on('error', err => { console.error('[BULK ZIP]', err.message); try { res.destroy(err) } catch {} })
+      archive.pipe(res)
+
+      const resultados = await mapWithConcurrency(ids, BULK_PDF_PARALLEL, id => generarPdfDeFactura(id, tipo))
+
+      let ok = 0, fail = 0
+      for (let i = 0; i < resultados.length; i++) {
+        const r = resultados[i]
+        if (r.status !== 'fulfilled' || !r.value) {
+          fail++
+          archive.append(`ID solicitado: ${ids[i]}\nMotivo: ${r.reason?.message ?? 'no encontrado o tipo incorrecto'}\n`, { name: `_fallidas/${ids[i]}.txt` })
+          continue
+        }
+        const { buf, noFactura } = r.value
+        archive.append(buf, { name: `${tipo === 'cotizacion' ? 'cotizacion' : 'factura'}-${noFactura}.pdf` })
+        ok++
+      }
+      archive.append(`Generación masiva ACR ERP\nFecha: ${new Date().toISOString()}\nSolicitadas: ${ids.length}\nGeneradas: ${ok}\nFallidas: ${fail}\n`, { name: 'RESUMEN.txt' })
+      auditReq('pdf:bulk', req, { tipo, solicitadas: ids.length, generadas: ok, fallidas: fail })
+      await archive.finalize()
+    } catch (e) {
+      if (archive) { try { archive.abort() } catch {} }
+      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? `Mínimo 1, máximo ${BULK_PDF_MAX} documentos por exportación.` })
+      console.error('[BULK PDF]', e.message)
+      if (!res.headersSent) res.status(500).json({ error: 'Error generando exportación masiva.' })
+      else try { res.end() } catch {}
+    }
+  }
+)
+
+// Edición rápida de condiciones comerciales por documento.
+const condicionesSchema = z.object({
+  validez:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+  pago:     z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+  entrega:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+  garantia: z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+}).partial()
+
+app.patch('/api/facturas/:id/condiciones',
+  verificarJWT,
+  requerirPermiso('factura:editar'),
+  async (req, res) => {
+    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+    try {
+      const data = condicionesSchema.parse(req.body)
+      // Si todos los campos son null/vacíos, limpia el override (cae al default empresa).
+      const allEmpty = Object.values(data).every(v => v == null || v === '')
+      const factura = await prisma.factura.update({
+        where: { id: req.params.id },
+        data:  { condiciones: allEmpty ? null : data },
+        select:{ id: true, condiciones: true },
+      })
+      auditReq('factura:condiciones', req, { id: factura.id, cleared: allEmpty })
+      res.json(factura)
+    } catch (e) {
+      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+      console.error('[PATCH CONDICIONES]', e.message)
+      res.status(500).json({ error: 'Error interno.' })
+    }
+  }
+)
 
 // Endpoint público para portal B2C (descarga su propia factura)
 app.get('/api/portal/facturas/:id/pdf-v2', verificarPortalJWT, async (req, res) => {
@@ -2843,6 +2979,13 @@ const empresaPatchSchema = z.object({
     firmaGerente: z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
   }).partial().optional(),
   eslogan:               z.string().max(200).optional().nullable(),
+  // Condiciones comerciales por defecto — cada campo opcional, max 280 char.
+  condicionesDefault:    z.object({
+    validez:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    pago:     z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    entrega:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    garantia: z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+  }).partial().optional(),
 })
 
 app.patch('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:editar'), async (req, res) => {

@@ -1,12 +1,14 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { toast } from 'sonner'
 import {
   Loader2, RefreshCw, DollarSign, Plus, Trash2, X,
-  Search, Receipt, Printer, FileText,
+  Search, Receipt, Printer, FileText, Download, FileArchive,
+  CheckSquare, Square, Eye, User, Hash, Calendar, Edit3, Save,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
-import { abrirPdfServidor } from '../../utils/pdf'
+import { fetchPdfBlob, descargarBulkZip } from '../../utils/pdf'
 import { useAuth } from '../../contexts/AuthContext'
+import PdfPreviewDrawer from '../../components/PdfPreviewDrawer'
 import {
   FACTURA_ESTADOS,
   TH, PAGE_SIZE,
@@ -395,6 +397,13 @@ export default function PanelFacturas({ highlightId = null }) {
   const [total,         setTotal]                 = useState(0)
   const [showManual,    setShowManual]             = useState(false)
   const [downloadingId, setDownloadingId]          = useState(null)
+  // PDF Drawer
+  const [drawer, setDrawer] = useState({ open: false, blob: null, blobUrl: null, filename: null, title: null, subtitle: null, loading: false })
+  // Bulk selection
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkBusy, setBulkBusy] = useState(false)
+  // Details modal (slide-over)
+  const [detailFactura, setDetailFactura] = useState(null)
 
   const fetchFacturas = useCallback(async () => {
     setLoading(true)
@@ -440,18 +449,57 @@ export default function PanelFacturas({ highlightId = null }) {
     finally { setUpdating(null) }
   }
 
-  async function descargarPDF(f) {
+  // Abre el PDF en el drawer (iframe) en lugar de pestaña nueva.
+  async function previewPDF(f) {
     if (downloadingId) return
     setDownloadingId(f.id)
     const filename = `${f.esCotizacion ? 'cotizacion' : 'factura'}-${f.noFactura}.pdf`
     const endpoint = f.esCotizacion
       ? `/api/ventas/cotizaciones/${f.id}/pdf`
       : `/api/ventas/facturas/${f.id}/pdf`
-    await abrirPdfServidor(endpoint, filename)
+    cerrarDrawer() // limpia uno previo
+    setDrawer({ open: true, blob: null, blobUrl: null, filename,
+      title: `${f.esCotizacion ? 'Cotización' : 'Factura'} · ${f.noFactura}`,
+      subtitle: f.cliente?.razonSocial ?? 'Consumidor Final', loading: true })
+    const result = await fetchPdfBlob(endpoint, filename)
     setDownloadingId(null)
+    if (!result) { setDrawer(d => ({ ...d, open: false, loading: false })); return }
+    setDrawer(d => ({ ...d, blob: result.blob, blobUrl: result.blobUrl, loading: false }))
+  }
+  function cerrarDrawer() {
+    setDrawer(d => {
+      if (d.blobUrl) URL.revokeObjectURL(d.blobUrl)
+      return { open: false, blob: null, blobUrl: null, filename: null, title: null, subtitle: null, loading: false }
+    })
   }
 
-  const colSpan = 10 + (canEdit ? 1 : 0)
+  // Selección múltiple para export ZIP
+  function toggleSel(id) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+  const visibleIds = useMemo(() => facturas.map(f => f.id), [facturas])
+  const allSelected = visibleIds.length > 0 && visibleIds.every(id => selected.has(id))
+  function toggleAll() {
+    setSelected(prev => {
+      if (allSelected) { const n = new Set(prev); visibleIds.forEach(id => n.delete(id)); return n }
+      const n = new Set(prev); visibleIds.forEach(id => n.add(id)); return n
+    })
+  }
+  async function exportSelectedZip() {
+    if (selected.size === 0) return
+    if (selected.size > 50) { toast.error('Máximo 50 facturas por ZIP.'); return }
+    setBulkBusy(true)
+    const ok = await descargarBulkZip([...selected], 'factura')
+    setBulkBusy(false)
+    if (ok) setSelected(new Set())
+  }
+  function limpiarSeleccion() { setSelected(new Set()) }
+
+  const colSpan = 11 + (canEdit ? 1 : 0)
 
   const totalEmitidas = facturas
     .filter(f => f.estado === 'Emitida' || f.estado === 'Pagada')
@@ -530,6 +578,12 @@ export default function PanelFacturas({ highlightId = null }) {
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-slate-700/70 bg-slate-800/60">
+                <th className="px-3 py-3 w-10">
+                  <button onClick={toggleAll} title={allSelected ? 'Quitar selección' : 'Seleccionar visibles'}
+                    className="text-slate-500 hover:text-blue-400 transition-colors">
+                    {allSelected ? <CheckSquare size={15} /> : <Square size={15} />}
+                  </button>
+                </th>
                 <th className={TH}>No. Factura</th>
                 <th className={TH}>NCF</th>
                 <th className={TH}>Cliente</th>
@@ -562,8 +616,13 @@ export default function PanelFacturas({ highlightId = null }) {
                   </div>
                 </td></tr>
               ) : facturas.map(f => (
-                <tr key={f.id}
-                  className={`hover:bg-slate-800/50 transition-colors ${f.id === highlightId ? 'ring-1 ring-inset ring-emerald-500/40 bg-emerald-900/10' : ''}`}>
+                <tr key={f.id} onClick={() => setDetailFactura(f)}
+                  className={`hover:bg-slate-800/50 transition-colors cursor-pointer ${selected.has(f.id) ? 'bg-blue-900/15' : ''} ${f.id === highlightId ? 'ring-1 ring-inset ring-emerald-500/40 bg-emerald-900/10' : ''}`}>
+                  <td className="px-3 py-3" onClick={e => { e.stopPropagation(); toggleSel(f.id) }}>
+                    <button className="text-slate-500 hover:text-blue-400 transition-colors">
+                      {selected.has(f.id) ? <CheckSquare size={15} className="text-blue-400" /> : <Square size={15} />}
+                    </button>
+                  </td>
                   <td className="px-4 py-3 font-mono text-xs text-slate-300 whitespace-nowrap">{f.noFactura}</td>
                   <td className="px-4 py-3">
                     {f.ncf
@@ -590,15 +649,22 @@ export default function PanelFacturas({ highlightId = null }) {
                   <td className="px-4 py-3 font-mono text-sm text-emerald-400 font-bold whitespace-nowrap">{formatCurrency(f.total)}</td>
                   <td className="px-4 py-3 whitespace-nowrap"><FacturaEstadoBadge estado={f.estado} /></td>
                   <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">{formatDate(f.fechaEmision)}</td>
-                  {/* PDF button */}
-                  <td className="px-2 py-3">
-                    <button onClick={(e) => { e.stopPropagation(); descargarPDF(f) }} disabled={downloadingId === f.id}
-                      title="Descargar PDF"
-                      className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
-                      {downloadingId === f.id
-                        ? <Loader2 size={14} className="animate-spin" />
-                        : <Printer size={14} />}
-                    </button>
+                  {/* PDF preview button */}
+                  <td className="px-2 py-3" onClick={e => e.stopPropagation()}>
+                    <div className="flex items-center gap-1">
+                      <button onClick={() => setDetailFactura(f)}
+                        title="Ver detalle"
+                        className="p-1.5 rounded-lg text-slate-600 hover:text-amber-400 hover:bg-amber-600/10 transition-colors">
+                        <Eye size={14} />
+                      </button>
+                      <button onClick={() => previewPDF(f)} disabled={downloadingId === f.id}
+                        title="Previsualizar PDF"
+                        className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
+                        {downloadingId === f.id
+                          ? <Loader2 size={14} className="animate-spin" />
+                          : <Printer size={14} />}
+                      </button>
+                    </div>
                   </td>
                   {canEdit && (
                     <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
@@ -643,9 +709,256 @@ export default function PanelFacturas({ highlightId = null }) {
       {showManual && (
         <ModalFacturaManual
           onClose={() => setShowManual(false)}
-          onSuccess={f => { setShowManual(false); fetchFacturas(); if (f?.id) descargarPDF(f) }}
+          onSuccess={f => { setShowManual(false); fetchFacturas(); if (f?.id) previewPDF(f) }}
         />
       )}
+
+      {/* Bulk action bar — fixed bottom, slide-in when selected.size > 0 */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40 bg-slate-900/95 backdrop-blur-md border border-slate-700 rounded-2xl shadow-2xl shadow-blue-600/20 px-4 py-3 flex items-center gap-3">
+          <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-blue-600/15 border border-blue-600/30">
+            <CheckSquare size={13} className="text-blue-400" />
+            <span className="text-xs font-bold text-blue-300 font-mono">{selected.size}</span>
+            <span className="text-[10px] text-slate-400">seleccionada{selected.size !== 1 ? 's' : ''}</span>
+          </div>
+          <span className="text-[10px] text-slate-600">máx 50 por exportación</span>
+          <button onClick={limpiarSeleccion}
+            className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            Limpiar
+          </button>
+          <button onClick={exportSelectedZip} disabled={bulkBusy || selected.size > 50}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 shadow-md shadow-blue-600/30">
+            {bulkBusy ? <Loader2 size={12} className="animate-spin" /> : <FileArchive size={12} />}
+            Descargar ZIP ({selected.size})
+          </button>
+        </div>
+      )}
+
+      {/* PDF Preview Drawer */}
+      <PdfPreviewDrawer
+        open={drawer.open}
+        blob={drawer.blob}
+        blobUrl={drawer.blobUrl}
+        filename={drawer.filename}
+        title={drawer.title}
+        subtitle={drawer.subtitle}
+        loading={drawer.loading}
+        onClose={cerrarDrawer}
+      />
+
+      {/* Details modal (slide-over) */}
+      {detailFactura && (
+        <FacturaDetailsModal
+          factura={detailFactura}
+          onClose={() => setDetailFactura(null)}
+          onActualizarEstado={actualizarEstado}
+          updating={updating}
+          canEdit={canEdit}
+          onPreviewPDF={previewPDF}
+          downloadingId={downloadingId}
+          onCondicionesGuardadas={() => fetchFacturas()}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── FacturaDetailsModal: slide-over con detalle + edición de condiciones ────
+
+function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, canEdit, onPreviewPDF, downloadingId, onCondicionesGuardadas }) {
+  const [full, setFull] = useState(null)
+  const [loading, setLoading] = useState(true)
+  // Edición de condiciones comerciales (override del default empresa)
+  const [editCond, setEditCond] = useState(false)
+  const [cond, setCond] = useState({ validez: '', pago: '', entrega: '', garantia: '' })
+  const [savingCond, setSavingCond] = useState(false)
+
+  useEffect(() => {
+    let cancel = false
+    setLoading(true)
+    apiFetch(`/api/ventas/facturas/${factura.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(j => { if (cancel) return; setFull(j); setCond({
+        validez:  j?.condiciones?.validez  ?? '',
+        pago:     j?.condiciones?.pago     ?? '',
+        entrega:  j?.condiciones?.entrega  ?? '',
+        garantia: j?.condiciones?.garantia ?? '',
+      }) })
+      .catch(() => {})
+      .finally(() => { if (!cancel) setLoading(false) })
+    return () => { cancel = true }
+  }, [factura.id])
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape') onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [onClose])
+
+  async function guardarCondiciones() {
+    setSavingCond(true)
+    try {
+      const r = await apiFetch(`/api/facturas/${factura.id}/condiciones`, { method: 'PATCH', body: JSON.stringify(cond) })
+      if (!r.ok) { const j = await r.json().catch(() => ({})); toast.error(j.error ?? 'Error.'); return }
+      toast.success('Condiciones guardadas. Regenera el PDF para verlas.')
+      setEditCond(false)
+      onCondicionesGuardadas?.()
+    } finally { setSavingCond(false) }
+  }
+
+  const cli = full?.cliente ?? factura.cliente ?? {}
+  const lineas = full?.lineas ?? []
+  const esCot = factura.esCotizacion
+
+  return (
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative h-full w-full sm:w-[560px] bg-slate-950 border-l border-slate-800 flex flex-col shadow-2xl">
+
+        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-800 bg-slate-900/80 flex-shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${esCot ? 'bg-amber-600/15 border border-amber-600/30' : 'bg-blue-600/15 border border-blue-600/30'}`}>
+              <Receipt size={16} className={esCot ? 'text-amber-400' : 'text-blue-400'} />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-bold text-slate-100 truncate">{esCot ? 'Cotización' : 'Factura'} · {factura.noFactura}</p>
+              <p className="text-[11px] text-slate-500 font-mono truncate">{factura.ncf ?? '— sin NCF'}</p>
+            </div>
+          </div>
+          <button onClick={onClose} className="p-2 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+            <X size={18} />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {loading ? (
+            <div className="flex items-center justify-center py-12 text-slate-500 gap-2">
+              <Loader2 size={18} className="animate-spin" /><span className="text-sm">Cargando detalle…</span>
+            </div>
+          ) : (
+            <>
+              {/* Cliente */}
+              <section className="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-2">
+                <div className="flex items-center gap-2 mb-1.5">
+                  <User size={13} className="text-blue-400" />
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Cliente</p>
+                </div>
+                <p className="text-sm font-bold text-slate-100">{cli.razonSocial ?? 'Consumidor Final'}</p>
+                <div className="grid grid-cols-2 gap-2 text-xs">
+                  {cli.noCliente && <div><span className="text-slate-600 font-mono">Cód.</span> <span className="text-slate-300 font-mono">{cli.noCliente}</span></div>}
+                  {cli.rnc       && <div><span className="text-slate-600 font-mono">RNC</span> <span className="text-slate-300 font-mono">{cli.rnc}</span></div>}
+                  {cli.telefono  && <div><span className="text-slate-600">Tel.</span> <span className="text-slate-300 font-mono">{cli.telefono}</span></div>}
+                  {cli.email     && <div className="col-span-2 truncate"><span className="text-slate-600">Email</span> <span className="text-slate-300">{cli.email}</span></div>}
+                </div>
+              </section>
+
+              {/* Líneas */}
+              <section className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                <div className="flex items-center gap-2 px-4 py-2.5 border-b border-slate-800">
+                  <Hash size={13} className="text-blue-400" />
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Líneas ({lineas.length})</p>
+                </div>
+                <div className="divide-y divide-slate-800">
+                  {lineas.length === 0 ? (
+                    <p className="px-4 py-6 text-center text-xs text-slate-600 italic">Sin líneas de detalle.</p>
+                  ) : lineas.map((l, i) => (
+                    <div key={l.id ?? i} className="px-4 py-2.5 grid grid-cols-12 gap-2 items-center">
+                      <span className="col-span-7 text-xs text-slate-200">{l.descripcion}</span>
+                      <span className="col-span-2 text-center text-xs font-mono text-slate-400">×{l.cantidad}</span>
+                      <span className="col-span-3 text-right text-xs font-mono font-semibold text-emerald-400">{formatCurrency(Number(l.precioUnitario) * Number(l.cantidad))}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="px-4 py-3 border-t border-slate-800 bg-slate-900/60 space-y-1">
+                  <div className="flex justify-between text-xs text-slate-500"><span>Subtotal</span><span className="font-mono">{formatCurrency(factura.subtotal)}</span></div>
+                  {Number(factura.itbis) > 0 && <div className="flex justify-between text-xs text-amber-400"><span>ITBIS (18%)</span><span className="font-mono">{formatCurrency(factura.itbis)}</span></div>}
+                  <div className="flex justify-between pt-1.5 border-t border-slate-800 text-sm font-bold text-slate-100"><span>Total</span><span className="font-mono text-emerald-400">{formatCurrency(factura.total)}</span></div>
+                </div>
+              </section>
+
+              {/* Meta */}
+              <section className="grid grid-cols-2 gap-2 text-xs">
+                <div className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mb-0.5">Emisión</p>
+                  <p className="font-mono text-slate-200 flex items-center gap-1"><Calendar size={11} className="text-slate-500" />{formatDate(factura.fechaEmision)}</p>
+                </div>
+                <div className="bg-slate-900 border border-slate-800 rounded-lg px-3 py-2">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-slate-500 mb-0.5">Estado</p>
+                  <FacturaEstadoBadge estado={factura.estado} />
+                </div>
+              </section>
+
+              {/* Condiciones comerciales (editable) */}
+              <section className="bg-slate-900 border border-slate-800 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <FileText size={13} className="text-blue-400" />
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Condiciones del documento</p>
+                  </div>
+                  {canEdit && !editCond && (
+                    <button onClick={() => setEditCond(true)} className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-blue-400 transition-colors">
+                      <Edit3 size={11} /> Editar
+                    </button>
+                  )}
+                </div>
+                {!editCond ? (
+                  <div className="space-y-1.5 text-xs">
+                    {['validez','pago','entrega','garantia'].map(k => (
+                      <div key={k}>
+                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-2">{k}</span>
+                        <span className="text-slate-300">{full?.condiciones?.[k] || <span className="text-slate-700 italic">(usa valor por defecto de empresa)</span>}</span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {['validez','pago','entrega','garantia'].map(k => (
+                      <div key={k}>
+                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">{k}</label>
+                        <input type="text" value={cond[k]} onChange={e => setCond(c => ({ ...c, [k]: e.target.value }))} maxLength={280}
+                          placeholder="(vacío = usa default de empresa)"
+                          className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500" />
+                      </div>
+                    ))}
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button onClick={() => { setEditCond(false); setCond({ validez: full?.condiciones?.validez ?? '', pago: full?.condiciones?.pago ?? '', entrega: full?.condiciones?.entrega ?? '', garantia: full?.condiciones?.garantia ?? '' }) }}
+                        className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+                        Cancelar
+                      </button>
+                      <button onClick={guardarCondiciones} disabled={savingCond}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40">
+                        {savingCond ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+                        Guardar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
+            </>
+          )}
+        </div>
+
+        {/* Footer actions */}
+        <div className="flex items-center gap-2 px-5 py-3 border-t border-slate-800 bg-slate-900/60 flex-shrink-0">
+          {canEdit && factura.estado === 'Emitida' && (
+            <>
+              <button onClick={() => onActualizarEstado(factura, 'Pagada')} disabled={updating === factura.id}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-400 text-xs font-semibold transition-all disabled:opacity-40">
+                Marcar Pagada
+              </button>
+              <button onClick={() => onActualizarEstado(factura, 'Anulada')} disabled={updating === factura.id}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600/15 hover:bg-red-600/25 border border-red-600/30 text-red-400 text-xs font-semibold transition-all disabled:opacity-40">
+                Anular
+              </button>
+            </>
+          )}
+          <button onClick={() => onPreviewPDF(factura)} disabled={downloadingId === factura.id}
+            className="ml-auto flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors disabled:opacity-40 shadow-md shadow-blue-600/20">
+            {downloadingId === factura.id ? <Loader2 size={12} className="animate-spin" /> : <Eye size={12} />}
+            Ver / Imprimir PDF
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

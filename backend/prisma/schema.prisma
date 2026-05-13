@@ -561,6 +561,10 @@ model Factura {
   fechaVence   DateTime?
   fechaPago    DateTime?
   notas        String?
+  // Override de condiciones comerciales por documento (opcional).
+  // Si null/empty, el PDF usa EmpresaPerfil.condicionesDefault.
+  // Shape: { validez, pago, entrega, garantia }
+  condiciones  Json?
   esCotizacion Boolean       @default(false)
   deletedAt    DateTime?
   cliente      Cliente       @relation(fields: [clienteId], references: [id], onDelete: Restrict)
@@ -668,6 +672,10 @@ model EmpresaPerfil {
   website               String?
   assets                Json      @default("{}")
   eslogan               String?
+  // Condiciones comerciales por defecto (cotizaciones/facturas).
+  // Shape: { validez, pago, entrega, garantia, notasFooter }
+  // Cada factura puede sobreescribirlas en Factura.condiciones.
+  condicionesDefault    Json      @default("{}")
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 }
