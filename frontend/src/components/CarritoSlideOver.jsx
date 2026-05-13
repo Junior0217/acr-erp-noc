@@ -217,8 +217,12 @@ export default function CarritoSlideOver() {
 
   return (
     <>
-      <div className="fixed inset-0 z-40 bg-black/50 backdrop-blur-sm" onClick={() => setOpen(false)} />
-      <div className="fixed inset-y-0 right-0 z-50 w-full max-w-md bg-slate-950 border-l border-slate-800 flex flex-col shadow-2xl">
+      {/* Backdrop sutil — no oscurece toda la pantalla. Click fuera cierra. */}
+      <div className="fixed inset-0 z-[55] bg-black/30 backdrop-blur-[2px]" onClick={() => setOpen(false)} />
+      {/* Slide-over más ancho: 24rem en sm → 32rem en lg → 40rem en xl
+          para que la información completa de líneas (qty, precio, descuento,
+          totales, cliente, NCF, condiciones) quepa sin scroll lateral. */}
+      <div className="fixed inset-y-0 right-0 z-[60] w-full sm:w-[26rem] lg:w-[32rem] xl:w-[36rem] bg-slate-950 border-l border-slate-800 flex flex-col shadow-2xl">
         <div className="flex items-center justify-between px-4 py-3.5 border-b border-slate-800 flex-shrink-0">
           <div className="flex items-center gap-2">
             <ShoppingCart size={16} className="text-blue-400" />

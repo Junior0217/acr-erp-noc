@@ -526,25 +526,40 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
   const [showModal,     setShowModal]     = useState(!!clienteIdInit)
   const [filtroEstado,  setFiltroEstado]  = useState('')
   const [filtroTipo,    setFiltroTipo]    = useState('')
+  const [filtroNumero,  setFiltroNumero]  = useState('')
+  const [filtroCliente, setFiltroCliente] = useState('')
+  const [filtroDesde,   setFiltroDesde]   = useState('')
+  const [filtroHasta,   setFiltroHasta]   = useState('')
   const [page,          setPage]          = useState(0)
   const [total,         setTotal]         = useState(0)
+  const [detalle,       setDetalle]       = useState(null)   // slide-over: OT seleccionada
 
   const fetchOrdenes = useCallback(async () => {
     setLoading(true)
     try {
       const p = new URLSearchParams()
-      if (filtroEstado) p.set('estado', filtroEstado)
-      if (filtroTipo)   p.set('tipoOT',  filtroTipo)
+      if (filtroEstado)  p.set('estado',        filtroEstado)
+      if (filtroTipo)    p.set('tipoOT',        filtroTipo)
+      if (filtroNumero)  p.set('search',        filtroNumero.trim())
+      if (filtroCliente) p.set('clienteNombre', filtroCliente.trim())
+      if (filtroDesde)   p.set('desde',         filtroDesde)
+      if (filtroHasta)   p.set('hasta',         filtroHasta)
       p.set('limit',  String(PAGE_SIZE))
       p.set('offset', String(page * PAGE_SIZE))
       const r = await apiFetch(`/api/ventas/ordenes?${p}`)
       if (r.ok) { const j = await r.json(); setOrdenes(j.data ?? []); setTotal(j.total ?? 0) }
     } catch {}
     finally { setLoading(false) }
-  }, [filtroEstado, filtroTipo, page])
+  }, [filtroEstado, filtroTipo, filtroNumero, filtroCliente, filtroDesde, filtroHasta, page])
 
-  useEffect(() => { setPage(0) }, [filtroEstado, filtroTipo])
+  useEffect(() => { setPage(0) }, [filtroEstado, filtroTipo, filtroNumero, filtroCliente, filtroDesde, filtroHasta])
   useEffect(() => { fetchOrdenes() }, [fetchOrdenes])
+
+  function limpiarFiltros() {
+    setFiltroEstado(''); setFiltroTipo(''); setFiltroNumero('')
+    setFiltroCliente(''); setFiltroDesde(''); setFiltroHasta('')
+  }
+  const hayFiltros = !!(filtroEstado || filtroTipo || filtroNumero || filtroCliente || filtroDesde || filtroHasta)
 
   async function facturarOT(ot) {
     if (!window.confirm(`¿Facturar la OT de "${ot.cliente?.razonSocial}"?\nEsto generará el NCF y marcará la OT como Completada.`)) return
@@ -572,26 +587,62 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center gap-3 justify-between">
-        <div className="flex gap-2 flex-wrap">
-          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
-            <option value="">Todos los estados</option>
-            {ESTADOS_OT.map(e => <option key={e} value={e}>{e}</option>)}
-          </select>
-          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}
-            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-300 focus:outline-none focus:border-blue-500 transition-colors">
-            <option value="">Todos los tipos</option>
-            {TIPOS_OT.map(t => <option key={t} value={t}>{t}</option>)}
-          </select>
-          <button onClick={fetchOrdenes}
-            className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
-            <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
-          </button>
-        </div>
+        <h3 className="text-sm font-semibold text-slate-400 uppercase tracking-wider">Órdenes de Trabajo</h3>
         {canEdit && (
           <button onClick={() => setShowModal(true)}
             className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-lg text-sm font-semibold text-white transition-colors shadow-lg shadow-blue-600/20 whitespace-nowrap">
             <Plus size={16} />Nueva OT
+          </button>
+        )}
+      </div>
+
+      {/* Barra de filtros completa (paridad con Facturas/Cotizaciones) */}
+      <div className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-3 flex flex-wrap items-end gap-2">
+        <div className="flex-1 min-w-[140px]">
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Nº OT</label>
+          <input value={filtroNumero} onChange={e => setFiltroNumero(e.target.value)} placeholder="OT-000..."
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div className="flex-1 min-w-[160px]">
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Cliente</label>
+          <input value={filtroCliente} onChange={e => setFiltroCliente(e.target.value)} placeholder="Razón social..."
+            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Estado</label>
+          <select value={filtroEstado} onChange={e => setFiltroEstado(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500">
+            <option value="">Todos</option>
+            {ESTADOS_OT.map(e => <option key={e} value={e}>{e}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Tipo</label>
+          <select value={filtroTipo} onChange={e => setFiltroTipo(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500">
+            <option value="">Todos</option>
+            {TIPOS_OT.map(t => <option key={t} value={t}>{t}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Desde</label>
+          <input type="date" value={filtroDesde} onChange={e => setFiltroDesde(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+        </div>
+        <div>
+          <label className="block text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Hasta</label>
+          <input type="date" value={filtroHasta} onChange={e => setFiltroHasta(e.target.value)}
+            className="bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500" />
+        </div>
+        <button onClick={fetchOrdenes}
+          className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 border border-slate-700 transition-colors"
+          title="Refrescar">
+          <RefreshCw size={15} className={loading ? 'animate-spin' : ''} />
+        </button>
+        {hayFiltros && (
+          <button onClick={limpiarFiltros}
+            className="p-2 px-3 rounded-lg text-xs text-slate-400 hover:text-red-400 hover:bg-red-900/20 border border-slate-700 hover:border-red-700/40 transition-colors">
+            Limpiar
           </button>
         )}
       </div>
@@ -624,7 +675,8 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
               ) : ordenes.map(ot => {
                 const total = Array.isArray(ot.lineas) ? ot.lineas.reduce((s, l) => s + Number(l.precioUnitario) * (l.cantidad ?? 1), 0) : 0
                 return (
-                  <tr key={ot.id} className="hover:bg-slate-800/50 transition-colors">
+                  <tr key={ot.id} onClick={() => setDetalle(ot)}
+                    className="hover:bg-slate-800/50 transition-colors cursor-pointer">
                     <td className="px-4 py-3 whitespace-nowrap">
                       <span className="text-xs font-mono font-bold text-purple-400 bg-purple-600/10 border border-purple-600/20 px-2 py-0.5 rounded">
                         {ot.noOT ?? '—'}
@@ -650,7 +702,7 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
                     <td className="px-4 py-3 text-xs text-slate-500 whitespace-nowrap">
                       {formatDate(ot.createdAt)}
                     </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center gap-1.5 justify-end">
                         {canBill && ['Pendiente', 'EnProceso'].includes(ot.estado) && (ot._count?.facturas ?? 0) === 0 && (
                           <button
@@ -713,6 +765,102 @@ export default function PanelOrdenes({ canEdit, clienteIdInit, clienteNombreInit
           onSaved={() => { setShowModal(false); fetchOrdenes() }}
         />
       )}
+      {detalle && <OTDetalleDrawer ot={detalle} onClose={() => setDetalle(null)} />}
     </div>
+  )
+}
+
+// ── OTDetalleDrawer ──────────────────────────────────────────────────────────
+function OTDetalleDrawer({ ot, onClose }) {
+  const totalFacturable = (ot.lineas ?? [])
+    .filter(l => !l.consumoInterno)
+    .reduce((s, l) => s + Number(l.precioUnitario) * (l.cantidad ?? 1), 0)
+  const totalInterno = (ot.lineas ?? [])
+    .filter(l => l.consumoInterno)
+    .reduce((s, l) => s + (l.cantidad ?? 1), 0)
+  return (
+    <>
+      <div className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[2px]" onClick={onClose} />
+      <aside className="fixed inset-y-0 right-0 z-[60] w-full sm:w-[28rem] lg:w-[36rem] bg-slate-950 border-l border-slate-800 shadow-2xl flex flex-col">
+        <header className="px-5 py-4 border-b border-slate-800 flex items-center justify-between flex-shrink-0">
+          <div>
+            <h2 className="text-sm font-bold text-slate-100">Orden de Trabajo</h2>
+            <p className="text-[10px] font-mono text-purple-400 mt-0.5">{ot.noOT ?? '—'}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
+        </header>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <section className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Cliente</p>
+              <p className="text-sm text-slate-200">{ot.cliente?.razonSocial ?? '—'}</p>
+              <p className="text-[10px] text-slate-500 font-mono">{ot.cliente?.noCliente}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Técnico</p>
+              <p className="text-sm text-slate-200">{ot.tecnico?.nombre ?? <span className="text-slate-600 italic">Sin asignar</span>}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Tipo</p>
+              <OtTipoBadge tipo={ot.tipoOT} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Estado</p>
+              <OtEstadoBadge estado={ot.estado} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Creada</p>
+              <p className="text-sm text-slate-300 font-mono">{formatDate(ot.createdAt)}</p>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">SLA</p>
+              <p className="text-sm text-slate-300 font-mono">{ot.fechaVencimientoSLA ? formatDate(ot.fechaVencimientoSLA) : '—'}</p>
+            </div>
+          </section>
+          {ot.notasTecnicas && (
+            <section>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Notas técnicas</p>
+              <p className="text-xs text-slate-300 whitespace-pre-wrap bg-slate-900/50 border border-slate-800 rounded-lg p-2.5">{ot.notasTecnicas}</p>
+            </section>
+          )}
+          <section>
+            <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-2">Líneas ({ot.lineas?.length ?? 0})</p>
+            <div className="border border-slate-800 rounded-lg overflow-hidden divide-y divide-slate-800">
+              {(ot.lineas ?? []).map((l, i) => {
+                let titulo = l.descripcion ?? ''
+                if (typeof titulo === 'string' && titulo.startsWith('{')) {
+                  try { const o = JSON.parse(titulo); if (o?.v === 1) titulo = o.titulo ?? '' } catch {}
+                }
+                return (
+                  <div key={i} className="px-3 py-2 flex items-center gap-3">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs text-slate-200 truncate">{titulo}</p>
+                      <p className="text-[10px] text-slate-600 font-mono">{l.cantidad} × RD$ {Number(l.precioUnitario).toLocaleString('es-DO', { minimumFractionDigits: 2 })}</p>
+                    </div>
+                    <span className={`text-[9px] font-bold uppercase px-1.5 py-0.5 rounded border ${
+                      l.consumoInterno
+                        ? 'bg-amber-600/15 text-amber-300 border-amber-600/30'
+                        : 'bg-emerald-600/15 text-emerald-300 border-emerald-600/30'
+                    }`}>
+                      {l.consumoInterno ? '🔧 Interno' : '💰 Fact'}
+                    </span>
+                  </div>
+                )
+              })}
+            </div>
+          </section>
+          <section className="grid grid-cols-2 gap-3 bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+            <div>
+              <p className="text-[10px] text-slate-500">Total facturable</p>
+              <p className="text-lg font-bold text-emerald-400 font-mono">RD$ {totalFacturable.toLocaleString('es-DO', { minimumFractionDigits: 2 })}</p>
+            </div>
+            <div>
+              <p className="text-[10px] text-slate-500">Items internos (BOM)</p>
+              <p className="text-lg font-bold text-amber-400 font-mono">{totalInterno}</p>
+            </div>
+          </section>
+        </div>
+      </aside>
+    </>
   )
 }

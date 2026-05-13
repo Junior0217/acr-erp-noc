@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink,
-  Wifi, Camera, Wrench, Zap, Package, Network, Boxes,
+  Wifi, Camera, Wrench, Zap, Package, Network, Boxes, GripVertical,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
@@ -9,6 +9,9 @@ import { useCart } from '../../contexts/CartContext'
 import { useEmpresa } from '../../contexts/EmpresaContext'
 import { toast } from 'sonner'
 import { marked } from 'marked'
+// Native HTML5 DnD para catálogo → carrito. Más simple que @dnd-kit para
+// un solo drop target y funciona perfecto en tablet/desktop sin overhead.
+// dataTransfer transporta el JSON del item; el carrito hace addItem(item).
 
 const fmt = v => Number(v ?? 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 
@@ -353,7 +356,13 @@ function CatalogSearch({ onAdd }) {
               return (
                 <button key={item.id}
                   onClick={() => setDetailItem(item)}
-                  className={`group relative text-left bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : ''}`}>
+                  draggable={!sinStock}
+                  onDragStart={e => {
+                    if (sinStock) { e.preventDefault(); return }
+                    try { e.dataTransfer.setData('application/x-acr-item', JSON.stringify(item)) } catch {}
+                    e.dataTransfer.effectAllowed = 'copy'
+                  }}
+                  className={`group relative text-left bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : 'cursor-grab active:cursor-grabbing'}`}>
                   {/* Badge tipoItem (esquina superior derecha) */}
                   <span className={`absolute top-1.5 right-1.5 z-10 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider ${
                     esArticulo
@@ -659,9 +668,29 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         <CrossSellBanner cart={cart} onAdd={addItem} />
       </div>
 
-      {/* Right — Carrito (más ancho en monitores grandes) */}
-      <div className="w-80 lg:w-96 xl:w-[26rem] 2xl:w-[30rem] flex-shrink-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3">
-        <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Carrito</p>
+      {/* Right — Carrito (drop target + más ancho en monitores grandes) */}
+      <div
+        onDragOver={e => {
+          if (Array.from(e.dataTransfer.types ?? []).includes('application/x-acr-item')) {
+            e.preventDefault(); e.dataTransfer.dropEffect = 'copy'
+            e.currentTarget.dataset.dragHover = 'true'
+          }
+        }}
+        onDragLeave={e => { delete e.currentTarget.dataset.dragHover }}
+        onDrop={e => {
+          e.preventDefault(); delete e.currentTarget.dataset.dragHover
+          try {
+            const raw = e.dataTransfer.getData('application/x-acr-item')
+            if (!raw) return
+            const item = JSON.parse(raw)
+            if (item) { addItem(item, 1) }
+          } catch {}
+        }}
+        className="w-80 lg:w-96 xl:w-[26rem] 2xl:w-[30rem] flex-shrink-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3 transition-all data-[drag-hover=true]:border-blue-500 data-[drag-hover=true]:bg-blue-900/20 data-[drag-hover=true]:ring-2 data-[drag-hover=true]:ring-blue-500/30">
+        <p className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
+          Carrito
+          <span className="text-[9px] font-normal text-slate-600 normal-case tracking-normal">(arrastra desde el catálogo o clic)</span>
+        </p>
 
         {/* Client */}
         <div className="space-y-2">

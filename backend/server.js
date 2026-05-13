@@ -6462,12 +6462,19 @@ const ordenTrabajoSchema = z.object({
 
 app.get('/api/ordenes', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
   try {
-    const { estado, tipoOT, clienteId, tecnicoId, limit = '50', offset = '0' } = req.query
+    const { estado, tipoOT, clienteId, tecnicoId, search, clienteNombre, desde, hasta, limit = '50', offset = '0' } = req.query
     const where = { deletedAt: null }
     if (estado)    where.estado    = estado
     if (tipoOT)    where.tipoOT    = tipoOT
     if (clienteId) where.clienteId = clienteId
     if (tecnicoId) where.tecnicoId = parseInt(tecnicoId)
+    if (search)    where.noOT      = { contains: search, mode: 'insensitive' }
+    if (clienteNombre) where.cliente = { razonSocial: { contains: clienteNombre, mode: 'insensitive' } }
+    if (desde || hasta) {
+      where.createdAt = {}
+      if (desde) where.createdAt.gte = new Date(desde)
+      if (hasta) { const h = new Date(hasta); h.setHours(23, 59, 59, 999); where.createdAt.lte = h }
+    }
     const [total, ordenes] = await prisma.$transaction([
       prisma.ordenTrabajo.count({ where }),
       prisma.ordenTrabajo.findMany({

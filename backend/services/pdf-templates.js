@@ -214,9 +214,9 @@ html, body {
   gap: 24px;
   align-items: center;
 }
-.brand { display: flex; align-items: center; gap: 14px; }
+.brand { display: flex; align-items: center; gap: 16px; }
 .logo {
-  width: 86px; height: 86px;
+  width: 130px; height: 130px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
