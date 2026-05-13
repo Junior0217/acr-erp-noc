@@ -4,6 +4,7 @@ import {
   Plus, Search, X, RefreshCw, ChevronLeft, ChevronRight,
   Pencil, Trash2, AlertTriangle, Package, Tag, ArrowDownCircle,
   ArrowUpCircle, BarChart2, Loader2, Download, ShieldOff, Wrench, ShoppingCart,
+  Table2, LayoutGrid,
 } from 'lucide-react'
 import FormularioProducto  from '../components/inventario/FormularioProducto'
 import FormularioCategoria from '../components/inventario/FormularioCategoria'
@@ -127,6 +128,11 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
   const [canibFiltro, setCanibFiltro] = useState('')
   const [page, setPage]       = useState(1)
   const [loading, setLoading] = useState(false)
+  // Persistido por user-preference: vuelve a la última vista al recargar.
+  const [vista, setVista] = useState(() => {
+    try { return localStorage.getItem('acr_inv_view') ?? 'tabla' } catch { return 'tabla' }
+  })
+  function cambiarVista(v) { setVista(v); try { localStorage.setItem('acr_inv_view', v) } catch {} }
   const [modal, setModal]     = useState(null)
   const [viewModal, setViewModal] = useState(null)
   const debouncedSearch       = useDebounce(search, 400)
@@ -220,12 +226,74 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
             <Plus size={14} /> {esServicio ? 'Nuevo Servicio' : 'Nuevo Artículo'}
           </button>
         )}
+        <div className="inline-flex bg-slate-800 border border-slate-700 rounded-lg p-0.5" title="Vista">
+          <button onClick={() => cambiarVista('tabla')}
+            className={`p-1.5 rounded ${vista === 'tabla' ? 'bg-slate-700 text-blue-300' : 'text-slate-500 hover:text-slate-300'}`}
+            title="Vista tabla">
+            <Table2 size={14} />
+          </button>
+          <button onClick={() => cambiarVista('galeria')}
+            className={`p-1.5 rounded ${vista === 'galeria' ? 'bg-slate-700 text-blue-300' : 'text-slate-500 hover:text-slate-300'}`}
+            title="Vista galería">
+            <LayoutGrid size={14} />
+          </button>
+        </div>
         <button onClick={() => fetch_(page, debouncedSearch, catFiltro)} className="p-2 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
           <RefreshCw size={16} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
 
-      <div className="overflow-x-auto">
+      {vista === 'galeria' && !loading && rows.length > 0 && (
+        <div className="p-4 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+          {rows.map(p => (
+            <div key={p.id} onClick={() => setViewModal(p)}
+              className="group bg-slate-800/40 hover:bg-slate-800/80 border border-slate-700/50 hover:border-blue-500/50 rounded-xl overflow-hidden cursor-pointer transition-all hover:shadow-lg hover:shadow-blue-600/10 flex flex-col">
+              <div className="aspect-square bg-slate-900 border-b border-slate-800 overflow-hidden flex items-center justify-center">
+                {p.imagenUrl ? (
+                  <img src={p.imagenUrl} alt={p.nombre} className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                    onError={e => { e.currentTarget.style.display = 'none' }} />
+                ) : (
+                  <Package size={42} className="text-slate-700" strokeWidth={1.2} />
+                )}
+                {!esServicio && (
+                  <div className="absolute top-2 right-2"><StockBadge stock={p.stockActual} /></div>
+                )}
+              </div>
+              <div className="p-3 flex-1 flex flex-col gap-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <p className="text-xs font-bold text-slate-100 leading-tight line-clamp-2 flex-1">{p.nombre}</p>
+                </div>
+                <p className="text-[10px] font-mono text-slate-500 truncate">{p.sku}</p>
+                {p.descripcion && (
+                  <p className="text-[10px] text-slate-500 line-clamp-2">{p.descripcion.replace(/[*_`#-]/g, '').trim()}</p>
+                )}
+                <div className="flex items-center justify-between mt-auto pt-1.5">
+                  <span className="text-sm font-bold font-mono text-emerald-400">RD$ {fmt(p.precio)}</span>
+                  {!esServicio && (
+                    <span className={`text-[10px] font-mono ${p.stockActual <= 0 ? 'text-red-400' : p.stockActual <= 5 ? 'text-amber-400' : 'text-slate-500'}`}>
+                      Stk {p.stockActual}
+                    </span>
+                  )}
+                </div>
+                <div className="flex gap-1 mt-1.5" onClick={e => e.stopPropagation()}>
+                  <button onClick={() => addItem(p.id, 1)} disabled={cartLoading || (!esServicio && p.stockActual <= 0)}
+                    className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/40 transition-colors disabled:opacity-40">
+                    <ShoppingCart size={11} />Añadir
+                  </button>
+                  {canCreate && (
+                    <button onClick={() => setModal(p)}
+                      className="px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors">
+                      <Pencil size={11} />
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {vista === 'tabla' && <div className="overflow-x-auto">
         <table className="w-full min-w-[640px]">
           <thead className="sticky top-0 z-10">
             <tr>
@@ -283,7 +351,7 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </div>}
 
       <Pager meta={meta} onPage={p => setPage(p)} />
 

@@ -1,12 +1,13 @@
-// build: 2026-05-12
-import { lazy, Suspense } from 'react'
+// build: 2026-05-13
+import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { Toaster } from 'sonner'
+import { Toaster, toast } from 'sonner'
 import { useAuth, AuthProvider } from './contexts/AuthContext'
 import { CartProvider } from './contexts/CartContext'
 import { EmpresaProvider } from './contexts/EmpresaContext'
 import PWAUpdatePrompt from './components/PWAUpdatePrompt'
 import ErrorBoundary from './components/ErrorBoundary'
+import { apiFetch } from './utils/api'
 
 // ─── EAGER (route shell + Login) ──────────────────────────────────────────────
 // AdminLayout + Login se cargan al inicio porque son el camino de entrada.
@@ -106,6 +107,25 @@ function AppRoutes() {
   )
 }
 
+// Listener global: cuando apiFetch detecte version drift, mostrar toast antes
+// del reload forzado (la recarga la dispara el propio utils/api.js).
+function VersionDriftWatcher() {
+  useEffect(() => {
+    const onDrift = () => {
+      toast.warning('Nueva versión detectada', {
+        description: 'Recargando para aplicar los últimos cambios…',
+        duration: 1500,
+      })
+    }
+    window.addEventListener('app:version-mismatch', onDrift)
+    // Heartbeat: pulsa /api/health cada 60s para detectar drift cuando el user
+    // está idle (sin clicks que disparen otras requests).
+    const t = setInterval(() => { apiFetch('/api/health').catch(() => {}) }, 60_000)
+    return () => { window.removeEventListener('app:version-mismatch', onDrift); clearInterval(t) }
+  }, [])
+  return null
+}
+
 export default function App() {
   return (
     <ErrorBoundary>
@@ -114,6 +134,7 @@ export default function App() {
           <CartProvider>
             <BrowserRouter>
               <Toaster position="top-right" richColors closeButton duration={4000} />
+              <VersionDriftWatcher />
               <AppRoutes />
               <PWAUpdatePrompt />
             </BrowserRouter>

@@ -1,10 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   Plus, Search, Pencil, Loader2, Save, X, CheckCircle, XCircle, RefreshCw, ShoppingBag,
-  Wrench, Package, Layers,
+  Wrench, Package, Layers, Link2, Unlink, Image as ImageIcon,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
+import ImageDropzone from '../../components/ImageDropzone'
 import {
   TIPOS, CATEGORIAS,
   TH, LABEL_CLS, INPUT_CLS, SELECT_CLS,
@@ -14,13 +15,96 @@ import {
 
 // ── ItemModal ─────────────────────────────────────────────────────────────────
 
+function ProductoSearchInput({ value, onChange, productoActual }) {
+  const [q, setQ] = useState('')
+  const [results, setResults] = useState([])
+  const [busy, setBusy] = useState(false)
+  const [open, setOpen] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (!q.trim() || q.length < 2) { setResults([]); return }
+    const t = setTimeout(async () => {
+      setBusy(true)
+      try {
+        const r = await apiFetch(`/api/inventario/productos?search=${encodeURIComponent(q)}&limit=10`)
+        const j = await r.json()
+        setResults(j.data ?? [])
+      } catch {} finally { setBusy(false) }
+    }, 300)
+    return () => clearTimeout(t)
+  }, [q])
+
+  useEffect(() => {
+    function h(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false) }
+    document.addEventListener('mousedown', h)
+    return () => document.removeEventListener('mousedown', h)
+  }, [])
+
+  if (value && productoActual) {
+    return (
+      <div className="flex items-center justify-between p-3 bg-emerald-900/20 border border-emerald-700/40 rounded-lg">
+        <div className="flex items-center gap-2.5 min-w-0">
+          <div className="w-9 h-9 rounded-lg bg-emerald-600/15 border border-emerald-600/30 flex items-center justify-center flex-shrink-0">
+            <Link2 size={14} className="text-emerald-400" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-slate-100 truncate">{productoActual.nombre}</p>
+            <p className="text-[10px] font-mono text-emerald-300 truncate">SKU {productoActual.sku} · Stock: {productoActual.stockActual}</p>
+          </div>
+        </div>
+        <button onClick={() => onChange(null)} type="button"
+          className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-red-300 transition-colors flex-shrink-0">
+          <Unlink size={11} /> Desvincular
+        </button>
+      </div>
+    )
+  }
+
+  return (
+    <div className="relative" ref={ref}>
+      <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+      <input
+        value={q}
+        onChange={e => { setQ(e.target.value); setOpen(true) }}
+        onFocus={() => setOpen(true)}
+        placeholder="Buscar producto físico por nombre o SKU…"
+        className="w-full pl-8 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
+      />
+      {busy && <Loader2 size={12} className="absolute right-3 top-1/2 -translate-y-1/2 text-blue-400 animate-spin" />}
+      {open && q.length >= 2 && results.length > 0 && (
+        <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-xl shadow-2xl overflow-hidden max-h-60 overflow-y-auto">
+          {results.map(p => (
+            <button key={p.id} type="button"
+              onMouseDown={() => { onChange(p.id, p); setQ(''); setResults([]); setOpen(false) }}
+              className="w-full text-left px-3 py-2 hover:bg-slate-700 transition-colors border-b border-slate-700/30 last:border-0">
+              <div className="text-xs font-semibold text-slate-100">{p.nombre}</div>
+              <div className="text-[10px] font-mono text-slate-400 mt-0.5">
+                SKU {p.sku} · Stock: <span className={p.stockActual <= 0 ? 'text-red-400' : 'text-emerald-400'}>{p.stockActual}</span>
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+      {open && q.length >= 2 && !busy && results.length === 0 && (
+        <div className="absolute z-30 left-0 right-0 top-full mt-1 bg-slate-800 border border-slate-700 rounded-xl px-3 py-2 text-xs text-slate-500">
+          Sin resultados. El item quedará SIN vínculo (stock manual).
+        </div>
+      )}
+    </div>
+  )
+}
+
 function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
-  const empty = { nombre: '', descripcion: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', activo: true }
+  const empty = { nombre: '', descripcion: '', imagenUrl: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', productoId: null, activo: true }
   const [form, setForm] = useState(
     item
-      ? { ...item, precio: String(item.precio), costo: String(item.costo ?? 0), stock: item.stock != null ? String(item.stock) : '' }
+      ? { ...item, precio: String(item.precio), costo: String(item.costo ?? 0), stock: item.stock != null ? String(item.stock) : '', imagenUrl: item.imagenUrl ?? '', productoId: item.productoId ?? null }
       : empty
   )
+  // El producto físico actual (para mostrar nombre/stock en el badge). Se hidrata
+  // si el item ya está vinculado o se setea al seleccionar uno nuevo.
+  const [productoActual, setProductoActual] = useState(item?.producto ?? null)
   const [saving, setSaving] = useState(false)
   const [err, setErr]       = useState('')
 
@@ -34,11 +118,13 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
       const body = {
         nombre:      form.nombre.trim(),
         descripcion: form.descripcion?.trim() || null,
+        imagenUrl:   form.imagenUrl || null,
         tipo:        form.tipo,
         categoria:   form.categoria,
         precio:      parseFloat(form.precio),
         ...(canSeeCosts ? { costo: parseFloat(form.costo) || 0 } : {}),
-        stock:       form.tipo === 'VentaUnica' && form.stock !== '' ? parseInt(form.stock) : null,
+        stock:       form.tipo === 'VentaUnica' && form.stock !== '' && !form.productoId ? parseInt(form.stock) : null,
+        productoId:  form.productoId ?? null,
         activo:      form.activo,
       }
       const r = await apiFetch(item ? `/api/catalogo/${item.id}` : '/api/catalogo', {
@@ -69,10 +155,39 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
           </div>
 
           <div>
-            <label className={LABEL_CLS}>Descripción</label>
-            <textarea value={form.descripcion || ''} onChange={e => set('descripcion', e.target.value)} rows={2}
-              placeholder="Detalles adicionales (opcional)"
-              className={`${INPUT_CLS} resize-none`} />
+            <label className={LABEL_CLS}>Descripción (admite Markdown ligero)</label>
+            <textarea value={form.descripcion || ''} onChange={e => set('descripcion', e.target.value)} rows={3}
+              placeholder={'**Cámara IP 4MP**\n- Visión nocturna 30m\n- WDR 120dB\n- POE'}
+              maxLength={1000}
+              className={`${INPUT_CLS} resize-none font-mono text-xs`} />
+            <p className="text-[10px] text-slate-600 mt-1">Soporta **negrita**, *cursiva*, - listas. Aparece en POS + PDF.</p>
+          </div>
+
+          <ImageDropzone
+            url={form.imagenUrl}
+            onChange={u => set('imagenUrl', u)}
+            kind="itemCatalogo"
+            label="Imagen del item (vitrina comercial)"
+            desc="Arrastra una foto · si está vinculado a un producto, se usa la imagen del producto físico"
+            height={160}
+          />
+
+          {/* Vínculo con producto físico (sincroniza stock + imagen del inventario) */}
+          <div>
+            <label className={LABEL_CLS}>Vínculo con Producto Físico (Inventario)</label>
+            <ProductoSearchInput
+              value={form.productoId}
+              productoActual={productoActual}
+              onChange={(pid, prod) => { set('productoId', pid); setProductoActual(prod ?? null) }}
+            />
+            <div className={`mt-2 px-3 py-2 rounded-lg text-[11px] flex items-start gap-2 ${form.productoId ? 'bg-emerald-900/20 border border-emerald-700/30 text-emerald-300' : 'bg-amber-900/15 border border-amber-700/30 text-amber-300'}`}>
+              <span className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 bg-current" />
+              {form.productoId ? (
+                <span>El stock se lee del <strong>Producto físico</strong> (Inventario). Cualquier venta POS descuenta del kardex automáticamente.</span>
+              ) : (
+                <span>Sin vínculo → el stock se gestiona manualmente en este item. Recomendado vincular si el ítem corresponde a algo físico para evitar drift.</span>
+              )}
+            </div>
           </div>
 
           <div className="grid grid-cols-2 gap-3">
@@ -108,11 +223,12 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
             )}
           </div>
 
-          {form.tipo === 'VentaUnica' && (
+          {form.tipo === 'VentaUnica' && !form.productoId && (
             <div>
-              <label className={LABEL_CLS}>Stock (unidades)</label>
+              <label className={LABEL_CLS}>Stock manual (unidades)</label>
               <input type="number" min="0" value={form.stock} onChange={e => set('stock', e.target.value)}
                 placeholder="Dejar vacío si no aplica" className={INPUT_CLS} />
+              <p className="text-[10px] text-slate-600 mt-1">Solo si NO está vinculado a un producto físico.</p>
             </div>
           )}
 

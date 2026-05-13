@@ -1,6 +1,66 @@
 const BASE = import.meta.env.VITE_API_URL
 if (!BASE) console.error('[ACR ERP] VITE_API_URL is not set — all API calls will fail. Add it to .env.local (dev) or Vercel env vars (prod).')
 
+// ─── Version sync ────────────────────────────────────────────────────────────
+// El backend inyecta X-App-Version en cada respuesta /api/*. Si el frontend
+// detecta un valor distinto al que vio en la primera respuesta de esta sesión,
+// significa que el backend fue redeployed -> contratos pueden haber cambiado.
+// Reload duro + limpieza de caches de SW para tomar el bundle nuevo.
+let _knownBackendVersion = null
+let _reloadScheduled     = false
+
+async function purgeSwCaches() {
+  try {
+    if (typeof caches !== 'undefined') {
+      const keys = await caches.keys()
+      await Promise.all(keys.map(k => caches.delete(k)))
+    }
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations()
+      await Promise.all(regs.map(r => r.unregister()))
+    }
+  } catch {}
+}
+
+function checkVersionDrift(res) {
+  try {
+    const v = res.headers.get('X-App-Version')
+    if (!v) return
+    if (!_knownBackendVersion) {
+      _knownBackendVersion = v
+      // Compare with persisted version from prior session (catches stale bundle on hard reload too).
+      const persisted = localStorage.getItem('acr_backend_version')
+      if (persisted && persisted !== v) {
+        localStorage.setItem('acr_backend_version', v)
+        scheduleReload()
+        return
+      }
+      localStorage.setItem('acr_backend_version', v)
+      return
+    }
+    if (v !== _knownBackendVersion) {
+      _knownBackendVersion = v
+      localStorage.setItem('acr_backend_version', v)
+      scheduleReload()
+    }
+  } catch {}
+}
+
+function scheduleReload() {
+  if (_reloadScheduled) return
+  _reloadScheduled = true
+  // Pequeño delay para mostrar toast si la app lo escucha; igual recarga forzado.
+  window.dispatchEvent(new CustomEvent('app:version-mismatch', { detail: { version: _knownBackendVersion } }))
+  setTimeout(async () => {
+    await purgeSwCaches()
+    // location.reload(true) está deprecado pero sigue funcionando en Chrome/Edge;
+    // forzamos invalidación del HTTP cache con un query bust antes del reload.
+    const u = new URL(window.location.href)
+    u.searchParams.set('_v', _knownBackendVersion ?? Date.now())
+    window.location.replace(u.toString())
+  }, 1500)
+}
+
 // In-memory CSRF token — survives SPA navigation, lost on hard reload.
 // Restored via /api/auth/csrf on startup (see AuthContext) o lazy on demand.
 let _csrfToken = null
@@ -58,6 +118,7 @@ export async function apiFetch(path, options = {}) {
   })
 
   let res = await doFetch()
+  checkVersionDrift(res)
 
   // Recuperación automática: si fue rechazado por CSRF, refrescar token y reintentar 1 vez.
   if (res.status === 403 && mutating) {

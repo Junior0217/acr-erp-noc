@@ -254,7 +254,7 @@ const corsOptions = {
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders:  ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token'],
-  exposedHeaders:  ['X-CSRF-Token'],
+  exposedHeaders:  ['X-CSRF-Token', 'X-App-Version', 'X-Boot-At'],
   credentials: true,
   optionsSuccessStatus: 200,
 };
@@ -272,17 +272,46 @@ function reqFingerprint(req) {
 // /api/health DEBE ir antes del limiter global — Render lo golpea cada 30s
 // y con 200 req/15min se agotaba la cuota en pruebas de carga ligera -> 429.
 // Sin rate-limit aquí; queda como liveness probe puro.
+// Versión de la app: se computa al boot y se sirve en /api/health + header
+// X-App-Version en cada respuesta. El frontend compara y dispara recarga si
+// detecta drift entre el bundle cacheado y el backend desplegado.
+const APP_VERSION = (process.env.APP_VERSION
+  || process.env.RENDER_GIT_COMMIT?.slice(0, 7)
+  || `local-${Date.now()}`).trim()
+const APP_BOOT_AT = Date.now()
+console.log(`[VERSION] APP_VERSION=${APP_VERSION} boot=${new Date(APP_BOOT_AT).toISOString()}`)
+
+// Middleware: inyecta X-App-Version + X-Boot-At en TODAS las /api/*. Cheap.
+app.use('/api/', (req, res, next) => {
+  res.setHeader('X-App-Version', APP_VERSION)
+  res.setHeader('X-Boot-At',     String(APP_BOOT_AT))
+  next()
+})
+
 app.get('/api/health', async (req, res) => {
   let dbConnected = false
   try { await prisma.$queryRaw`SELECT 1`; dbConnected = true } catch (_) {}
-  res.json({ status: 'ok', version: '3.0.0', timestamp: Date.now(), dbConnected, uptime: Math.floor(process.uptime()) })
+  res.json({
+    status: 'ok',
+    version: APP_VERSION,
+    bootAt: APP_BOOT_AT,
+    timestamp: Date.now(),
+    dbConnected,
+    uptime: Math.floor(process.uptime()),
+  })
 })
+
+// /api/auth/challenge genera RSA cryptochallenge para login. Es idempotente y
+// no expone PII. IPs con NAT (oficinas) gastaban cuota global -> 429 al primer
+// usuario. Se exime del limiter global; loginLimiter cubre el abuso real (login).
+const RATE_LIMIT_SKIP = new Set(['/api/health', '/api/auth/challenge', '/api/auth/csrf'])
 
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 200,
-  keyGenerator: reqFingerprint,
+  max: 500,                          // Subido de 200 → 500 (margen NAT)
+  keyGenerator: reqFingerprint,      // fingerprint = ip+UA hash (mitiga NAT)
   store: makeRateLimitStore(),
+  skip: (req) => RATE_LIMIT_SKIP.has(req.path),
   message: { error: 'Demasiadas peticiones, intente de nuevo más tarde.' }
 });
 app.use('/api/', limiter);
@@ -2633,6 +2662,59 @@ app.post(
       if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
       console.error('[EMPRESA UPLOAD]', e.message)
       res.status(500).json({ error: 'Error interno al procesar el archivo.' })
+    }
+  }
+)
+
+// ─── Upload de imágenes de inventario (productos, categorías, items) ─────────
+// Reutiliza la misma pipeline de comprimirImagen + supabase storage. Bucket
+// SUPABASE_INVENTORY_BUCKET (default: inventario-img) — separado de empresa-assets
+// para tener cleanup independiente y políticas distintas.
+const INVENTORY_BUCKET = process.env.SUPABASE_INVENTORY_BUCKET ?? 'inventario-img'
+const KINDS_INVENTARIO = ['producto', 'categoria', 'itemCatalogo']
+
+app.post('/api/inventario/upload-image',
+  uploadLimiter,
+  verificarJWT,
+  requerirPermiso('catalogo:editar'),
+  uploadMulter.single('file'),
+  async (req, res) => {
+    try {
+      if (!supabase) return res.status(503).json({ error: 'Storage no configurado.', code: 'STORAGE_DISABLED' })
+      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
+      const kind = String(req.body.kind || req.query.kind || 'producto')
+      if (!KINDS_INVENTARIO.includes(kind)) {
+        return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_INVENTARIO.join(', ')}.` })
+      }
+      const inputMime = detectMimeFromBuffer(req.file.buffer)
+      if (!inputMime) return res.status(415).json({ error: 'Tipo no reconocido.', code: 'INVALID_MIME' })
+      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
+      if (inputMime === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
+        return res.status(422).json({ error: 'SVG con contenido peligroso.', code: 'SVG_UNSAFE' })
+      }
+      let buffer, finalMime, ext
+      try {
+        const c = await comprimirImagen(req.file.buffer, inputMime)
+        buffer = c.buffer; finalMime = c.mime; ext = c.ext
+      } catch {
+        return res.status(422).json({ error: 'Imagen corrupta.', code: 'COMPRESS_FAIL' })
+      }
+      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
+      const path = `${kind}/${filename}`
+      const { error: upErr } = await supabase.storage.from(INVENTORY_BUCKET).upload(path, buffer, {
+        contentType: finalMime, cacheControl: '3600', upsert: false,
+      })
+      if (upErr) {
+        console.error('[INV UPLOAD]', upErr.message)
+        return res.status(502).json({ error: `Error al subir: ${upErr.message}` })
+      }
+      const { data: pub } = supabase.storage.from(INVENTORY_BUCKET).getPublicUrl(path)
+      auditReq('inventario:upload_imagen', req, { kind, mime: finalMime, size: buffer.length })
+      res.status(201).json({ kind, url: pub?.publicUrl ?? null, mime: finalMime, size: buffer.length })
+    } catch (e) {
+      if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
+      console.error('[INV UPLOAD]', e.message)
+      res.status(500).json({ error: 'Error interno.' })
     }
   }
 )

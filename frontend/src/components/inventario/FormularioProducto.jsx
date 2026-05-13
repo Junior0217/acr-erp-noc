@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { X, Loader2, Info } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
+import ImageDropzone from '../ImageDropzone'
 
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
@@ -116,18 +117,14 @@ export default function FormularioProducto({ producto, onClose, onSaved }) {
             </select>
           </div>
 
-          <div>
-            <label className={LABEL}>Imagen (URL)</label>
-            <div className="flex gap-2">
-              <input className={INPUT} value={form.imagenUrl} onChange={e => set('imagenUrl', e.target.value)}
-                placeholder="https://… (pega aquí el link de Supabase Storage o subir luego)" />
-              {form.imagenUrl && (
-                <div className="w-12 h-10 rounded-lg overflow-hidden bg-slate-800 border border-slate-700 flex-shrink-0">
-                  <img src={form.imagenUrl} alt="" className="w-full h-full object-cover" onError={e => { e.currentTarget.style.display = 'none' }} />
-                </div>
-              )}
-            </div>
-          </div>
+          <ImageDropzone
+            url={form.imagenUrl}
+            onChange={u => set('imagenUrl', u)}
+            kind="producto"
+            label="Imagen del producto"
+            desc="Arrastra una foto · PNG/JPG/WebP/SVG · max 2MB (se comprime a 800px)"
+            height={180}
+          />
 
           <div>
             <label className={LABEL}>Descripción (admite Markdown ligero)</label>

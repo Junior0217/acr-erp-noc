@@ -3,6 +3,7 @@ import { toast } from 'sonner'
 import {
   RefreshCw, Loader2, FileText, RotateCcw, AlertTriangle,
   Search, X, Printer, CheckSquare, Square, FileArchive, Plus, ScrollText,
+  Edit3, Save,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '../../utils/pdf'
@@ -16,12 +17,30 @@ const fmtFull = d => new Date(d).toLocaleString('es-DO', { day: '2-digit', month
 const TH = 'px-4 py-3 text-left text-xs font-semibold text-slate-500 uppercase tracking-wider whitespace-nowrap bg-slate-800/60'
 const TD = 'px-4 py-3 text-sm text-slate-300'
 
+// Normalizer compartido: legacy string -> { incluir, texto }.
+function normCondField(v) {
+  if (v == null) return { incluir: false, texto: '' }
+  if (typeof v === 'string') return { incluir: !!v.trim(), texto: v }
+  return { incluir: !!v.incluir, texto: String(v.texto ?? '') }
+}
+
 function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
   const { clearCart, updateCartMeta, addItem, setOpen } = useCart()
   const [loading, setLoading]   = useState(true)
   const [preview, setPreview]   = useState(null)
   const [emitting, setEmitting] = useState(false)
   const [downloading, setDownloading] = useState(false)
+  // Cotización fresh (para condiciones override). El preview de "revivir" no
+  // las trae — cargo aparte vía /api/ventas/facturas/:id (mismo modelo Factura).
+  const [full, setFull] = useState(null)
+  const [editCond, setEditCond] = useState(false)
+  const [cond, setCond] = useState({
+    validez:  { incluir: false, texto: '' },
+    pago:     { incluir: false, texto: '' },
+    entrega:  { incluir: false, texto: '' },
+    garantia: { incluir: false, texto: '' },
+  })
+  const [savingCond, setSavingCond] = useState(false)
 
   useEffect(() => {
     apiFetch(`/api/ventas/cotizaciones/${cot.id}/revivir`, {
@@ -33,7 +52,34 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
       .then(j => setPreview(j))
       .catch(() => { toast.error('Error al obtener la cotización.'); onClose() })
       .finally(() => setLoading(false))
+
+    // Carga aparte el doc completo para tener factura.condiciones.
+    apiFetch(`/api/ventas/facturas/${cot.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(j => {
+        if (!j) return
+        setFull(j)
+        setCond({
+          validez:  normCondField(j?.condiciones?.validez),
+          pago:     normCondField(j?.condiciones?.pago),
+          entrega:  normCondField(j?.condiciones?.entrega),
+          garantia: normCondField(j?.condiciones?.garantia),
+        })
+      })
+      .catch(() => {})
   }, [cot.id])
+
+  async function guardarCondiciones() {
+    setSavingCond(true)
+    try {
+      const r = await apiFetch(`/api/facturas/${cot.id}/condiciones`, { method: 'PATCH', body: JSON.stringify(cond) })
+      if (!r.ok) { const j = await r.json().catch(() => ({})); toast.error(j.error ?? 'Error.'); return }
+      toast.success('Condiciones guardadas. Regenera el PDF para verlas.')
+      setEditCond(false)
+      const j2 = await apiFetch(`/api/ventas/facturas/${cot.id}`).then(r => r.ok ? r.json() : null).catch(() => null)
+      if (j2) setFull(j2)
+    } finally { setSavingCond(false) }
+  }
 
   // Delegar al padre: abre el Drawer compartido con el PDF server-side.
   async function descargarPDF() {
@@ -187,6 +233,77 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                   <span className="text-blue-300">RD$ {fmt(totalAmt)}</span>
                 </div>
               </div>
+
+              {/* Condiciones del documento — toggle por campo (mismo shape que en Facturas) */}
+              <section className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-4">
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <FileText size={13} className="text-blue-400" />
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Condiciones del documento</p>
+                  </div>
+                  {!editCond && (
+                    <button onClick={() => setEditCond(true)} className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-blue-400 transition-colors">
+                      <Edit3 size={11} /> Editar
+                    </button>
+                  )}
+                </div>
+                {!editCond ? (
+                  <div className="space-y-1.5 text-xs">
+                    {['validez','pago','entrega','garantia'].map(k => {
+                      const raw = full?.condiciones?.[k]
+                      const item = raw == null ? null : (typeof raw === 'string' ? { incluir: !!raw.trim(), texto: raw } : raw)
+                      const omitted = item && !item.incluir
+                      const usaDefault = item == null
+                      return (
+                        <div key={k} className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-1 w-16">{k}</span>
+                          {omitted
+                            ? <span className="text-slate-700 italic">(omitida en este documento)</span>
+                            : <span className="text-slate-300 flex-1">{(item?.texto?.trim()) || <span className="text-slate-700 italic">{usaDefault ? '(usa valor por defecto de empresa)' : '—'}</span>}</span>}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {['validez','pago','entrega','garantia'].map(k => (
+                      <div key={k} className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{k}</label>
+                          <button type="button" onClick={() => setCond(c => ({ ...c, [k]: { ...c[k], incluir: !c[k].incluir } }))}
+                            className="flex items-center gap-1.5 text-[10px] font-mono">
+                            <span className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${cond[k].incluir ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${cond[k].incluir ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                            </span>
+                            <span className={cond[k].incluir ? 'text-blue-300' : 'text-slate-500'}>{cond[k].incluir ? 'Incluir en PDF' : 'Omitir'}</span>
+                          </button>
+                        </div>
+                        <input type="text" value={cond[k].texto} maxLength={280}
+                          onChange={e => setCond(c => ({ ...c, [k]: { incluir: c[k].incluir || !!e.target.value, texto: e.target.value } }))}
+                          disabled={!cond[k].incluir}
+                          placeholder={cond[k].incluir ? '(vacío = usa default de empresa)' : 'Omitida'}
+                          className={`w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-opacity ${!cond[k].incluir ? 'opacity-40' : ''}`} />
+                      </div>
+                    ))}
+                    <div className="flex justify-end gap-2 pt-2">
+                      <button onClick={() => { setEditCond(false); setCond({
+                        validez:  normCondField(full?.condiciones?.validez),
+                        pago:     normCondField(full?.condiciones?.pago),
+                        entrega:  normCondField(full?.condiciones?.entrega),
+                        garantia: normCondField(full?.condiciones?.garantia),
+                      }) }}
+                        className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
+                        Cancelar
+                      </button>
+                      <button onClick={guardarCondiciones} disabled={savingCond}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40">
+                        {savingCond ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
+                        Guardar
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </section>
             </div>
           )}
         </div>
