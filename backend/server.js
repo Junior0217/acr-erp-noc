@@ -5560,127 +5560,50 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
-// ─── PDF Builder (shared by route + email) ────────────────────────────────────
+// ─── PDF Builder (shared por rutas legacy + envío por email) ─────────────────
+// Delegación al motor corporativo nuevo (Puppeteer + renderPdfDoc).
+// Antes era pdfkit; ahora se unifica para que TODOS los PDFs (legacy + nuevos +
+// email automático) salgan con el mismo diseño y datos desde EmpresaPerfil.
 
 async function buildFacturaPDFBuffer(factura) {
-  return new Promise(async (resolve, reject) => {
-    try {
-      const doc    = new PDFDocument({ size: 'A4', margin: 50 })
-      const chunks = []
-      doc.on('data', c => chunks.push(c))
-      doc.on('end',  () => resolve(Buffer.concat(chunks)))
-      doc.on('error', reject)
-
-      const fmtMoney = n => `RD$ ${Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })}`
-      const fmtDate  = d => d ? new Date(d).toLocaleDateString('es-DO', { year: 'numeric', month: '2-digit', day: '2-digit' }) : '—'
-      const W = 495
-
-      // Logo: use PNG from assets/ if available, else text placeholder
-      const LOGO_PATH = path.join(__dirname, 'assets', 'logo-acr.png')
-      if (fs.existsSync(LOGO_PATH)) {
-        doc.image(LOGO_PATH, 50, 44, { width: 62, height: 48, fit: [62, 48] })
-      } else {
-        doc.rect(50, 44, 62, 48).fillAndStroke('#1e3a5f', '#0e2744')
-        doc.fontSize(17).font('Helvetica-Bold').fillColor('#60a5fa').text('ACR', 52, 53, { width: 58, align: 'center' })
-        doc.fontSize(6.5).font('Helvetica').fillColor('#93c5fd').text('NETWORKS', 52, 73, { width: 58, align: 'center' })
-        doc.fontSize(5.5).font('Helvetica').fillColor('#64748b').text('& SOLUTIONS', 52, 82, { width: 58, align: 'center' })
-      }
-
-      // Header text
-      doc.fontSize(18).font('Helvetica-Bold').fillColor('#1e3a5f').text('ACR Networks & Solutions', 124, 46)
-      doc.fontSize(8.5).font('Helvetica').fillColor('#555').text('Proveedor WISP · CCTV · Redes · Seguridad Electrónica', 124, 68)
-      doc.fontSize(8).font('Helvetica').fillColor('#6b7280').text('Santo Domingo, República Dominicana', 124, 81)
-
-      // NCF box
-      doc.roundedRect(370, 45, 175, 40, 5).fillAndStroke('#1e3a5f', '#1e3a5f')
-      doc.fontSize(8).font('Helvetica').fillColor('#fff').text('COMPROBANTE FISCAL', 378, 51, { width: 160, align: 'center' })
-      doc.fontSize(12).font('Helvetica-Bold').fillColor('#fff').text(factura.ncf ?? 'N/A', 378, 63, { width: 160, align: 'center' })
-
-      doc.moveTo(50, 96).lineTo(545, 96).strokeColor('#1e3a5f').lineWidth(2).stroke()
-
-      doc.fontSize(14).font('Helvetica-Bold').fillColor('#1e3a5f').text('FACTURA', 50, 108)
-      doc.fontSize(9).font('Helvetica').fillColor('#333')
-        .text(`No. Factura: ${factura.noFactura}`, 50, 126)
-        .text(`Emisión: ${fmtDate(factura.fechaEmision)}`, 50, 140)
-        .text(`Vence: ${fmtDate(factura.fechaVence)}`, 50, 154)
-        .text(`Estado: ${factura.estado}`, 50, 168)
-
-      doc.roundedRect(280, 108, 265, 70, 4).fillAndStroke('#f4f7fb', '#dde5ef')
-      doc.fontSize(8).font('Helvetica-Bold').fillColor('#1e3a5f').text('CLIENTE', 292, 116)
-      doc.font('Helvetica').fillColor('#222')
-        .text(factura.cliente?.razonSocial ?? '—', 292, 128, { width: 240 })
-        .text(`RNC: ${factura.cliente?.rnc ?? '—'}`, 292, 140)
-        .text(factura.cliente?.direccion ?? '', 292, 152, { width: 240 })
-        .text(`Tel: ${factura.cliente?.telefonoPrincipal ?? '—'}`, 292, 164)
-
-      // QR DGII
-      if (factura.ncf) {
-        try {
-          const qrUrl = `https://dgii.gov.do/app/verificaNCF?ncf=${factura.ncf}`
-          const qrDataUrl = await QRCode.toDataURL(qrUrl, { width: 60, margin: 1 })
-          const qrBuf = Buffer.from(qrDataUrl.split(',')[1], 'base64')
-          doc.image(qrBuf, 490, 108, { width: 55 })
-          doc.fontSize(6).font('Helvetica').fillColor('#888').text('Verificar NCF', 490, 166, { width: 55, align: 'center' })
-        } catch {}
-      }
-
-      const tableTop = 200
-      doc.moveTo(50, tableTop).lineTo(545, tableTop).strokeColor('#1e3a5f').lineWidth(1.5).stroke()
-      doc.rect(50, tableTop, W, 18).fill('#1e3a5f')
-      doc.fontSize(8).font('Helvetica-Bold').fillColor('#fff')
-        .text('#',           55, tableTop + 5, { width: 18 })
-        .text('Descripción', 78, tableTop + 5, { width: 230 })
-        .text('Cant',       318, tableTop + 5, { width: 40,  align: 'right' })
-        .text('P. Unit.',   368, tableTop + 5, { width: 80,  align: 'right' })
-        .text('Total',      458, tableTop + 5, { width: 80,  align: 'right' })
-
-      // OT lineas (itemCatalogo-based) take precedence; fallback to direct LineaFactura (POS)
-      const otLineas  = factura.orden?.lineas ?? []
-      const posLineas = factura.lineas ?? []
-      const lineas = otLineas.length > 0 ? otLineas : posLineas
-      let y = tableTop + 18
-      lineas.forEach((l, i) => {
-        const desc  = l.itemCatalogo?.nombre ?? l.descripcion ?? '—'
-        const dscPct = Number(l.descuentoPorcentaje ?? 0)
-        const dscMon = Number(l.descuentoMonto ?? 0)
-        const efectivo = Math.max(0, Number(l.precioUnitario) * (1 - dscPct / 100) - dscMon)
-        const total = Math.round(efectivo * l.cantidad * 100) / 100
-        if (i % 2 === 0) doc.rect(50, y, W, 16).fill('#f9fafc')
-        doc.fontSize(8).font('Helvetica').fillColor('#222')
-          .text(String(i + 1),   55,  y + 4, { width: 18 })
-          .text(desc,             78,  y + 4, { width: 230 })
-          .text(String(l.cantidad), 318, y + 4, { width: 40, align: 'right' })
-          .text(fmtMoney(efectivo), 368, y + 4, { width: 80, align: 'right' })
-          .text(fmtMoney(total),    458, y + 4, { width: 80, align: 'right' })
-        y += 16
-      })
-      doc.moveTo(50, y).lineTo(545, y).strokeColor('#ccc').lineWidth(0.5).stroke()
-      y += 10
-
-      const totRow = (label, val, bold = false) => {
-        doc.fontSize(9).font(bold ? 'Helvetica-Bold' : 'Helvetica').fillColor(bold ? '#1e3a5f' : '#333')
-          .text(label, 360, y, { width: 100, align: 'right' })
-          .font('Helvetica-Bold').fillColor(bold ? '#1e3a5f' : '#333')
-          .text(val,   468, y, { width: 75,  align: 'right' })
-        y += 16
-      }
-      totRow('Subtotal:', fmtMoney(factura.subtotal))
-      totRow('ITBIS (18%):', fmtMoney(factura.itbis))
-      doc.moveTo(360, y).lineTo(543, y).strokeColor('#1e3a5f').lineWidth(1).stroke(); y += 6
-      totRow('TOTAL:', fmtMoney(factura.total), true)
-
-      doc.moveTo(50, 756).lineTo(545, 756).strokeColor('#1e3a5f').lineWidth(1).stroke()
-      doc.rect(50, 757, W, 38).fill('#0f1e2f')
-      doc.fontSize(7.5).font('Helvetica-Bold').fillColor('#60a5fa').text('ACR Networks & Solutions, S.R.L.', 58, 763)
-      doc.fontSize(7).font('Helvetica').fillColor('#94a3b8')
-        .text('RNC: 1-30-99999-9  ·  Av. Winston Churchill, Torre ACR, Piso 3, Santo Domingo, D.N.', 58, 775, { width: W - 8 })
-        .text('Tel: (809) 555-0100  ·  info@acrnetworks.com.do  ·  www.acrnetworks.com.do', 58, 784, { width: W - 8 })
-      doc.fontSize(6).font('Helvetica').fillColor('#475569')
-        .text('Documento generado electrónicamente · Válido sin firma ni sello', 58, 787, { width: W - 8, align: 'right' })
-
-      doc.end()
-    } catch (e) { reject(e) }
+  const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
+  const c = factura.cliente ?? {}
+  // Soporta tanto factura.lineas (POS) como factura.orden.lineas (OT) — coge la primera no vacía.
+  const lineasSrc = (factura.lineas?.length ? factura.lineas : factura.orden?.lineas) ?? []
+  const items = lineasSrc.map(l => ({
+    descripcion:    l.descripcion ?? l.itemCatalogo?.nombre ?? '—',
+    detalle:        l.itemCatalogo?.descripcion ?? null,
+    sku:            l.producto?.sku ?? null,
+    cantidad:       l.cantidad,
+    precioUnitario: Number(l.precioUnitario),
+  }))
+  const html = renderPdfDoc({
+    tipo:         factura.esCotizacion ? 'cotizacion' : 'factura',
+    numero:       factura.noFactura,
+    ncf:          factura.ncf ?? null,
+    tipoNcf:      factura.tipoNcf ?? null,
+    empresa:      empresa ?? { razonSocial: '', rnc: '', assets: {} },
+    cliente: {
+      razonSocial: c.razonSocial,
+      noCliente:   c.noCliente,
+      rnc:         c.rnc,
+      cedula:      c.cedula,
+      direccion:   c.direccion,
+      sector:      c.sector,
+      provincia:   c.provincia,
+      telefono:    c.telefono ?? c.telefonoPrincipal,
+      email:       c.email,
+    },
+    items,
+    subtotal:     Number(factura.subtotal),
+    itbis:        Number(factura.itbis ?? 0),
+    total:        Number(factura.total),
+    fechaEmision: factura.fechaEmision,
+    fechaVence:   factura.fechaVence,
+    estado:       factura.estado,
+    notas:        factura.notas,
   })
+  return generarPdfDocumento(html)
 }
 
 // ─── PDF Fiscal ───────────────────────────────────────────────────────────────

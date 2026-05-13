@@ -1,11 +1,11 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { useReactToPrint } from 'react-to-print'
+import { useState, useEffect, useCallback } from 'react'
 import { toast } from 'sonner'
 import {
   RefreshCw, Loader2, FileText, RotateCcw, AlertTriangle,
-  Search, X, Printer, Mail,
+  Search, X, Printer,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
+import { abrirPdfServidor } from '../../utils/pdf'
 import { useCart } from '../../contexts/CartContext'
 
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
@@ -20,8 +20,7 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
   const [loading, setLoading]   = useState(true)
   const [preview, setPreview]   = useState(null)
   const [emitting, setEmitting] = useState(false)
-  const printRef = useRef(null)
-  const handlePrint = useReactToPrint({ contentRef: printRef })
+  const [downloading, setDownloading] = useState(false)
 
   useEffect(() => {
     apiFetch(`/api/ventas/cotizaciones/${cot.id}/revivir`, {
@@ -34,6 +33,13 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
       .catch(() => { toast.error('Error al obtener la cotización.'); onClose() })
       .finally(() => setLoading(false))
   }, [cot.id])
+
+  async function descargarPDF() {
+    if (downloading) return
+    setDownloading(true)
+    await abrirPdfServidor(`/api/ventas/cotizaciones/${cot.id}/pdf`, `cotizacion-${cot.noFactura}.pdf`)
+    setDownloading(false)
+  }
 
   const tieneProductos = preview?.lineas?.some(l => l.productoId) ?? false
 
@@ -75,11 +81,6 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
     } finally { setEmitting(false) }
   }
 
-  function enviarCorreo() {
-    const email = cot.cliente?.email ?? 'cliente@acr.do'
-    toast.success(`Correo enviado a ${email}`)
-  }
-
   const subtotalBruto = preview?.totales?.subtotal ?? 0
   const itbisAmt      = preview?.totales?.itbis ?? 0
   const totalAmt      = preview?.totales?.total ?? 0
@@ -97,20 +98,14 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
           </div>
           <div className="flex items-center gap-1.5">
             {!loading && preview && (
-              <>
-                <button
-                  onClick={handlePrint}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
-                >
-                  <Printer size={12} /> PDF
-                </button>
-                <button
-                  onClick={enviarCorreo}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-700 hover:bg-slate-600 text-slate-200 transition-colors"
-                >
-                  <Mail size={12} /> Correo
-                </button>
-              </>
+              <button
+                onClick={descargarPDF}
+                disabled={downloading}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50"
+              >
+                {downloading ? <Loader2 size={12} className="animate-spin" /> : <Printer size={12} />}
+                {downloading ? 'Generando…' : 'Imprimir / PDF'}
+              </button>
             )}
             <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors ml-1">
               <X size={18} />
@@ -127,7 +122,7 @@ function ModalCotizacion({ cot, onClose, onLoaded }) {
           )}
 
           {!loading && preview && (
-            <div ref={printRef} className="p-5 space-y-4">
+            <div className="p-5 space-y-4">
               {/* Client + meta */}
               <div className="bg-slate-800/50 border border-slate-700/50 rounded-lg p-3 space-y-1">
                 <div className="flex justify-between text-sm">
@@ -232,7 +227,15 @@ export default function PanelCotizaciones() {
   const [filtroHasta,   setFiltroHasta]   = useState('')
   const [loading, setLoading]   = useState(false)
   const [modalCot, setModalCot] = useState(null)
+  const [pdfId, setPdfId]       = useState(null)
   const LIMIT = 20
+
+  async function descargarPDFRow(c) {
+    if (pdfId) return
+    setPdfId(c.id)
+    await abrirPdfServidor(`/api/ventas/cotizaciones/${c.id}/pdf`, `cotizacion-${c.noFactura}.pdf`)
+    setPdfId(null)
+  }
 
   const fetch_ = useCallback(async (off) => {
     setLoading(true)
@@ -316,14 +319,15 @@ export default function PanelCotizaciones() {
               <th className={TH}>Fecha</th>
               <th className={TH + ' text-right'}>Subtotal</th>
               <th className={TH + ' text-right'}>Total</th>
+              <th className={TH + ' text-center'} style={{ width: 60 }}>PDF</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading && rows.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={5} className="px-4 py-8 text-center text-sm text-slate-600">Sin cotizaciones.</td></tr>
+              <tr><td colSpan={6} className="px-4 py-8 text-center text-sm text-slate-600">Sin cotizaciones.</td></tr>
             )}
             {rows.map(c => (
               <tr key={c.id} onClick={() => setModalCot(c)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
@@ -335,6 +339,13 @@ export default function PanelCotizaciones() {
                 <td className={TD + ' text-xs text-slate-400 whitespace-nowrap'}>{fmtDate(c.createdAt)}</td>
                 <td className={TD + ' text-right tabular-nums'}>RD$ {fmt(c.subtotal)}</td>
                 <td className={TD + ' text-right tabular-nums font-semibold text-slate-100'}>RD$ {fmt(c.total)}</td>
+                <td className="px-2 py-3 text-center" onClick={e => e.stopPropagation()}>
+                  <button onClick={() => descargarPDFRow(c)} disabled={pdfId === c.id}
+                    title="Descargar PDF"
+                    className="p-1.5 rounded-lg text-slate-600 hover:text-blue-400 hover:bg-blue-600/10 transition-colors disabled:opacity-40">
+                    {pdfId === c.id ? <Loader2 size={14} className="animate-spin" /> : <Printer size={14} />}
+                  </button>
+                </td>
               </tr>
             ))}
           </tbody>

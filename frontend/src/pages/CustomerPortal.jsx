@@ -5,6 +5,7 @@ import { MapContainer, TileLayer, Polygon, Tooltip } from 'react-leaflet'
 import 'leaflet/dist/leaflet.css'
 import { toast } from 'sonner'
 import { portalFetch } from '../utils/portalApi'
+import { abrirPdfServidor } from '../utils/pdf'
 import {
   Zap, Wifi, Shield, Wrench, Globe, Phone, Mail, MapPin,
   CheckCircle, ChevronRight, ShoppingCart, X, LogIn, LogOut,
@@ -435,6 +436,14 @@ function Dashboard({ cliente, onLogout, navigate }) {
   const [dash,         setDash]      = useState({ servicios: [], facturas: [], deudaTotal: 0 })
   const [dashLoading,  setDashLoad]  = useState(true)
   const [cotizaciones, setCotizaciones] = useState([])
+  const [pdfBusyId,    setPdfBusyId] = useState(null)
+
+  async function descargarFacturaPDF(f) {
+    if (pdfBusyId) return
+    setPdfBusyId(f.id)
+    await abrirPdfServidor(`/api/portal/facturas/${f.id}/pdf-v2`, `factura-${f.noFactura}.pdf`, { portal: true })
+    setPdfBusyId(null)
+  }
 
   useEffect(() => {
     let cancelled = false
@@ -584,10 +593,11 @@ function Dashboard({ cliente, onLogout, navigate }) {
                       'bg-blue-600/15 text-blue-300 border-blue-600/30'
                     }`}>{f.estado}</span>
                     <span className="text-sm font-bold text-slate-100">RD$ {fmt(Number(f.total))}</span>
-                    <a href={`${API}/api/portal/facturas/${f.id}/pdf-v2`} target="_blank" rel="noreferrer"
-                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors">
-                      <Download size={11} />PDF
-                    </a>
+                    <button onClick={() => descargarFacturaPDF(f)} disabled={pdfBusyId === f.id}
+                      className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition-colors disabled:opacity-50">
+                      {pdfBusyId === f.id ? <Loader2 size={11} className="animate-spin" /> : <Download size={11} />}
+                      PDF
+                    </button>
                     {f.estado === 'Vencida' && (
                       <button onClick={() => toast.info('Redirigiendo al portal de pagos...')}
                         className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors">
