@@ -32,6 +32,7 @@ const TrackTicket     = lazy(() => import('./pages/TrackTicket'))
 const Tienda          = lazy(() => import('./pages/Tienda'))
 const CotizacionDGII  = lazy(() => import('./pages/CotizacionDGII'))
 const MiEmpresa       = lazy(() => import('./pages/MiEmpresa'))
+const VerifyDocument  = lazy(() => import('./pages/VerifyDocument'))
 
 function PageLoader() {
   return (
@@ -68,6 +69,7 @@ function AppRoutes() {
           <Route path="/track/:pin" element={<TrackTicket />} />
           <Route path="/tienda" element={<Tienda />} />
           <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
+          <Route path="/verify/:hash" element={<Suspense fallback={<PageLoader />}><VerifyDocument /></Suspense>} />
           <Route path="*" element={<Navigate to="/login" replace />} />
         </Routes>
       </Suspense>

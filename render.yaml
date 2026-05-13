@@ -11,6 +11,20 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      # PUBLIC_FRONTEND_URL — base del frontend (Vercel) usado para imprimir el
+      # link de verificación en el footer del PDF: ${PUBLIC_FRONTEND_URL}/verify/:hash
+      # Si está vacío, el PDF no muestra el link (queda solo "Documento Electrónico Verificable").
+      # - key: PUBLIC_FRONTEND_URL
+      #   value: https://acr-erp.vercel.app
+      # VERIFY_SECRET (opcional) — HMAC key para el hash anti-tamper. Si no se
+      # define, se usa JWT_SECRET. Recomendado: rotar 1 vez y dejar fijo (cambiarlo
+      # invalida hashes en PDFs ya emitidos).
+      # - key: VERIFY_SECRET
+      #   sync: false
+      # SUPABASE_PDF_BUCKET (default: documentos-pdf) — bucket dedicado al cache
+      # de PDFs. Debe existir en Supabase y ser público para servir las URLs.
+      # - key: SUPABASE_PDF_BUCKET
+      #   value: documentos-pdf
       # Si en el futuro se monta Chrome propio en el contenedor, descomentar:
       # - key: PUPPETEER_EXECUTABLE_PATH
       #   value: /usr/bin/google-chrome-stable

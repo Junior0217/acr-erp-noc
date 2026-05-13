@@ -18,6 +18,30 @@
  *   - Sin emojis, sin texto decorativo: estilo banco corporativo
  */
 
+const { marked } = require('marked')
+const sanitizeHtml = require('sanitize-html')
+
+// Markdown ligero -> HTML seguro para incrustar en filas de la tabla del PDF.
+// Permite: **negrita**, *cursiva*, listas con - / 1., saltos de línea.
+// Sin tablas, sin imágenes, sin iframes, sin scripts.
+marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false })
+const SANITIZE_OPTS = {
+  allowedTags: ['p', 'br', 'strong', 'em', 'b', 'i', 'u', 'ul', 'ol', 'li', 'code'],
+  allowedAttributes: {},
+  allowedSchemes: [],
+  transformTags: {
+    'p': (tagName, attribs) => ({ tagName: 'span', attribs }),
+  },
+}
+
+function mdToHtml(s) {
+  if (!s) return ''
+  try {
+    const html = marked.parse(String(s))
+    return sanitizeHtml(html, SANITIZE_OPTS)
+  } catch { return escape(s) }
+}
+
 function fmtMoney(n) {
   return new Intl.NumberFormat('es-DO', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -202,6 +226,24 @@ html, body {
 .items tbody td.num    { color: #94a3b8; font-size: 9px; }
 .items .desc-main { color: #0f172a; font-weight: 600; line-height: 1.35; }
 .items .desc-sub  { color: #64748b; font-size: 8.5px; margin-top: 2px; line-height: 1.4; }
+/* Markdown rendering inside item descriptions */
+.items .desc-main strong, .items .desc-sub strong { font-weight: 700; color: #0f172a; }
+.items .desc-main em,     .items .desc-sub em     { font-style: italic; }
+.items .desc-main ul, .items .desc-sub ul,
+.items .desc-main ol, .items .desc-sub ol {
+  margin: 4px 0 2px 14px; padding: 0;
+}
+.items .desc-main li, .items .desc-sub li {
+  margin: 1px 0; padding: 0; line-height: 1.35;
+}
+.items .desc-main ul li { list-style: disc; }
+.items .desc-main ol li { list-style: decimal; }
+.items .desc-sub  ul li { list-style: '·  '; color: #64748b; }
+.items .desc-sub  ol li { list-style: decimal; color: #64748b; }
+.items .desc-main code, .items .desc-sub code {
+  font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace;
+  font-size: 9px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px;
+}
 .items .sku       { color: #94a3b8; font-size: 8px; margin-top: 2px; letter-spacing: 0.04em; }
 
 /* ───── Totals ───── */
@@ -314,6 +356,9 @@ html, body {
 }
 .footer .left  { text-align: left; }
 .footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
+.footer .ctr .verify-line { margin-top: 2px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b; font-size: 7px; }
+.footer .ctr .verify-line .lbl { color: #94a3b8; }
+.footer .ctr .verify-line .url { color: #1e40af; }
 .footer .right { text-align: right; }
 
 /* ───── Watermark ANULADA ───── */
@@ -347,6 +392,7 @@ function renderDocumento(opts) {
     estado,          // 'Pagada' | 'Emitida' | 'Vencida' | 'Borrador' | 'Anulada'
     notas,
     condiciones,     // { validez, pago, entrega, garantia }
+    verify,          // { hash, url } o null si PUBLIC_FRONTEND_URL no está seteado
   } = opts
 
   const isFactura = tipo === 'factura'
@@ -367,8 +413,8 @@ function renderDocumento(opts) {
     return `<tr>
       <td class="num center">${String(idx + 1).padStart(2, '0')}</td>
       <td>
-        <div class="desc-main">${escape(it.descripcion)}</div>
-        ${it.detalle ? `<div class="desc-sub">${escape(it.detalle)}</div>` : ''}
+        <div class="desc-main">${mdToHtml(it.descripcion)}</div>
+        ${it.detalle ? `<div class="desc-sub">${mdToHtml(it.detalle)}</div>` : ''}
         ${it.sku     ? `<div class="sku mono">SKU · ${escape(it.sku)}</div>` : ''}
       </td>
       <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
@@ -527,7 +573,10 @@ function renderDocumento(opts) {
     <div class="left">
       ${escape(emp.razonSocial ?? '')}${emp.rnc ? ` · RNC <span class="mono">${escape(emp.rnc)}</span>` : ''}
     </div>
-    <div class="ctr">Documento Electrónico Verificable</div>
+    <div class="ctr">
+      <div>Documento Electrónico Verificable</div>
+      ${verify ? `<div class="verify-line"><span class="lbl">Cód.</span> <span class="mono">${escape(verify.hash)}</span> · <span class="url">${escape(verify.url)}</span></div>` : ''}
+    </div>
     <div class="right mono">${fechaLarga(new Date())}</div>
   </footer>
 

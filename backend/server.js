@@ -2633,6 +2633,52 @@ app.post(
 
 // ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
 
+// ─── Anti-tamper hash (HMAC) ──────────────────────────────────────────────────
+// Hash determinístico sobre campos vitales del documento. Validación pública
+// via /api/publico/verify/:hash — quien recibe el PDF puede confirmar que el
+// monto/cliente/NCF coincide con lo emitido (defensa anti-Photoshop).
+const VERIFY_SECRET = process.env.VERIFY_SECRET ?? process.env.JWT_SECRET ?? 'change-me-verify-secret'
+
+function facturaVerifyHash(f) {
+  const payload = [f.id, f.noFactura, f.ncf ?? '', String(f.total), f.fechaEmision?.toISOString?.() ?? f.fechaEmision ?? ''].join('|')
+  return crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
+}
+
+// PUBLIC_URL para verificación (frontend host). Si no se configura, omite el link en el PDF.
+const PUBLIC_VERIFY_BASE = (process.env.PUBLIC_FRONTEND_URL ?? '').replace(/\/+$/, '')
+
+// ─── Cache PDF en Supabase Storage ────────────────────────────────────────────
+const PDF_CACHE_BUCKET = process.env.SUPABASE_PDF_BUCKET ?? 'documentos-pdf'
+
+async function subirPdfAlStorage(buf, factura) {
+  if (!supabase) return null
+  const fecha = new Date(factura.fechaEmision ?? Date.now())
+  const path = `${fecha.getFullYear()}/${String(fecha.getMonth() + 1).padStart(2, '0')}/${factura.id}.pdf`
+  const { error } = await supabase.storage.from(PDF_CACHE_BUCKET).upload(path, buf, {
+    contentType:  'application/pdf',
+    cacheControl: '604800', // 7 días en CDN
+    upsert:       true,     // regeneración sobrescribe
+  })
+  if (error) { console.error('[PDF CACHE upload]', error.message); return null }
+  const { data } = supabase.storage.from(PDF_CACHE_BUCKET).getPublicUrl(path)
+  return data?.publicUrl ?? null
+}
+
+async function invalidarPdfCache(facturaId) {
+  if (!facturaId) return
+  try {
+    const f = await prisma.factura.findUnique({ where: { id: facturaId }, select: { pdfUrl: true, fechaEmision: true } })
+    if (f?.pdfUrl) {
+      await prisma.factura.update({ where: { id: facturaId }, data: { pdfUrl: null } })
+      if (supabase) {
+        const fecha = new Date(f.fechaEmision ?? Date.now())
+        const path = `${fecha.getFullYear()}/${String(fecha.getMonth() + 1).padStart(2, '0')}/${facturaId}.pdf`
+        await supabase.storage.from(PDF_CACHE_BUCKET).remove([path]).catch(() => {})
+      }
+    }
+  } catch (e) { console.error('[PDF CACHE invalidate]', e.message) }
+}
+
 // Merge per-doc condiciones over EmpresaPerfil defaults. null/empty fields del doc
 // caen al default. Si el default tampoco existe, no se renderiza la fila.
 function mergeCondiciones(empresa, factura) {
@@ -2690,6 +2736,10 @@ async function buildPdfData(facturaOrCotizacion) {
     estado:       f.estado,
     notas:        f.notas,
     condiciones:  mergeCondiciones(empresa, f),
+    verify: PUBLIC_VERIFY_BASE ? {
+      hash: facturaVerifyHash(f),
+      url:  `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`,
+    } : null,
   }
 }
 
@@ -2698,6 +2748,15 @@ async function buildPdfData(facturaOrCotizacion) {
 app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_cotizaciones'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
   try {
+    // Fast path: si está cacheado en Supabase, redirige (latencia <50ms vs ~1500ms con Puppeteer).
+    const cached = await prisma.factura.findUnique({ where: { id: req.params.id }, select: { pdfUrl: true, esCotizacion: true, deletedAt: true, noFactura: true } })
+    if (cached?.deletedAt) return res.status(404).json({ error: 'Cotización no encontrada.' })
+    if (cached && !cached.esCotizacion) return res.status(400).json({ error: 'Este documento es una factura, usa /facturas/:id/pdf.' })
+    if (cached?.pdfUrl && req.query.fresh !== '1') {
+      auditReq('pdf:cotizacion:cache_hit', req, { id: req.params.id, noFactura: cached.noFactura })
+      return res.redirect(302, cached.pdfUrl)
+    }
+
     const cot = await prisma.factura.findUnique({
       where:   { id: req.params.id },
       include: {
@@ -2705,23 +2764,25 @@ app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_co
         lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
       },
     })
-    if (!cot || cot.deletedAt) return res.status(404).json({ error: 'Cotización no encontrada.' })
-    if (!cot.esCotizacion)     return res.status(400).json({ error: 'Este documento es una factura, usa /facturas/:id/pdf.' })
+    if (!cot) return res.status(404).json({ error: 'Cotización no encontrada.' })
 
     const data = await buildPdfData(cot)
-    const html = renderPdfDoc({
-      tipo:        'cotizacion',
-      numero:      cot.noFactura,
-      ...data,
-    })
+    const html = renderPdfDoc({ tipo: 'cotizacion', numero: cot.noFactura, ...data })
     const pdfBuf = await generarPdfDocumento(html)
+
+    // Fire-and-forget: sube al cache de Storage (sin bloquear respuesta al user).
+    setImmediate(async () => {
+      const url = await subirPdfAlStorage(pdfBuf, cot)
+      if (url) await prisma.factura.update({ where: { id: cot.id }, data: { pdfUrl: url } }).catch(() => {})
+    })
+
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `inline; filename="cotizacion-${cot.noFactura}.pdf"`)
     res.setHeader('Content-Length', pdfBuf.length)
     auditReq('pdf:cotizacion', req, { id: cot.id, noFactura: cot.noFactura })
     res.end(pdfBuf)
   } catch (e) {
-    console.error('[PDF COTIZACION]', e.message, e.stack)
+    console.error('[PDF COTIZACION]', e.code, e.message, e.stack)
     res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
   }
 })
@@ -2730,6 +2791,14 @@ app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_co
 app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
   if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
   try {
+    const cached = await prisma.factura.findUnique({ where: { id: req.params.id }, select: { pdfUrl: true, esCotizacion: true, deletedAt: true, noFactura: true, ncf: true } })
+    if (!cached || cached.deletedAt) return res.status(404).json({ error: 'Factura no encontrada.' })
+    if (cached.esCotizacion)         return res.status(400).json({ error: 'Este documento es cotización, usa /cotizaciones/:id/pdf.' })
+    if (cached.pdfUrl && req.query.fresh !== '1') {
+      auditReq('pdf:factura:cache_hit', req, { id: req.params.id, noFactura: cached.noFactura, ncf: cached.ncf })
+      return res.redirect(302, cached.pdfUrl)
+    }
+
     const fact = await prisma.factura.findUnique({
       where:   { id: req.params.id },
       include: {
@@ -2737,23 +2806,24 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
         lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
       },
     })
-    if (!fact || fact.deletedAt) return res.status(404).json({ error: 'Factura no encontrada.' })
-    if (fact.esCotizacion)       return res.status(400).json({ error: 'Este documento es cotización, usa /cotizaciones/:id/pdf.' })
+    if (!fact) return res.status(404).json({ error: 'Factura no encontrada.' })
 
     const data = await buildPdfData(fact)
-    const html = renderPdfDoc({
-      tipo:        'factura',
-      numero:      fact.noFactura,
-      ...data,
-    })
+    const html = renderPdfDoc({ tipo: 'factura', numero: fact.noFactura, ...data })
     const pdfBuf = await generarPdfDocumento(html)
+
+    setImmediate(async () => {
+      const url = await subirPdfAlStorage(pdfBuf, fact)
+      if (url) await prisma.factura.update({ where: { id: fact.id }, data: { pdfUrl: url } }).catch(() => {})
+    })
+
     res.setHeader('Content-Type', 'application/pdf')
     res.setHeader('Content-Disposition', `inline; filename="factura-${fact.noFactura}.pdf"`)
     res.setHeader('Content-Length', pdfBuf.length)
     auditReq('pdf:factura', req, { id: fact.id, noFactura: fact.noFactura, ncf: fact.ncf })
     res.end(pdfBuf)
   } catch (e) {
-    console.error('[PDF FACTURA]', e.message, e.stack)
+    console.error('[PDF FACTURA]', e.code, e.message, e.stack)
     res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
   }
 })
@@ -2877,10 +2947,13 @@ app.patch('/api/facturas/:id/condiciones',
       const allEmpty = Object.values(data).every(v => v == null || v === '')
       const factura = await prisma.factura.update({
         where: { id: req.params.id },
-        data:  { condiciones: allEmpty ? null : data },
+        // Invalida pdfUrl al editar condiciones — fuerza regeneración con datos nuevos.
+        data:  { condiciones: allEmpty ? null : data, pdfUrl: null },
         select:{ id: true, condiciones: true },
       })
       auditReq('factura:condiciones', req, { id: factura.id, cleared: allEmpty })
+      // Cleanup del archivo viejo en Storage (fire-and-forget).
+      invalidarPdfCache(factura.id).catch(() => {})
       res.json(factura)
     } catch (e) {
       if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
@@ -2889,6 +2962,49 @@ app.patch('/api/facturas/:id/condiciones',
     }
   }
 )
+
+// ─── Verificación pública anti-tamper ─────────────────────────────────────────
+// Genera el HMAC sobre cada factura activa y matchea el `:hash` que viene en el
+// QR/link del PDF. NO valida contra una columna almacenada — el hash siempre
+// se RECOMPUTA, así un PDF alterado revela inconsistencia (cambia el monto en
+// Photoshop -> el hash mostrado ya no matchea con el real).
+const verifyLimiter = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false })
+
+app.get('/api/publico/verify/:hash', verifyLimiter, async (req, res) => {
+  try {
+    const hash = String(req.params.hash || '').toLowerCase()
+    if (!/^[a-f0-9]{24}$/.test(hash)) return res.status(400).json({ valid: false, error: 'Hash inválido.' })
+
+    // Búsqueda eficiente: solo facturas activas. Para volúmenes grandes consider
+    // precomputar columna verifyHash con índice. Por ahora, scan acotado.
+    const candidatos = await prisma.factura.findMany({
+      where:  { deletedAt: null },
+      select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true, estado: true, esCotizacion: true, clienteId: true },
+      orderBy:{ fechaEmision: 'desc' },
+      take:   20000,
+    })
+    const empresa = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { razonSocial: true, rnc: true } })
+
+    const match = candidatos.find(f => facturaVerifyHash(f) === hash)
+    if (!match) return res.status(404).json({ valid: false, error: 'Documento no encontrado o alterado.' })
+
+    const cliente = await prisma.cliente.findUnique({ where: { id: match.clienteId }, select: { razonSocial: true } }).catch(() => null)
+    res.json({
+      valid:       true,
+      tipo:        match.esCotizacion ? 'cotizacion' : 'factura',
+      noFactura:   match.noFactura,
+      ncf:         match.ncf,
+      fechaEmision: match.fechaEmision,
+      total:       Number(match.total),
+      estado:      match.estado,
+      cliente:     cliente?.razonSocial ?? null,
+      empresa:     empresa ? { razonSocial: empresa.razonSocial, rnc: empresa.rnc } : null,
+    })
+  } catch (e) {
+    console.error('[VERIFY]', e.code, e.message)
+    res.status(500).json({ valid: false, error: 'Error interno.' })
+  }
+})
 
 // Endpoint público para portal B2C (descarga su propia factura)
 app.get('/api/portal/facturas/:id/pdf-v2', verificarPortalJWT, async (req, res) => {
@@ -2944,7 +3060,10 @@ app.get('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:ver
     const e = await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
     if (!e) return res.status(404).json({ error: 'Perfil no inicializado.' })
     res.json(e)
-  } catch { res.status(500).json({ error: 'Error interno.' }) }
+  } catch (err) {
+    console.error('[GET /api/configuracion/empresa]', err.code, err.message, err.meta)
+    res.status(500).json({ error: 'Error interno.', code: err.code ?? 'UNKNOWN' })
+  }
 })
 
 // PATCH — permiso granular empresa:editar (puede asignarse a Owner o Admin desde UI roles).
@@ -5539,7 +5658,10 @@ app.get('/api/cotizaciones', verificarJWT, requerirPermiso('factura:ver'), async
       }),
     ])
     res.json({ data, total })
-  } catch (e) { console.error('[GET /api/cotizaciones]', e.message); res.status(500).json({ error: 'Error interno.' }) }
+  } catch (e) {
+    console.error('[GET /api/cotizaciones]', e.code, e.message, e.meta)
+    res.status(500).json({ error: 'Error interno.', code: e.code ?? 'UNKNOWN' })
+  }
 })
 
 app.post('/api/cotizaciones/:id/revivir', verificarJWT, requerirPermiso('factura:emitir'), async (req, res) => {
@@ -5681,7 +5803,10 @@ app.get('/api/facturas', verificarJWT, requerirPermiso('factura:ver'), async (re
       }),
     ])
     res.json({ data: facturas, total })
-  } catch (e) { console.error('[GET /api/facturas]', e.message); res.status(500).json({ error: 'Error interno.' }) }
+  } catch (e) {
+    console.error('[GET /api/facturas]', e.code, e.message, e.meta)
+    res.status(500).json({ error: 'Error interno.', code: e.code ?? 'UNKNOWN' })
+  }
 })
 
 app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPermiso('factura:editar'), async (req, res) => {
@@ -5695,10 +5820,11 @@ app.patch('/api/facturas/:id/estado', verificarJWT, billingLimiter, requerirPerm
     if (existing.estado === 'Anulada') return res.status(409).json({ error: 'Factura ya anulada. No se puede modificar.' })
     if (existing.estado === estado) return res.status(409).json({ error: `Factura ya está en estado ${estado}.` })
 
-    const data = { estado }
+    const data = { estado, pdfUrl: null } // invalida cache — el badge ESTADO cambia en el PDF
     if (estado === 'Pagada') data.fechaPago = new Date()
 
     const factura = await prisma.factura.update({ where: { id: req.params.id }, data })
+    invalidarPdfCache(factura.id).catch(() => {})
     auditReq('factura:estado', req, { facturaId: factura.id, estado, ncf: factura.ncf })
     if (estado === 'Anulada') auditReq('factura:anulada', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(existing.total) })
     res.json(factura)
@@ -5764,6 +5890,8 @@ async function buildFacturaPDFBuffer(factura) {
     fechaVence:   factura.fechaVence,
     estado:       factura.estado,
     notas:        factura.notas,
+    condiciones:  mergeCondiciones(empresa, factura),
+    verify:       PUBLIC_VERIFY_BASE ? { hash: facturaVerifyHash(factura), url: `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(factura)}` } : null,
   })
   return generarPdfDocumento(html)
 }
@@ -6077,10 +6205,26 @@ async function warmChallengeStore(count = 3) {
   }
 }
 
+// Asegura columnas idempotentes que el ORM ya conoce pero `prisma migrate deploy`
+// puede no haber aplicado todavía (race entre `npx prisma generate` y el deploy
+// real de Render). Sin esto, cualquier SELECT * sobre EmpresaPerfil o Factura
+// rompe con "column does not exist" -> 500 en endpoints de listado y perfil.
+async function ensureSchemaColumns() {
+  try {
+    await prisma.$executeRawUnsafe(`ALTER TABLE "EmpresaPerfil" ADD COLUMN IF NOT EXISTS "condicionesDefault" JSONB NOT NULL DEFAULT '{}'::jsonb`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "condiciones"         JSONB`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura"        ADD COLUMN IF NOT EXISTS "pdfUrl"              TEXT`)
+    console.log('[DB] Schema columns verified (commercial terms + pdf cache).')
+  } catch (e) {
+    console.error('[DB] ensureSchemaColumns FAILED:', e.message)
+  }
+}
+
 async function startServer() {
   try {
     await prisma.$connect();
     console.log('[DB] Prisma connected to Supabase successfully.');
+    await ensureSchemaColumns();
     await seedNomenclaturas();
   } catch (err) {
     console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);

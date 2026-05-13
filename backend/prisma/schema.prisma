@@ -565,6 +565,9 @@ model Factura {
   // Si null/empty, el PDF usa EmpresaPerfil.condicionesDefault.
   // Shape: { validez, pago, entrega, garantia }
   condiciones  Json?
+  // URL pública del PDF cacheado en Supabase Storage. Null = nunca generado o
+  // invalidado (factura editada). Cuando existe, /pdf hace redirect 302 — cero CPU.
+  pdfUrl       String?
   esCotizacion Boolean       @default(false)
   deletedAt    DateTime?
   cliente      Cliente       @relation(fields: [clienteId], references: [id], onDelete: Restrict)
