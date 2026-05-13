@@ -18,8 +18,11 @@ export default function Ventas() {
 
   const clienteIdInit     = searchParams.get('cliente') ?? ''
   const clienteNombreInit = searchParams.get('nombre')  ?? ''
+  const tabInit           = searchParams.get('tab')     ?? ''
 
-  const [tab, setTab] = useState(clienteIdInit ? 'ordenes' : 'catalogo')
+  const [tab, setTab] = useState(
+    tabInit || (clienteIdInit ? 'ordenes' : 'catalogo')
+  )
 
   // Contextual nav state
   const [posPreload,      setPosPreload]      = useState([])  // items to pre-add to POS cart

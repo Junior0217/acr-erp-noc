@@ -42,6 +42,61 @@ function mdToHtml(s) {
   } catch { return escape(s) }
 }
 
+// ─── Parseo estructurado de descripción de línea ─────────────────────────────
+// El usuario quiere alta jerarquía visual:
+//   Línea 1 (desc-main, bold):   titulo
+//   Línea 2 (desc-sub, gray):    bullets unidos por ' · '
+//   Línea 3 (desc-sku, mono):    SKU
+//
+// Reglas:
+//   - Si la descripción tiene una lista markdown (- item / 1. item), TODOS los
+//     bullets se aplanan a una sola línea separada por '·' (ahorra espacio).
+//   - Si tiene **título** o ## título en la primera línea, ese es desc-main.
+//   - Si no hay título, la 1ra línea no-vacía es desc-main; el resto va a sub.
+//   - Si llega `detalle` separado (legacy), pasa entero a desc-sub.
+function parseDescripcionEstructurada(descRaw, detalleRaw) {
+  if (!descRaw && !detalleRaw) return { main: '', sub: '' }
+
+  if (!descRaw) return { main: escape(detalleRaw), sub: '' }
+
+  const text = String(descRaw).trim()
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  if (lines.length === 0) return { main: '', sub: '' }
+
+  // Detección título: **bold** completo en línea 1 o '# heading'
+  let main = ''
+  let rest = []
+  const first = lines[0]
+  const mBold = first.match(/^\*\*(.+)\*\*\s*$/)
+  const mHead = first.match(/^#{1,6}\s+(.+)$/)
+  if (mBold || mHead) {
+    main = (mBold ? mBold[1] : mHead[1]).trim()
+    rest = lines.slice(1)
+  } else {
+    main = first
+    rest = lines.slice(1)
+  }
+
+  // Bullets: aplanar a "X · Y · Z" para reducir altura vertical de la fila.
+  const bullets = []
+  const otros = []
+  for (const l of rest) {
+    const mBullet = l.match(/^[-*•]\s+(.+)$/) || l.match(/^\d+\.\s+(.+)$/)
+    if (mBullet) bullets.push(mBullet[1].trim())
+    else if (l) otros.push(l)
+  }
+  // Si llegó un `detalle` separado, prepéndalo al sub.
+  if (detalleRaw && String(detalleRaw).trim()) otros.unshift(String(detalleRaw).trim())
+
+  const subPieces = []
+  if (otros.length)  subPieces.push(otros.join(' '))
+  if (bullets.length) subPieces.push(bullets.join(' · '))
+  return {
+    main: mdToHtml(main),
+    sub:  subPieces.length ? mdToHtml(subPieces.join(' · ')) : '',
+  }
+}
+
 function fmtMoney(n) {
   return new Intl.NumberFormat('es-DO', {
     minimumFractionDigits: 2, maximumFractionDigits: 2,
@@ -224,8 +279,15 @@ html, body {
 .items tbody td.center { text-align: center; }
 .items tbody td.right  { text-align: right; }
 .items tbody td.num    { color: #94a3b8; font-size: 9px; }
-.items .desc-main { color: #0f172a; font-weight: 600; line-height: 1.35; }
-.items .desc-sub  { color: #64748b; font-size: 8.5px; margin-top: 2px; line-height: 1.4; }
+/* Jerarquía estricta: title BOLD · subtitle gray (separado por ·) · SKU mono */
+.items .desc-main {
+  color: #0f172a; font-weight: 700; font-size: 10.5px;
+  line-height: 1.3; letter-spacing: -0.005em;
+}
+.items .desc-sub {
+  color: #64748b; font-weight: 400; font-size: 9px;
+  margin-top: 3px; line-height: 1.45;
+}
 /* Markdown rendering inside item descriptions */
 .items .desc-main strong, .items .desc-sub strong { font-weight: 700; color: #0f172a; }
 .items .desc-main em,     .items .desc-sub em     { font-style: italic; }
@@ -244,7 +306,7 @@ html, body {
   font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace;
   font-size: 9px; background: #f1f5f9; padding: 1px 4px; border-radius: 3px;
 }
-.items .sku       { color: #94a3b8; font-size: 8px; margin-top: 2px; letter-spacing: 0.04em; }
+.items .sku       { color: #94a3b8; font-size: 8px; margin-top: 3px; letter-spacing: 0.06em; font-weight: 600; }
 
 /* ───── Totals ───── */
 .totals-wrap {
@@ -410,12 +472,13 @@ function renderDocumento(opts) {
 
   const itemsRows = (items ?? []).map((it, idx) => {
     const importe = Number(it.cantidad) * Number(it.precioUnitario)
+    const { main, sub } = parseDescripcionEstructurada(it.descripcion, it.detalle)
     return `<tr>
       <td class="num center">${String(idx + 1).padStart(2, '0')}</td>
       <td>
-        <div class="desc-main">${mdToHtml(it.descripcion)}</div>
-        ${it.detalle ? `<div class="desc-sub">${mdToHtml(it.detalle)}</div>` : ''}
-        ${it.sku     ? `<div class="sku mono">SKU · ${escape(it.sku)}</div>` : ''}
+        <div class="desc-main">${main}</div>
+        ${sub      ? `<div class="desc-sub">${sub}</div>` : ''}
+        ${it.sku   ? `<div class="sku mono">SKU: ${escape(it.sku)}</div>` : ''}
       </td>
       <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
       <td class="right mono">${fmtMoney(it.precioUnitario)}</td>

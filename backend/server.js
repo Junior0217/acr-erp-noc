@@ -218,7 +218,7 @@ const NAMESPACE_REWRITES = {
   '/api/ventas/items-catalogo':'/api/items-catalogo',
   // Servicios
   '/api/servicios/planes':     '/api/planes',
-  '/api/servicios/ordenes':    '/api/orden-instalacion',
+  '/api/servicios/ordenes':    '/api/ordenes-instalacion',
   // Inventario
   '/api/inventario/productos':   '/api/productos',
   '/api/inventario/categorias':  '/api/categorias',
@@ -2719,6 +2719,99 @@ app.post('/api/inventario/upload-image',
   }
 )
 
+// ─── Upload por URL externa (mismo pipeline) ─────────────────────────────────
+// El usuario pega URL de Google/proveedor, backend descarga + valida MIME real
+// (magic bytes) + comprime con sharp + sube a Supabase. NUNCA se guarda la URL
+// externa directamente — siempre se rehospeda para evitar:
+//   - Hotlinking que rompe cuando el server externo borra la imagen
+//   - SSRF: backend rechaza esquemas no-http(s), IPs privadas, localhost
+//   - Tracking pixels disfrazados de imagen
+const urlUploadSchema = z.object({
+  url:  z.string().url().max(2048),
+  kind: z.enum(KINDS_INVENTARIO).default('producto'),
+})
+
+function esUrlPublicaSegura(u) {
+  try {
+    const url = new URL(u)
+    if (!/^https?:$/.test(url.protocol)) return false
+    const host = url.hostname.toLowerCase()
+    // Bloqueo SSRF básico: localhost / IPs privadas. No es bulletproof
+    // (DNS rebinding requeriría resolver y revalidar) pero cubre el 95%.
+    if (host === 'localhost' || host === '0.0.0.0') return false
+    if (/^127\./.test(host)) return false
+    if (/^10\./.test(host))  return false
+    if (/^192\.168\./.test(host)) return false
+    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false
+    if (host.endsWith('.local')) return false
+    return true
+  } catch { return false }
+}
+
+app.post('/api/inventario/upload-url',
+  uploadLimiter,
+  verificarJWT,
+  requerirPermiso('catalogo:editar'),
+  async (req, res) => {
+    try {
+      if (!supabase) return res.status(503).json({ error: 'Storage no configurado.', code: 'STORAGE_DISABLED' })
+      const { url, kind } = urlUploadSchema.parse(req.body)
+      if (!esUrlPublicaSegura(url)) return res.status(400).json({ error: 'URL no válida o bloqueada por seguridad.', code: 'URL_BLOCKED' })
+
+      // Descarga con timeout 8s + cap de tamaño 5MB (más generoso que upload local
+      // porque las imágenes externas suelen venir sin optimizar; sharp las recorta).
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 8000)
+      let buf
+      try {
+        const r = await fetch(url, { signal: controller.signal, redirect: 'follow' })
+        if (!r.ok) return res.status(422).json({ error: `Servidor remoto devolvió ${r.status}.`, code: 'REMOTE_FAIL' })
+        const len = Number(r.headers.get('content-length') ?? 0)
+        if (len > 5 * 1024 * 1024) return res.status(413).json({ error: 'Imagen remota excede 5MB.', code: 'TOO_LARGE' })
+        const ab = await r.arrayBuffer()
+        if (ab.byteLength > 5 * 1024 * 1024) return res.status(413).json({ error: 'Imagen remota excede 5MB.', code: 'TOO_LARGE' })
+        buf = Buffer.from(ab)
+      } catch (e) {
+        if (e.name === 'AbortError') return res.status(504).json({ error: 'Descarga remota timeout (8s).', code: 'TIMEOUT' })
+        return res.status(502).json({ error: `No se pudo descargar: ${e.message}`, code: 'FETCH_FAIL' })
+      } finally { clearTimeout(timer) }
+
+      // Validación MIME por magic bytes (no por header Content-Type, que puede mentir).
+      const inputMime = detectMimeFromBuffer(buf)
+      if (!inputMime) return res.status(415).json({ error: 'Contenido no es una imagen válida.', code: 'INVALID_MIME' })
+      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
+      if (inputMime === 'image/svg+xml' && !svgSeguro(buf)) {
+        return res.status(422).json({ error: 'SVG remoto con contenido peligroso.', code: 'SVG_UNSAFE' })
+      }
+
+      // Pipeline idéntico al upload local (resize 800x800 + PNG).
+      let buffer, finalMime, ext
+      try {
+        const c = await comprimirImagen(buf, inputMime)
+        buffer = c.buffer; finalMime = c.mime; ext = c.ext
+      } catch {
+        return res.status(422).json({ error: 'Imagen remota corrupta o ilegible.', code: 'COMPRESS_FAIL' })
+      }
+      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
+      const path = `${kind}/${filename}`
+      const { error: upErr } = await supabase.storage.from(INVENTORY_BUCKET).upload(path, buffer, {
+        contentType: finalMime, cacheControl: '3600', upsert: false,
+      })
+      if (upErr) {
+        console.error('[INV UPLOAD URL]', upErr.message)
+        return res.status(502).json({ error: `Error al subir: ${upErr.message}` })
+      }
+      const { data: pub } = supabase.storage.from(INVENTORY_BUCKET).getPublicUrl(path)
+      auditReq('inventario:upload_imagen_url', req, { kind, sourceUrl: url, mime: finalMime, size: buffer.length })
+      res.status(201).json({ kind, url: pub?.publicUrl ?? null, mime: finalMime, size: buffer.length, sourceUrl: url })
+    } catch (e) {
+      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'URL inválida.' })
+      console.error('[INV UPLOAD URL]', e.message)
+      res.status(500).json({ error: 'Error interno.' })
+    }
+  }
+)
+
 // ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
 
 // ─── Anti-tamper hash (HMAC) ──────────────────────────────────────────────────
@@ -4499,7 +4592,11 @@ const ESTADO_SERVICIO_POR_TIPO_ORDEN = {
   Mantenimiento:  'Activo',
 };
 
-app.get('/api/ordenes', async (req, res) => {
+// IMPORTANTE: estas rutas son de `OrdenInstalacion` (Servicios). Antes ocupaban
+// `/api/ordenes` y SHADOW-bloqueaban las rutas de `OrdenTrabajo` (Ventas) — el
+// panel de Ventas quedaba vacío. Renombradas a `/api/ordenes-instalacion` para
+// liberar `/api/ordenes` que ahora sirve exclusivamente OrdenTrabajo (línea ~5192).
+app.get('/api/ordenes-instalacion', async (req, res) => {
   try {
     const { search, estado, tipo, page = '1', limit = '50' } = req.query;
     const take = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
@@ -4523,7 +4620,7 @@ app.get('/api/ordenes', async (req, res) => {
   }
 });
 
-app.post('/api/ordenes', async (req, res) => {
+app.post('/api/ordenes-instalacion', async (req, res) => {
   try {
     const { detalles, ...rest } = ordenSchema.parse(req.body);
     const orden = await prisma.ordenInstalacion.create({
@@ -4539,7 +4636,7 @@ app.post('/api/ordenes', async (req, res) => {
   }
 });
 
-app.put('/api/ordenes/:id', async (req, res) => {
+app.put('/api/ordenes-instalacion/:id', async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const { detalles, ...rest } = ordenUpdateSchema.parse(req.body);
@@ -4559,7 +4656,7 @@ app.put('/api/ordenes/:id', async (req, res) => {
   }
 });
 
-app.patch('/api/ordenes/:id/completar', async (req, res) => {
+app.patch('/api/ordenes-instalacion/:id/completar', async (req, res) => {
   if (rejectBadId(req, res)) return;
   try {
     const orden = await prisma.ordenInstalacion.findUnique({ where: { id: req.params.id }, include: { detalles: true } });

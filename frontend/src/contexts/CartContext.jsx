@@ -10,6 +10,10 @@ export function CartProvider({ children }) {
   const [carrito, setCarrito] = useState(null)
   const [open, setOpen] = useState(false)
   const [loading, setLoading] = useState(false)
+  // Mini-state para reflejar el carrito LOCAL del POS (PanelPOS mantiene su propio
+  // estado para vender ItemCatalogo, no Productos físicos directos). El badge
+  // de la navbar lo lee para que siempre muestre lo que el cajero tiene en pantalla.
+  const [posItemsCount, setPosItemsCount] = useState(0)
 
   const fetchCarrito = useCallback(async () => {
     if (!user) { setCarrito(null); return }
@@ -102,6 +106,7 @@ export function CartProvider({ children }) {
   return (
     <CartCtx.Provider value={{
       carrito, open, setOpen, loading, totalItems,
+      posItemsCount, setPosItemsCount,
       fetchCarrito, addItem, updateItem, removeItem, clearCart, updateCartMeta, checkout,
     }}>
       {children}

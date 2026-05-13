@@ -257,7 +257,18 @@ export default function AdminLayout() {
   const offline   = useOfflineStatus()
   const { user, logout } = useAuth()
   const needs2FASetup = user?.needs2FASetup === true
-  const { totalItems, setOpen: openCart } = useCart()
+  const { totalItems, posItemsCount, setOpen: openCart } = useCart()
+  // Badge muestra el TOTAL real (cart-tienda + cart-POS). Click prioriza:
+  //   POS abierto → ir a Ventas/POS (donde el cajero ve su carrito local)
+  //   Sino → abrir slideover de carrito tienda
+  const totalCartBadge = (totalItems ?? 0) + (posItemsCount ?? 0)
+  function handleCartClick() {
+    if ((posItemsCount ?? 0) > 0 && (totalItems ?? 0) === 0) {
+      navigate('/ventas?tab=pos')
+    } else {
+      openCart(true)
+    }
+  }
   const navigate  = useNavigate()
 
   async function handleLogout() {
@@ -300,14 +311,14 @@ export default function AdminLayout() {
 
           <div className="flex items-center gap-2 sm:gap-3">
             <button
-              onClick={() => openCart(true)}
-              title="Carrito POS"
+              onClick={handleCartClick}
+              title={posItemsCount > 0 ? `${posItemsCount} en POS · click para ir a Ventas/POS` : `${totalItems} en carrito`}
               className="relative w-9 h-9 rounded-full bg-slate-800 hover:bg-blue-900/30 border border-slate-700 hover:border-blue-700/40 flex items-center justify-center flex-shrink-0 transition-colors"
             >
-              <ShoppingCart size={15} className="text-slate-400" />
-              {totalItems > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center">
-                  {totalItems > 9 ? '9+' : totalItems}
+              <ShoppingCart size={15} className={totalCartBadge > 0 ? 'text-blue-300' : 'text-slate-400'} />
+              {totalCartBadge > 0 && (
+                <span className="absolute -top-1 -right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-600 text-white text-[9px] font-bold flex items-center justify-center ring-2 ring-slate-950">
+                  {totalCartBadge > 9 ? '9+' : totalCartBadge}
                 </span>
               )}
             </button>

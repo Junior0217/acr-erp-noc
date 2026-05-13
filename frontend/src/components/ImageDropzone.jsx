@@ -7,7 +7,7 @@
  * solo necesita feedback visual (preview optimista + estado de subida).
  */
 import { useRef, useState } from 'react'
-import { Upload, Loader2, X, Image as ImageIcon } from 'lucide-react'
+import { Upload, Loader2, X, Image as ImageIcon, Link2, Globe } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '../utils/api'
 
@@ -16,6 +16,7 @@ export default function ImageDropzone({
   onChange,
   kind = 'producto',
   endpoint = '/api/inventario/upload-image',
+  endpointUrl = '/api/inventario/upload-url',
   label = 'Imagen',
   desc = 'PNG / JPG / WebP / SVG · max 2MB',
   height = 160,
@@ -24,6 +25,29 @@ export default function ImageDropzone({
   const [busy, setBusy] = useState(false)
   const [preview, setPreview] = useState(null) // dataURL local mientras sube
   const [dragOver, setDragOver] = useState(false)
+  const [urlInput, setUrlInput] = useState('')
+  const [mode, setMode] = useState('file') // 'file' | 'url'
+
+  async function subirPorUrl() {
+    const u = urlInput.trim()
+    if (!u) return
+    try { new URL(u) } catch { toast.error('URL inválida.'); return }
+    setBusy(true)
+    setPreview(u) // optimista
+    try {
+      const r = await apiFetch(endpointUrl, { method: 'POST', body: JSON.stringify({ url: u, kind }) })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok || !j.url) { toast.error(j.error ?? 'No se pudo importar la URL.'); setPreview(null); return }
+      onChange?.(j.url)
+      toast.success('Imagen importada y rehospedada.')
+      setUrlInput(''); setPreview(null)
+    } catch {
+      toast.error('Error al importar URL.')
+      setPreview(null)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function subir(file) {
     if (!file) return
@@ -65,13 +89,43 @@ export default function ImageDropzone({
     <div>
       <div className="flex items-center justify-between mb-1.5">
         <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest">{label}</label>
-        {url && !busy && (
-          <button type="button" onClick={() => onChange?.(null)}
-            className="text-[10px] text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1">
-            <X size={10} /> Quitar
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          <div className="inline-flex bg-slate-800 border border-slate-700 rounded-md p-0.5">
+            <button type="button" onClick={() => setMode('file')}
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 ${mode === 'file' ? 'bg-slate-700 text-blue-300' : 'text-slate-500 hover:text-slate-300'}`}>
+              <Upload size={10} />Archivo
+            </button>
+            <button type="button" onClick={() => setMode('url')}
+              className={`px-2 py-0.5 rounded text-[10px] font-semibold flex items-center gap-1 ${mode === 'url' ? 'bg-slate-700 text-blue-300' : 'text-slate-500 hover:text-slate-300'}`}>
+              <Globe size={10} />URL
+            </button>
+          </div>
+          {url && !busy && (
+            <button type="button" onClick={() => onChange?.(null)}
+              className="text-[10px] text-slate-500 hover:text-red-400 transition-colors flex items-center gap-1">
+              <X size={10} /> Quitar
+            </button>
+          )}
+        </div>
       </div>
+
+      {mode === 'url' && (
+        <div className="mb-2 flex gap-2">
+          <div className="relative flex-1">
+            <Link2 size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500" />
+            <input type="url" value={urlInput} onChange={e => setUrlInput(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); subirPorUrl() } }}
+              placeholder="https://… (Google/proveedor) — se rehospeda en Supabase"
+              className="w-full pl-7 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500" />
+          </div>
+          <button type="button" onClick={subirPorUrl} disabled={busy || !urlInput.trim()}
+            className="px-3 py-2 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 flex items-center gap-1.5">
+            {busy ? <Loader2 size={11} className="animate-spin" /> : <Globe size={11} />}
+            Importar
+          </button>
+        </div>
+      )}
+
       <div
         onDragOver={e => { e.preventDefault(); setDragOver(true) }}
         onDragLeave={() => setDragOver(false)}

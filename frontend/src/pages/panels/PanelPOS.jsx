@@ -5,6 +5,7 @@ import {
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
+import { useCart } from '../../contexts/CartContext'
 import { toast } from 'sonner'
 import { marked } from 'marked'
 
@@ -432,7 +433,11 @@ function CartLine({ linea, onChange, onRemove }) {
 // ── PanelPOS ──────────────────────────────────────────────────────────────────
 export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaCreada }) {
   const { tienePermiso } = useAuth()
+  const { setPosItemsCount } = useCart()
   const [cart, setCart]             = useState([])
+  // Sincroniza el badge de la navbar con el carrito local del POS.
+  useEffect(() => { setPosItemsCount(cart.reduce((s, l) => s + l.cantidad, 0)) }, [cart, setPosItemsCount])
+  useEffect(() => () => setPosItemsCount(0), [setPosItemsCount])
   const [cliente, setCliente]       = useState(null)
   const [nombreWalkin, setNombreWalkin] = useState('')
   const [applyItbis, setApplyItbis] = useState(true)
