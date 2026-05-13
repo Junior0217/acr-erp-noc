@@ -3745,8 +3745,10 @@ const empresaPatchSchema = z.object({
     firmaGerente: z.string().max(500).optional().nullable().refine(esAssetUrlSegura, { message: 'URL fuera de whitelist (Supabase Storage / local).' }),
   }).partial().optional(),
   eslogan:               z.string().max(200).optional().nullable(),
-  // PIN supervisor para autorizar descuentos POS > 15% (4-8 dígitos).
+  // PIN supervisor para autorizar descuentos POS sobre el umbral dinámico.
   pinSupervisor:         z.string().min(4).max(8).regex(/^\d+$/, 'Solo dígitos.').optional(),
+  // Umbral % de descuento global a partir del cual el POS exige PIN supervisor.
+  maxDescuentoCajero:    z.coerce.number().int().min(0).max(100).optional(),
   // Condiciones comerciales por defecto — cada campo opcional, max 280 char.
   condicionesDefault:    z.object({
     validez:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
@@ -3759,15 +3761,16 @@ const empresaPatchSchema = z.object({
 app.patch('/api/configuracion/empresa', verificarJWT, requerirPermiso('empresa:editar'), async (req, res) => {
   try {
     const data = empresaPatchSchema.parse(req.body)
-    // H2: pinSupervisor SOLO editable por sistema:owner (no por roles intermedios
-    // con permiso 'empresa:editar'). Cambiar el PIN equivale a bypass de descuentos.
-    if (data.pinSupervisor !== undefined) {
+    // H2: pinSupervisor + maxDescuentoCajero SOLO editables por sistema:owner.
+    // Cambiar el PIN o bajar el umbral equivalen a bypass de descuentos.
+    const _camposCriticos = ['pinSupervisor', 'maxDescuentoCajero'].filter(k => data[k] !== undefined)
+    if (_camposCriticos.length > 0) {
       const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
       if (!permisos.includes('sistema:owner')) {
-        auditReq('empresa:pin_edit_denied', req, { rol: permisos })
-        return res.status(403).json({ error: 'Solo el propietario absoluto puede modificar el PIN de supervisor.', code: 'OWNER_REQUIRED' })
+        auditReq('empresa:critical_edit_denied', req, { campos: _camposCriticos })
+        return res.status(403).json({ error: 'Solo el propietario absoluto puede modificar PIN o umbral de descuento.', code: 'OWNER_REQUIRED' })
       }
-      auditReq('empresa:pin_supervisor_changed', req)
+      auditReq('empresa:critical_changed', req, { campos: _camposCriticos, maxDesc: data.maxDescuentoCajero })
     }
     // Snapshot previo: necesario para identificar URLs huérfanas a remover de Storage
     // cuando el cliente reemplaza o limpia un asset al guardar el form.

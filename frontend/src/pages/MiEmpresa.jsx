@@ -195,7 +195,7 @@ export default function MiEmpresa() {
           <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
             <Lock size={15} className="text-amber-400" />
             <h3 className="text-xs font-bold text-amber-400 uppercase tracking-widest">PIN de Supervisor (POS)</h3>
-            <span className="ml-auto text-[10px] text-slate-500">Requerido para descuentos &gt; 15%</span>
+            <span className="ml-auto text-[10px] text-slate-500">Requerido para descuentos &gt; {Number(form.maxDescuentoCajero ?? 15)}%</span>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
@@ -209,7 +209,29 @@ export default function MiEmpresa() {
               ) : (
                 <div className={READONLY + ' font-mono tracking-[0.4em] text-center'}>{'•'.repeat((form.pinSupervisor ?? '').length || 4)}</div>
               )}
-              <p className="text-[10px] text-slate-600 mt-1">El cajero deberá ingresarlo si aplica un descuento global mayor al 15% en el POS.</p>
+              <p className="text-[10px] text-slate-600 mt-1">
+                El cajero deberá ingresarlo si aplica un descuento global mayor al{' '}
+                <span className="font-mono text-amber-400">{Number(form.maxDescuentoCajero ?? 15)}%</span> en el POS.
+              </p>
+            </div>
+            <div>
+              <label className={LABEL}>Umbral PIN (% descuento)</label>
+              {canEdit ? (
+                <input type="number" min={0} max={100} step={1}
+                  value={form.maxDescuentoCajero ?? 15}
+                  onChange={e => {
+                    const n = parseInt(e.target.value, 10)
+                    const clamped = isNaN(n) ? 15 : Math.max(0, Math.min(100, n))
+                    setForm(f => ({ ...f, maxDescuentoCajero: clamped }))
+                    setDirty(true)
+                  }}
+                  className={INPUT + ' font-mono text-center'} />
+              ) : (
+                <div className={READONLY + ' font-mono text-center'}>{Number(form.maxDescuentoCajero ?? 15)}%</div>
+              )}
+              <p className="text-[10px] text-slate-600 mt-1">
+                Sobre este % el POS exige PIN supervisor. <span className="font-mono text-slate-500">0% = siempre, 100% = nunca.</span>
+              </p>
             </div>
           </div>
         </section>

@@ -2,10 +2,41 @@ import { useState, useEffect, useCallback, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   Plus, Search, Loader2, Save, X, RefreshCw,
-  ClipboardList, FileText, User, Trash2, DollarSign,
+  ClipboardList, FileText, User, Trash2, DollarSign, ChevronDown, ChevronRight,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { useAuth } from '../../contexts/AuthContext'
+import EditorDescripcion from '../../components/EditorDescripcion'
+
+// Helpers para descripción estructurada (mirror de pdf-templates _tryParseEstructurada).
+function _parseDescEstruct(raw) {
+  if (!raw || typeof raw !== 'string') return null
+  const t = raw.trim()
+  if (t.length < 2 || t[0] !== '{') return null
+  try {
+    const obj = JSON.parse(t)
+    if (obj && obj.v === 1) return obj
+  } catch {}
+  return null
+}
+function _tituloDesc(raw) {
+  const obj = _parseDescEstruct(raw)
+  if (obj) return obj.titulo ?? ''
+  return raw ?? ''
+}
+function _serializarDesc(val) {
+  if (val == null) return ''
+  if (typeof val === 'string') return val
+  if (typeof val === 'object' && val.v === 1) {
+    const limpio = {
+      v: 1,
+      titulo:  String(val.titulo ?? '').slice(0, 200),
+      bullets: Array.isArray(val.bullets) ? val.bullets.filter(b => b && b.trim()).slice(0, 30) : [],
+    }
+    return JSON.stringify(limpio)
+  }
+  return ''
+}
 import {
   TIPOS_OT, ESTADOS_OT, META_DEFAULTS,
   TH, LABEL_CLS, INPUT_CLS, SELECT_CLS, PAGE_SIZE,
@@ -152,6 +183,7 @@ function LineasPicker({ lineas, setLineas }) {
   const [catalog, setCatalog] = useState([])
   const [search,  setSearch]  = useState('')
   const [show,    setShow]    = useState(false)
+  const [expanded, setExpanded] = useState(null)  // index de la línea con detalle abierto
   const dropRef = useRef(null)
 
   useEffect(() => {
@@ -168,9 +200,16 @@ function LineasPicker({ lineas, setLineas }) {
 
   function addItem(item) {
     if (lineas.find(l => l.itemCatalogoId === item.id)) { toast.info('Item ya agregado.'); return }
+    // Preserva la descripción estructurada del catálogo si existe (v=1 JSON).
+    // Si no hay descripción, usa el nombre como título base de un objeto v=1.
+    const descSource = item.descripcion ?? ''
+    const descEstruct = _parseDescEstruct(descSource)
+    const descripcion = descEstruct
+      ? JSON.stringify(descEstruct)
+      : JSON.stringify({ v: 1, titulo: item.nombre, bullets: descSource ? [descSource] : [] })
     setLineas(prev => [...prev, {
       itemCatalogoId: item.id,
-      descripcion:    item.nombre,
+      descripcion,
       cantidad:       1,
       precioUnitario: Number(item.precio),
     }])
@@ -191,26 +230,61 @@ function LineasPicker({ lineas, setLineas }) {
       {lineas.length > 0 && (
         <div className="bg-slate-800/50 border border-slate-700/40 rounded-lg overflow-hidden">
           <div className="divide-y divide-slate-700/40">
-            {(Array.isArray(lineas) ? lineas : []).map((l, i) => (
-              <div key={i} className="flex items-center gap-2 px-3 py-2">
-                <div className="flex-1 min-w-0">
-                  <input value={l.descripcion} onChange={e => upd(i, 'descripcion', e.target.value)}
-                    className="w-full bg-transparent text-xs text-slate-200 focus:outline-none focus:underline decoration-slate-600 truncate" />
+            {(Array.isArray(lineas) ? lineas : []).map((l, i) => {
+              const isOpen = expanded === i
+              const estruct = _parseDescEstruct(l.descripcion)
+              const titulo  = estruct?.titulo ?? l.descripcion ?? ''
+              const bulletsCount = Array.isArray(estruct?.bullets) ? estruct.bullets.length : 0
+              return (
+                <div key={i}>
+                  <div className="flex items-center gap-2 px-3 py-2">
+                    <button type="button" onClick={() => setExpanded(isOpen ? null : i)}
+                      className="text-slate-500 hover:text-blue-400 transition-colors flex-shrink-0"
+                      title={isOpen ? 'Ocultar detalle' : 'Editar título + bullets'}>
+                      {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+                    </button>
+                    <div className="flex-1 min-w-0">
+                      <input value={titulo}
+                        onChange={e => {
+                          // Edita solo el título; preserva bullets si la línea es estructurada.
+                          if (estruct) {
+                            upd(i, 'descripcion', _serializarDesc({ ...estruct, titulo: e.target.value }))
+                          } else {
+                            upd(i, 'descripcion', e.target.value)
+                          }
+                        }}
+                        className="w-full bg-transparent text-xs text-slate-200 focus:outline-none focus:underline decoration-slate-600 truncate" />
+                      {bulletsCount > 0 && !isOpen && (
+                        <p className="text-[9px] text-slate-600 font-mono mt-0.5 truncate">
+                          {bulletsCount} viñeta{bulletsCount === 1 ? '' : 's'} · {(estruct.bullets[0] ?? '').slice(0, 40)}{(estruct.bullets[0] ?? '').length > 40 ? '…' : ''}
+                        </p>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-1 flex-shrink-0">
+                      <input type="number" min="1" value={l.cantidad}
+                        onChange={e => upd(i, 'cantidad', parseInt(e.target.value) || 1)}
+                        className="w-10 text-center bg-slate-700 border border-slate-600 rounded text-xs text-slate-200 py-1 focus:outline-none focus:border-blue-500" />
+                      <span className="text-[10px] text-slate-600">×</span>
+                      <input type="number" min="0" step="0.01" value={l.precioUnitario}
+                        onChange={e => upd(i, 'precioUnitario', parseFloat(e.target.value) || 0)}
+                        className="w-20 text-right bg-slate-700 border border-slate-600 rounded text-xs text-slate-200 py-1 px-1.5 font-mono focus:outline-none focus:border-blue-500" />
+                      <button onClick={() => remove(i)} className="text-slate-600 hover:text-red-400 transition-colors ml-0.5">
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </div>
+                  {isOpen && (
+                    <div className="px-3 py-3 bg-slate-900/50 border-t border-slate-700/30">
+                      <EditorDescripcion
+                        value={estruct ?? l.descripcion}
+                        onChange={v => upd(i, 'descripcion', _serializarDesc(v))}
+                        mostrarImagen={false}
+                      />
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center gap-1 flex-shrink-0">
-                  <input type="number" min="1" value={l.cantidad}
-                    onChange={e => upd(i, 'cantidad', parseInt(e.target.value) || 1)}
-                    className="w-10 text-center bg-slate-700 border border-slate-600 rounded text-xs text-slate-200 py-1 focus:outline-none focus:border-blue-500" />
-                  <span className="text-[10px] text-slate-600">×</span>
-                  <input type="number" min="0" step="0.01" value={l.precioUnitario}
-                    onChange={e => upd(i, 'precioUnitario', parseFloat(e.target.value) || 0)}
-                    className="w-20 text-right bg-slate-700 border border-slate-600 rounded text-xs text-slate-200 py-1 px-1.5 font-mono focus:outline-none focus:border-blue-500" />
-                  <button onClick={() => remove(i)} className="text-slate-600 hover:text-red-400 transition-colors ml-0.5">
-                    <Trash2 size={12} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              )
+            })}
           </div>
           <div className="flex items-center justify-between px-3 py-2 border-t border-slate-700/50 bg-slate-800/40">
             <span className="text-[10px] text-slate-600 font-mono">{lineas.length} item{lineas.length !== 1 ? 's' : ''}</span>
