@@ -10,7 +10,7 @@
  */
 import { useEffect } from 'react'
 import { X, Download, Printer, Maximize2, FileText, Loader2 } from 'lucide-react'
-import { descargarBlob, imprimirBlob } from '../utils/pdf'
+import { descargarBlob } from '../utils/pdf'
 
 export default function PdfPreviewDrawer({ open, blob, blobUrl, filename, title, subtitle, loading, onClose }) {
   // ESC cierra el drawer
@@ -26,12 +26,9 @@ export default function PdfPreviewDrawer({ open, blob, blobUrl, filename, title,
   function handleDescargar() {
     if (blob && filename) descargarBlob(blob, filename)
   }
-  function handleImprimir() {
-    if (blob) imprimirBlob(blob)
-  }
-  function handleAbrirNuevaPestana() {
-    if (blobUrl) window.open(blobUrl, '_blank', 'noopener,noreferrer')
-  }
+  // Imprimir + Ampliar usan <a target="_blank"> en lugar de window.open():
+  // los browsers bloquean window.open llamado async (post-await) por considerarlo
+  // popup no-iniciado-por-usuario. Un <a> con click directo sí pasa el filtro.
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="dialog" aria-modal="true" aria-label="Vista previa de PDF">
@@ -65,15 +62,19 @@ export default function PdfPreviewDrawer({ open, blob, blobUrl, filename, title,
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40">
             <Download size={12} />Descargar
           </button>
-          <button onClick={handleImprimir} disabled={!blob}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-colors disabled:opacity-40">
+          <a href={blobUrl || '#'} target="_blank" rel="noopener noreferrer"
+            aria-disabled={!blobUrl}
+            onClick={e => { if (!blobUrl) e.preventDefault() }}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition-colors ${!blobUrl ? 'opacity-40 pointer-events-none' : ''}`}>
             <Printer size={12} />Imprimir
-          </button>
-          <button onClick={handleAbrirNuevaPestana} disabled={!blobUrl}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition-colors disabled:opacity-40"
-            title="Abrir en pestaña nueva (más espacio)">
+          </a>
+          <a href={blobUrl || '#'} target="_blank" rel="noopener noreferrer"
+            aria-disabled={!blobUrl}
+            onClick={e => { if (!blobUrl) e.preventDefault() }}
+            title="Abrir en pestaña nueva (más espacio)"
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 transition-colors ${!blobUrl ? 'opacity-40 pointer-events-none' : ''}`}>
             <Maximize2 size={12} />Ampliar
-          </button>
+          </a>
           <span className="ml-auto text-[10px] text-slate-600 font-mono">ESC para cerrar</span>
         </div>
 

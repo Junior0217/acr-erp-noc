@@ -768,10 +768,23 @@ export default function PanelFacturas({ highlightId = null }) {
 function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, canEdit, onPreviewPDF, downloadingId, onCondicionesGuardadas }) {
   const [full, setFull] = useState(null)
   const [loading, setLoading] = useState(true)
-  // Edición de condiciones comerciales (override del default empresa)
+  // Edición de condiciones comerciales (override del default empresa).
+  // Shape interno: { k: { incluir: bool, texto: string } }. Soporta lectura legacy (string).
   const [editCond, setEditCond] = useState(false)
-  const [cond, setCond] = useState({ validez: '', pago: '', entrega: '', garantia: '' })
+  const [cond, setCond] = useState({
+    validez:  { incluir: false, texto: '' },
+    pago:     { incluir: false, texto: '' },
+    entrega:  { incluir: false, texto: '' },
+    garantia: { incluir: false, texto: '' },
+  })
   const [savingCond, setSavingCond] = useState(false)
+
+  // Normaliza el shape al cargar: legacy string -> { incluir: true, texto }.
+  function normCond(v) {
+    if (v == null) return { incluir: false, texto: '' }
+    if (typeof v === 'string') return { incluir: !!v.trim(), texto: v }
+    return { incluir: !!v.incluir, texto: String(v.texto ?? '') }
+  }
 
   useEffect(() => {
     let cancel = false
@@ -779,10 +792,10 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
     apiFetch(`/api/ventas/facturas/${factura.id}`)
       .then(r => r.ok ? r.json() : null)
       .then(j => { if (cancel) return; setFull(j); setCond({
-        validez:  j?.condiciones?.validez  ?? '',
-        pago:     j?.condiciones?.pago     ?? '',
-        entrega:  j?.condiciones?.entrega  ?? '',
-        garantia: j?.condiciones?.garantia ?? '',
+        validez:  normCond(j?.condiciones?.validez),
+        pago:     normCond(j?.condiciones?.pago),
+        entrega:  normCond(j?.condiciones?.entrega),
+        garantia: normCond(j?.condiciones?.garantia),
       }) })
       .catch(() => {})
       .finally(() => { if (!cancel) setLoading(false) })
@@ -903,25 +916,50 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
                 </div>
                 {!editCond ? (
                   <div className="space-y-1.5 text-xs">
-                    {['validez','pago','entrega','garantia'].map(k => (
-                      <div key={k}>
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-2">{k}</span>
-                        <span className="text-slate-300">{full?.condiciones?.[k] || <span className="text-slate-700 italic">(usa valor por defecto de empresa)</span>}</span>
-                      </div>
-                    ))}
+                    {['validez','pago','entrega','garantia'].map(k => {
+                      const raw = full?.condiciones?.[k]
+                      const item = raw == null ? null : (typeof raw === 'string' ? { incluir: !!raw.trim(), texto: raw } : raw)
+                      const omitted = item && !item.incluir
+                      const usaDefault = item == null
+                      return (
+                        <div key={k} className="flex items-center gap-2">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-slate-600 mr-1 w-16">{k}</span>
+                          {omitted
+                            ? <span className="text-slate-700 italic">(omitida en este documento)</span>
+                            : <span className="text-slate-300 flex-1">{(item?.texto?.trim()) || <span className="text-slate-700 italic">{usaDefault ? '(usa valor por defecto de empresa)' : '—'}</span>}</span>}
+                        </div>
+                      )
+                    })}
                   </div>
                 ) : (
-                  <div className="space-y-2">
+                  <div className="space-y-2.5">
                     {['validez','pago','entrega','garantia'].map(k => (
-                      <div key={k}>
-                        <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">{k}</label>
-                        <input type="text" value={cond[k]} onChange={e => setCond(c => ({ ...c, [k]: e.target.value }))} maxLength={280}
-                          placeholder="(vacío = usa default de empresa)"
-                          className="w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500" />
+                      <div key={k} className="space-y-1">
+                        <div className="flex items-center justify-between">
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{k}</label>
+                          {/* Toggle Incluir/Omitir */}
+                          <button type="button" onClick={() => setCond(c => ({ ...c, [k]: { ...c[k], incluir: !c[k].incluir } }))}
+                            className="flex items-center gap-1.5 text-[10px] font-mono">
+                            <span className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${cond[k].incluir ? 'bg-blue-600' : 'bg-slate-700'}`}>
+                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${cond[k].incluir ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                            </span>
+                            <span className={cond[k].incluir ? 'text-blue-300' : 'text-slate-500'}>{cond[k].incluir ? 'Incluir en PDF' : 'Omitir'}</span>
+                          </button>
+                        </div>
+                        <input type="text" value={cond[k].texto} maxLength={280}
+                          onChange={e => setCond(c => ({ ...c, [k]: { incluir: c[k].incluir || !!e.target.value, texto: e.target.value } }))}
+                          disabled={!cond[k].incluir}
+                          placeholder={cond[k].incluir ? '(vacío = usa default de empresa)' : 'Omitida'}
+                          className={`w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-opacity ${!cond[k].incluir ? 'opacity-40' : ''}`} />
                       </div>
                     ))}
                     <div className="flex justify-end gap-2 pt-2">
-                      <button onClick={() => { setEditCond(false); setCond({ validez: full?.condiciones?.validez ?? '', pago: full?.condiciones?.pago ?? '', entrega: full?.condiciones?.entrega ?? '', garantia: full?.condiciones?.garantia ?? '' }) }}
+                      <button onClick={() => { setEditCond(false); setCond({
+                        validez:  normCond(full?.condiciones?.validez),
+                        pago:     normCond(full?.condiciones?.pago),
+                        entrega:  normCond(full?.condiciones?.entrega),
+                        garantia: normCond(full?.condiciones?.garantia),
+                      }) }}
                         className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
                         Cancelar
                       </button>

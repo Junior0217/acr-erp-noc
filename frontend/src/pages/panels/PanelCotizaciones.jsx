@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react'
 import { toast } from 'sonner'
 import {
   RefreshCw, Loader2, FileText, RotateCcw, AlertTriangle,
-  Search, X, Printer, CheckSquare, Square, FileArchive,
+  Search, X, Printer, CheckSquare, Square, FileArchive, Plus, ScrollText,
 } from 'lucide-react'
 import { apiFetch } from '../../utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '../../utils/pdf'
@@ -218,7 +218,7 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
   )
 }
 
-export default function PanelCotizaciones() {
+export default function PanelCotizaciones({ onIrPOS, canPOS }) {
   const [rows, setRows]       = useState([])
   const [total, setTotal]     = useState(0)
   const [offset, setOffset]   = useState(0)
@@ -310,6 +310,18 @@ export default function PanelCotizaciones() {
 
   return (
     <div>
+      <div className="flex flex-wrap items-center justify-between gap-2 p-4 pb-0">
+        <div className="flex items-center gap-2">
+          <ScrollText size={16} className="text-amber-400" />
+          <h2 className="text-sm font-bold text-slate-100 uppercase tracking-wider">Cotizaciones</h2>
+        </div>
+        {canPOS && onIrPOS && (
+          <button onClick={onIrPOS}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-semibold bg-orange-600 hover:bg-orange-500 text-white transition-colors shadow-lg shadow-orange-600/20">
+            <Plus size={14} /> Nueva Cotización / POS
+          </button>
+        )}
+      </div>
       <div className="p-4 border-b border-slate-800 space-y-2">
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2">
           <div className="lg:col-span-2 relative">

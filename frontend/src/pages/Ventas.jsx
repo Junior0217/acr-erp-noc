@@ -68,7 +68,7 @@ export default function Ventas() {
         {tab === 'catalogo'     && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} canPOS={canPOS} onSellNow={sellNow} />}
         {tab === 'ordenes'      && <PanelOrdenes  canEdit={canEdit} clienteIdInit={clienteIdInit} clienteNombreInit={clienteNombreInit} />}
         {tab === 'facturas'     && <PanelFacturas highlightId={facturaHighlight} />}
-        {tab === 'cotizaciones' && <PanelCotizaciones />}
+        {tab === 'cotizaciones' && <PanelCotizaciones onIrPOS={() => setTab('pos')} canPOS={canPOS} />}
         {tab === 'pos'          && <PanelPOS preloadItems={posPreload} onClearPreload={() => setPosPreload([])} onFacturaCreada={onFacturaCreada} />}
         {tab === 'ncf'          && <PanelNCF />}
       </div>

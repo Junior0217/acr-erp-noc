@@ -269,6 +269,15 @@ function reqFingerprint(req) {
   return crypto.createHash('sha256').update(`${ip}|${ua}`).digest('hex')
 }
 
+// /api/health DEBE ir antes del limiter global — Render lo golpea cada 30s
+// y con 200 req/15min se agotaba la cuota en pruebas de carga ligera -> 429.
+// Sin rate-limit aquí; queda como liveness probe puro.
+app.get('/api/health', async (req, res) => {
+  let dbConnected = false
+  try { await prisma.$queryRaw`SELECT 1`; dbConnected = true } catch (_) {}
+  res.json({ status: 'ok', version: '3.0.0', timestamp: Date.now(), dbConnected, uptime: Math.floor(process.uptime()) })
+})
+
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 200,
@@ -738,14 +747,11 @@ const portalLoginLimiter = rateLimit({
   skipSuccessfulRequests: true,
 })
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
-
-app.get('/api/health', async (req, res) => {
-  let dbConnected = false;
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    dbConnected = true;
-  } catch (_) {}
+// ─── Health Check (movido arriba del rate-limiter para que Render no se 429) ──
+// Stub: legacy block. Mantengo para no romper rutas que esperan headers extras.
+app.get('/api/health/legacy', async (req, res) => {
+  let dbConnected = false
+  try { await prisma.$queryRaw`SELECT 1`; dbConnected = true } catch (_) {}
   res.json({
     status:    'ok',
     version:   '3.0.0-HARD-RESET',
@@ -2679,12 +2685,34 @@ async function invalidarPdfCache(facturaId) {
   } catch (e) { console.error('[PDF CACHE invalidate]', e.message) }
 }
 
-// Merge per-doc condiciones over EmpresaPerfil defaults. null/empty fields del doc
-// caen al default. Si el default tampoco existe, no se renderiza la fila.
+// Merge per-doc condiciones sobre EmpresaPerfil defaults.
+// Cada campo del doc puede ser:
+//   string             → incluir si no vacío
+//   {incluir, texto}   → toggle explícito (UI nueva): incluir=false oculta la fila
+//   null/undefined     → fall-through al default empresa
+// Default empresa es siempre string. Si el doc dice incluir=false, NUNCA cae al default
+// (el usuario decidió ocultarla en este documento concreto).
 function mergeCondiciones(empresa, factura) {
   const defs = empresa?.condicionesDefault ?? {}
   const own  = factura?.condiciones ?? {}
-  const pick = (k) => (own?.[k] && String(own[k]).trim()) || (defs?.[k] && String(defs[k]).trim()) || null
+  const pick = (k) => {
+    const v = own?.[k]
+    if (v !== undefined && v !== null) {
+      if (typeof v === 'string') {
+        const s = v.trim()
+        return s || null
+      }
+      if (typeof v === 'object') {
+        if (!v.incluir) return null
+        const s = String(v.texto ?? '').trim()
+        return s || null
+      }
+    }
+    // No override -> default empresa.
+    const d = defs?.[k]
+    if (typeof d === 'string' && d.trim()) return d.trim()
+    return null
+  }
   return {
     validez:  pick('validez'),
     pago:     pick('pago'),
@@ -2929,12 +2957,31 @@ app.post('/api/pdf/bulk',
 )
 
 // Edición rápida de condiciones comerciales por documento.
+// Cada campo acepta:
+//   - string (legacy)         → incluir si no vacío
+//   - { incluir, texto }      → incluir solo si incluir === true Y texto no vacío
+//   - null                    → no override, usa default empresa
+const condFieldSchema = z.union([
+  z.string().max(280).nullable(),
+  z.object({
+    incluir: z.boolean().default(true),
+    texto:   z.string().max(280).optional().nullable().transform(v => v ?? ''),
+  }),
+]).optional().nullable()
+
 const condicionesSchema = z.object({
-  validez:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
-  pago:     z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
-  entrega:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
-  garantia: z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+  validez:  condFieldSchema,
+  pago:     condFieldSchema,
+  entrega:  condFieldSchema,
+  garantia: condFieldSchema,
 }).partial()
+
+function condFieldIsEmpty(v) {
+  if (v == null) return true
+  if (typeof v === 'string') return v.trim() === ''
+  if (typeof v === 'object') return !v.incluir || !String(v.texto ?? '').trim()
+  return true
+}
 
 app.patch('/api/facturas/:id/condiciones',
   verificarJWT,
@@ -2943,8 +2990,8 @@ app.patch('/api/facturas/:id/condiciones',
     if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
     try {
       const data = condicionesSchema.parse(req.body)
-      // Si todos los campos son null/vacíos, limpia el override (cae al default empresa).
-      const allEmpty = Object.values(data).every(v => v == null || v === '')
+      // Si todos los campos son null/vacíos/incluir=false, limpia override (cae al default).
+      const allEmpty = Object.values(data).every(condFieldIsEmpty)
       const factura = await prisma.factura.update({
         where: { id: req.params.id },
         // Invalida pdfUrl al editar condiciones — fuerza regeneración con datos nuevos.
@@ -5898,16 +5945,8 @@ async function buildFacturaPDFBuffer(factura) {
 
 // (Ruta /api/facturas/:id/pdf registrada arriba, unificada con renderPdfDoc.)
 
-// ─── Health ───────────────────────────────────────────────────────────────────
-
-app.get('/api/health', async (req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`
-    res.json({ ok: true, db: 'up', uptime: Math.floor(process.uptime()) })
-  } catch {
-    res.status(503).json({ ok: false, db: 'down' })
-  }
-})
+// ─── Health detallado (requiere HEALTH_TOKEN) ────────────────────────────────
+// /api/health (sin auth) está registrado arriba del rate-limiter para Render.
 
 app.get('/api/health/detailed', async (req, res) => {
   const token = req.headers['authorization']?.replace('Bearer ', '')
@@ -6220,16 +6259,57 @@ async function ensureSchemaColumns() {
   }
 }
 
+// Habilita RLS en runtime como fallback al migrate. Idempotente — corre cada cold
+// start. Si la migración ya aplicó, los EXECUTE format son no-op por igual estado.
+async function ensureRowLevelSecurity() {
+  if (process.env.SKIP_RLS_ENSURE === 'true') return
+  try {
+    await prisma.$executeRawUnsafe(`
+      DO $$
+      DECLARE t RECORD;
+      BEGIN
+        FOR t IN
+          SELECT tablename FROM pg_tables
+          WHERE schemaname = 'public' AND tablename NOT LIKE '_prisma%'
+        LOOP
+          EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t.tablename);
+          EXECUTE format('ALTER TABLE public.%I FORCE  ROW LEVEL SECURITY', t.tablename);
+          EXECUTE format('DROP POLICY IF EXISTS "service_role_all" ON public.%I', t.tablename);
+          EXECUTE format($p$
+            CREATE POLICY "service_role_all" ON public.%I
+            FOR ALL
+            TO postgres, service_role
+            USING (true)
+            WITH CHECK (true)
+          $p$, t.tablename);
+        END LOOP;
+      END $$;
+    `)
+    console.log('[DB] RLS enabled on all public tables (service_role_all policy).')
+  } catch (e) {
+    console.error('[DB] ensureRowLevelSecurity FAILED:', e.message)
+  }
+}
+
 async function startServer() {
   try {
     await prisma.$connect();
     console.log('[DB] Prisma connected to Supabase successfully.');
     await ensureSchemaColumns();
+    await ensureRowLevelSecurity();
     await seedNomenclaturas();
   } catch (err) {
     console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);
     process.exit(1);
   }
+
+  // Warm-up Puppeteer/Chromium en background. Sin await: el servidor empieza
+  // a aceptar requests mientras el browser se inicializa. Cold-start primer
+  // PDF baja de ~3s a ~150ms si la warm-up termina antes del primer request.
+  const { getBrowser } = require('./services/pdf-generator')
+  getBrowser()
+    .then(() => console.log('[PDF] Chromium warmed up.'))
+    .catch(err => console.error('[PDF WARMUP]', err.message))
 
   // Pre-generate RSA challenges so first login after cold start never fails
   await warmChallengeStore(3)
