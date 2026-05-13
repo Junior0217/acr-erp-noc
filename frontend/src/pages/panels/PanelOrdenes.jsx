@@ -381,7 +381,15 @@ function NuevaOTModal({ onClose, onSaved, clienteIdInit, clienteNombreInit }) {
             <div className="mt-1.5">
               <LineasPicker
                 lineas={form.lineas}
-                setLineas={lineas => setForm(f => ({ ...f, lineas }))}
+                setLineas={updater => setForm(f => ({
+                  ...f,
+                  // LineasPicker llama setLineas con un updater (prev => next) estilo React.
+                  // El wrapper original ignoraba esto y guardaba la función como valor
+                  // -> form.lineas dejaba de ser array -> submit enviaba [] y backend 400.
+                  lineas: typeof updater === 'function'
+                    ? updater(Array.isArray(f.lineas) ? f.lineas : [])
+                    : (Array.isArray(updater) ? updater : []),
+                }))}
               />
             </div>
           </div>
