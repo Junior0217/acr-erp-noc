@@ -422,6 +422,20 @@ app.use((req, res, next) => {
     `object-src 'none'; ` +
     `require-trusted-types-for 'script'`
   )
+  // Hardening adicional (OWASP):
+  //  Permissions-Policy: cierra puerta a APIs sensibles del browser que la app
+  //    no usa. Si en el futuro un XSS lograra inyectar JS, no podría activar
+  //    cámara/mic/geolocation/USB/payment ni en iframes embebidos.
+  //  X-Permitted-Cross-Domain-Policies: 'none' bloquea legacy Adobe Flash/PDF
+  //    cross-domain policies. Cero impacto operacional, cierra vector AS-CDP.
+  res.setHeader('Permissions-Policy',
+    'accelerometer=(), autoplay=(), camera=(), display-capture=(), ' +
+    'encrypted-media=(), fullscreen=(self), geolocation=(self), gyroscope=(), ' +
+    'magnetometer=(), microphone=(), midi=(), payment=(), picture-in-picture=(), ' +
+    'publickey-credentials-get=(self), screen-wake-lock=(), sync-xhr=(), ' +
+    'usb=(), web-share=(), xr-spatial-tracking=()'
+  )
+  res.setHeader('X-Permitted-Cross-Domain-Policies', 'none')
   next()
 })
 
@@ -443,9 +457,13 @@ function _stripPollutionKeys(obj, depth = 0) {
 
 // ─── Helpers: body limit por ruta + envelope estándar de error/respuesta ──────
 function bodyLimit(maxKb) {
+  // Reviver filtra TODAS las claves peligrosas. Antes faltaba 'prototype' —
+  // un atacante podía mandar { "prototype": {...} } y el JSON.parse colaba
+  // el objeto crudo al body. _stripPollutionKeys lo capturaba después, pero
+  // el bloqueo en la capa de parse es defensa en profundidad.
   return express.json({
     limit: `${maxKb}kb`,
-    reviver: (k, v) => (k === '__proto__' || k === 'constructor') ? undefined : v,
+    reviver: (k, v) => (k === '__proto__' || k === 'prototype' || k === 'constructor') ? undefined : v,
   })
 }
 function sendErr(res, status, code, message, detail) {
@@ -457,7 +475,7 @@ function sendOk(res, data, status = 200) {
 
 app.use(express.json({
   limit: '50kb',
-  reviver: (k, v) => (k === '__proto__' || k === 'constructor') ? undefined : v,
+  reviver: (k, v) => (k === '__proto__' || k === 'prototype' || k === 'constructor') ? undefined : v,
 }));
 app.use((req, _res, next) => { if (req.body) _stripPollutionKeys(req.body); next() });
 
@@ -756,12 +774,25 @@ async function verificarJWT(req, res, next) {
           ...(isProd ? { partitioned: true } : {}),
         };
         res.cookie('token', newToken, cookieOpts);
+
+        // FIX bug "CSRF expirado": antes solo extendíamos 'token', dejando 'csrf'
+        // con su maxAge original. Si el user quedaba idle 30min, csrf moría aunque
+        // el JWT viviera 19min más por sliding -> 403 al primer click + logout
+        // forzado. Ahora re-emitimos 'csrf' con la misma maxAge para que JWT y
+        // CSRF siempre expiren a la par. Si la cookie csrf se perdió (browser
+        // crash, etc), regeneramos una nueva.
+        const csrfActual = req.cookies?.csrf || crypto.randomBytes(32).toString('hex')
+        res.cookie('csrf', csrfActual, { ...cookieOpts, httpOnly: false, signed: false })
       }
     }
 
     next();
   } catch {
+    // Limpiamos AMBAS cookies. Antes solo 'token' — dejaba 'csrf' huérfana y
+    // el siguiente request mutating fallaba CSRF en lugar de auth, lo que
+    // confundía al user con un mensaje incorrecto.
     res.clearCookie('token');
+    res.clearCookie('csrf');
     res.status(401).json({ error: 'Token inválido.' });
   }
 }
@@ -4199,10 +4230,28 @@ app.get('/api/auth/permissions', verificarJWT, (req, res) => {
 
 // Returns the csrf token from the server-side cookie — safe for cross-origin clients
 // that cannot read third-party cookies via document.cookie (CHIPS / ITP).
-// The browser sends the cookie; the server echoes it in the JSON body.
-app.get('/api/auth/csrf', (req, res) => {
-  const token = req.cookies?.csrf
-  if (!token) return res.status(401).json({ error: 'No session.' })
+//
+// FIX (sesión-larga / inactividad): antes este endpoint solo devolvía la cookie
+// existente. Si la cookie 'csrf' expiraba antes que el JWT (sliding refresh
+// extendía solo 'token' y dejaba 'csrf' huérfano), el endpoint devolvía 401 y
+// el frontend disparaba logout aunque la sesión seguía VIVA. Ahora:
+//   1. verificarJWT garantiza que solo entren sesiones reales.
+//   2. Si la cookie 'csrf' falta o está vacía, REGENERAMOS una nueva y la
+//      sembramos en el browser — silent-refresh transparente al usuario.
+//   3. La maxAge se alinea con la TTL de la sesión en curso.
+app.get('/api/auth/csrf', verificarJWT, (req, res) => {
+  let token = req.cookies?.csrf
+  if (!token) {
+    token = crypto.randomBytes(32).toString('hex')
+    const isProd = process.env.NODE_ENV === 'production'
+    res.cookie('csrf', token, {
+      httpOnly: false,
+      secure:   isProd,
+      sameSite: isProd ? 'none' : 'lax',
+      maxAge:   IDLE_TTL_MS,
+      ...(isProd ? { partitioned: true } : {}),
+    })
+  }
   res.json({ csrfToken: token })
 });
 

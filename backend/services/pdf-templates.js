@@ -270,11 +270,14 @@ html, body {
   font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.12em;
   border: 1px solid;
 }
-.estado-Pagada   { background: #f0fdf4; color: #166534; border-color: #bbf7d0; }
-.estado-Emitida  { background: #eff6ff; color: #1e40af; border-color: #bfdbfe; }
-.estado-Vencida  { background: #fef2f2; color: #991b1b; border-color: #fecaca; }
+/* Estados: paleta unificada gris claro (ink-friendly). El texto conserva
+   tinte semántico tenue para distinguir Pagada/Vencida/Anulada de un vistazo
+   sin saturar el toner. Misma identidad visual en factura y cotización. */
+.estado-Pagada   { background: #f8fafc; color: #166534; border-color: #cbd5e1; }
+.estado-Emitida  { background: #f8fafc; color: #1e40af; border-color: #cbd5e1; }
+.estado-Vencida  { background: #f8fafc; color: #991b1b; border-color: #cbd5e1; }
 .estado-Borrador { background: #f8fafc; color: #475569; border-color: #cbd5e1; }
-.estado-Anulada  { background: #fef2f2; color: #7f1d1d; border-color: #fca5a5; }
+.estado-Anulada  { background: #f8fafc; color: #7f1d1d; border-color: #cbd5e1; }
 
 /* ───── Sections ───── */
 .body { padding: 18px 36px 12px; }
@@ -338,6 +341,13 @@ html, body {
 }
 .items tbody tr:last-child td { border-bottom: none; }
 .items tbody tr:nth-child(even) td { background: #f8fafc; }
+/* ── Pagination intra-tabla ────────────────────────────────────────────────
+   Cada fila se imprime entera. Si no cabe, salta al inicio de la página
+   siguiente. Header se repite (thead como header-group). Evita huérfanos
+   tipo "una descripción cortada por la mitad". */
+.items tbody tr  { page-break-inside: avoid; break-inside: avoid; }
+.items thead     { display: table-header-group; }
+.items tfoot     { display: table-footer-group; }
 .items tbody td.center { text-align: center; }
 .items tbody td.right  { text-align: right; }
 .items tbody td.num    { color: #94a3b8; font-size: 9px; }
@@ -398,12 +408,17 @@ html, body {
 .tot-row:last-child { border-bottom: none; }
 .tot-row .lbl { color: #475569; font-weight: 600; text-transform: uppercase; font-size: 9px; letter-spacing: 0.08em; }
 .tot-row .val { color: #0f172a; font-weight: 700; }
+/* Grand Total: fondo claro + borde superior fuerte. Antes navy oscuro
+   (#0f172a) — desperdiciaba tinta y rompía la unificación factura/cotización.
+   Ahora idéntico tratamiento al resto del template. */
 .tot-row.grand {
-  background: #0f172a; color: white;
+  background: #f1f5f9;
+  color: #0f172a;
   padding: 11px 14px;
+  border-top: 2px solid #94a3b8;
 }
-.tot-row.grand .lbl { color: white; font-size: 10px; font-weight: 800; letter-spacing: 0.12em; }
-.tot-row.grand .val { color: white; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; }
+.tot-row.grand .lbl { color: #475569; font-size: 10px; font-weight: 800; letter-spacing: 0.12em; }
+.tot-row.grand .val { color: #0f172a; font-size: 14px; font-weight: 800; letter-spacing: 0.02em; }
 
 /* ───── Conditions ───── */
 .cond-grid {
@@ -419,14 +434,16 @@ html, body {
 .cond-cell .lbl { font-size: 7.5px; color: #64748b; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; }
 .cond-cell .val { font-size: 9.5px; color: #0f172a; font-weight: 600; margin-top: 2px; line-height: 1.4; }
 
+/* Notes: paleta neutra slate en lugar de ámbar saturado. Se conserva el
+   acento de borde lateral para marcar atención sin gastar tinta de color. */
 .notes {
   margin-top: 12px;
   padding: 10px 14px;
-  background: #fffbeb; border-left: 3px solid #d97706;
+  background: #f8fafc; border-left: 3px solid #94a3b8;
   border-radius: 3px;
-  font-size: 9.5px; color: #78350f; line-height: 1.5;
+  font-size: 9.5px; color: #334155; line-height: 1.5;
 }
-.notes .ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; font-size: 8.5px; margin-bottom: 2px; color: #92400e; }
+.notes .ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; font-size: 8.5px; margin-bottom: 2px; color: #0f172a; }
 
 /* ───── Signatures ───── */
 .sigs {
@@ -484,6 +501,24 @@ html, body {
 .footer .ctr .verify-line .lbl { color: #94a3b8; }
 .footer .ctr .verify-line .url { color: #1e40af; }
 .footer .right { text-align: right; }
+
+/* ───── Pagination del bloque inferior ─────────────────────────────────────
+   Totales + condiciones + notas + firmas se imprimen como UN bloque
+   atómico. Si no queda espacio al final de la página, todo el bloque
+   salta junto a la siguiente — nunca aparecen las firmas solas en una
+   página nueva ni los totales separados de las firmas. */
+.doc-footer {
+  page-break-inside: avoid; break-inside: avoid;
+  page-break-before: auto;
+  margin-top: 0;
+}
+.totals-wrap { page-break-inside: avoid; break-inside: avoid; }
+.cond-grid   { page-break-inside: avoid; break-inside: avoid; }
+.notes       { page-break-inside: avoid; break-inside: avoid; }
+.sigs        { page-break-inside: avoid; break-inside: avoid; }
+.sig-block   { page-break-inside: avoid; break-inside: avoid; }
+.client-grid { page-break-inside: avoid; break-inside: avoid; }
+.section-label { page-break-after: avoid; break-after: avoid; }
 
 /* ───── Watermark ANULADA ───── */
 .watermark {
@@ -649,48 +684,50 @@ function renderDocumento(opts) {
       <tbody>${itemsRows || `<tr><td colspan="5" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
     </table>
 
-    <div class="totals-wrap${legalNote ? '' : ' totals-wrap--solo'}">
-      ${legalNote}
-      <div class="totals">
-        <div class="tot-row">
-          <span class="lbl">Subtotal</span>
-          <span class="val mono">RD$ ${fmtMoney(subtotal)}</span>
-        </div>
-        ${Number(itbis) > 0 ? `
-        <div class="tot-row">
-          <span class="lbl">ITBIS (18%)</span>
-          <span class="val mono">RD$ ${fmtMoney(itbis)}</span>
-        </div>` : `
-        <div class="tot-row">
-          <span class="lbl">ITBIS</span>
-          <span class="val mono" style="color:#94a3b8;">Exento</span>
-        </div>`}
-        <div class="tot-row grand">
-          <span class="lbl">Total</span>
-          <span class="val mono">RD$ ${fmtMoney(total)}</span>
+    <div class="doc-footer">
+      <div class="totals-wrap${legalNote ? '' : ' totals-wrap--solo'}">
+        ${legalNote}
+        <div class="totals">
+          <div class="tot-row">
+            <span class="lbl">Subtotal</span>
+            <span class="val mono">RD$ ${fmtMoney(subtotal)}</span>
+          </div>
+          ${Number(itbis) > 0 ? `
+          <div class="tot-row">
+            <span class="lbl">ITBIS (18%)</span>
+            <span class="val mono">RD$ ${fmtMoney(itbis)}</span>
+          </div>` : `
+          <div class="tot-row">
+            <span class="lbl">ITBIS</span>
+            <span class="val mono" style="color:#94a3b8;">Exento</span>
+          </div>`}
+          <div class="tot-row grand">
+            <span class="lbl">Total</span>
+            <span class="val mono">RD$ ${fmtMoney(total)}</span>
+          </div>
         </div>
       </div>
-    </div>
 
-    ${condCards}
+      ${condCards}
 
-    ${notas ? `<div class="notes"><div class="ttl">Notas</div>${escape(notas)}</div>` : ''}
+      ${notas ? `<div class="notes"><div class="ttl">Notas</div>${escape(notas)}</div>` : ''}
 
-    <div class="sigs">
-      <div class="sig-block">
-        <div class="sig-stack"></div>
-        <div class="sig-line"></div>
-        <div class="sig-name">Aceptación del Cliente</div>
-        <div class="sig-role">Firma · Sello · Fecha</div>
-      </div>
-      <div class="sig-block">
-        <div class="sig-stack">
-          ${assets.firmaGerente ? `<img class="sig-firma" src="${escape(assets.firmaGerente)}" alt=""/>` : ''}
-          ${assets.selloFisico  ? `<img class="sig-sello" src="${escape(assets.selloFisico)}" alt=""/>` : ''}
+      <div class="sigs">
+        <div class="sig-block">
+          <div class="sig-stack"></div>
+          <div class="sig-line"></div>
+          <div class="sig-name">Aceptación del Cliente</div>
+          <div class="sig-role">Firma · Sello · Fecha</div>
         </div>
-        <div class="sig-line"></div>
-        <div class="sig-name">${escape(repFull || emp.razonSocial || 'Autorizado')}</div>
-        <div class="sig-role">${escape(emp.representanteCargo ?? 'Representante')}${emp.razonSocial ? ` · ${escape(emp.razonSocial)}` : ''}</div>
+        <div class="sig-block">
+          <div class="sig-stack">
+            ${assets.firmaGerente ? `<img class="sig-firma" src="${escape(assets.firmaGerente)}" alt=""/>` : ''}
+            ${assets.selloFisico  ? `<img class="sig-sello" src="${escape(assets.selloFisico)}" alt=""/>` : ''}
+          </div>
+          <div class="sig-line"></div>
+          <div class="sig-name">${escape(repFull || emp.razonSocial || 'Autorizado')}</div>
+          <div class="sig-role">${escape(emp.representanteCargo ?? 'Representante')}${emp.razonSocial ? ` · ${escape(emp.razonSocial)}` : ''}</div>
+        </div>
       </div>
     </div>
 
