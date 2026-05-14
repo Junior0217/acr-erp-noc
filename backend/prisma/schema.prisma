@@ -516,6 +516,12 @@ model AuditLog {
   ua        String?
   meta      Json?
   creadoEn  DateTime @default(now())
+  // Hash chain inmutable: prevHash = hash de la fila previa en orden por id;
+  // hash = HMAC-SHA256(canonical(payload) + prevHash) con AUDIT_SECRET.
+  // Garantía: alterar/borrar fila rompe la cadena verificable en
+  // /api/auditoria/log/verify. Filas legacy con hash=null se ignoran.
+  prevHash  String?
+  hash      String?
 
   @@index([usuarioId])
   @@index([evento])

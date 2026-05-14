@@ -148,6 +148,40 @@ const prisma = prismaBase.$extends({
 });
 
 // ─── AuditLog helpers ─────────────────────────────────────────────────────────
+// AuditLog usa hash chain inmutable como AuditCaja: prevHash + hash HMAC-SHA256
+// firmado con AUDIT_SECRET. Cualquier mutación post-facto rompe la cadena y
+// queda visible en /api/auditoria/log/verify.
+
+function _canonicalizarLog(row) {
+  const meta = row.meta ?? null
+  const safe = {
+    evento:    row.evento ?? '',
+    usuarioId: row.usuarioId ?? null,
+    userName:  row.userName ?? '',
+    ip:        row.ip ?? null,
+    ua:        row.ua ?? null,
+    meta:      meta == null ? null : (typeof meta === 'string' ? meta : JSON.stringify(meta, Object.keys(meta).sort())),
+    creadoEn:  row.creadoEn ? new Date(row.creadoEn).toISOString() : new Date().toISOString(),
+  }
+  return JSON.stringify(safe, Object.keys(safe).sort())
+}
+
+async function appendAuditLog(data) {
+  // AUDIT_SECRET vive más abajo (junto a AuditCaja), pero como appendAuditLog
+  // se ejecuta en setImmediate post-respuesta, el módulo ya está totalmente
+  // inicializado. Resolución dinámica vía globalThis evita TDZ.
+  const SECRET = process.env.AUDIT_SECRET ?? process.env.JWT_SECRET ?? 'change-me-audit-secret'
+  const last = await prisma.auditLog.findFirst({
+    where:   { hash: { not: null } },
+    orderBy: { id: 'desc' },
+    select:  { hash: true },
+  })
+  const prevHash = last?.hash ?? 'GENESIS'
+  const creadoEn = data.creadoEn ?? new Date()
+  const payload  = _canonicalizarLog({ ...data, creadoEn })
+  const hash     = crypto.createHmac('sha256', SECRET).update(payload + '|' + prevHash).digest('hex')
+  return prisma.auditLog.create({ data: { ...data, prevHash, hash } })
+}
 
 function auditReq(evento, req, meta, overrides) {
   const ip       = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.socket?.remoteAddress || null
@@ -155,7 +189,7 @@ function auditReq(evento, req, meta, overrides) {
   const userId   = overrides?.userId   ?? req?.user?.sub    ?? null
   const userName = overrides?.userName ?? req?.user?.nombre ?? null
   setImmediate(async () => {
-    try { await prisma.auditLog.create({ data: { evento, usuarioId: userId, userName, ip, ua, meta: meta ?? undefined } }) } catch {}
+    try { await appendAuditLog({ evento, usuarioId: userId, userName, ip, ua, meta: meta ?? undefined }) } catch {}
   })
 }
 
@@ -8036,6 +8070,34 @@ app.get('/api/auditoria/caja/verify', verificarJWT, requerirPermiso('sistema:own
   }
 })
 
+// Verifica integridad de AuditLog (mismo principio que AuditCaja). Filas legacy
+// pre-chain (hash=null) se omiten. Coste O(N) — se acota con limit.
+app.get('/api/auditoria/log/verify', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit ?? '500', 10), 5000)
+    const rows = await prisma.auditLog.findMany({
+      orderBy: { id: 'asc' },
+      take:    limit,
+    })
+    let prev = 'GENESIS'
+    let roto = null
+    for (const r of rows) {
+      if (!r.hash) continue
+      const expected = crypto.createHmac('sha256', AUDIT_SECRET).update(_canonicalizarLog(r) + '|' + (r.prevHash ?? 'GENESIS')).digest('hex')
+      if (expected !== r.hash) { roto = { id: r.id, esperado: expected, almacenado: r.hash }; break }
+      if (r.prevHash && r.prevHash !== 'GENESIS' && r.prevHash !== prev) {
+        roto = { id: r.id, motivo: 'prevHash no coincide con la fila anterior', prev, prevHashAlmacenado: r.prevHash }
+        break
+      }
+      prev = r.hash
+    }
+    res.json({ ok: !roto, verificadas: rows.length, integridad: roto ? 'ROTA' : 'OK', roto })
+  } catch (e) {
+    console.error('[AUDIT LOG VERIFY]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
 // ─── PDF Builder (shared por rutas legacy + envío por email) ─────────────────
 // Delegación al motor corporativo nuevo (Puppeteer + renderPdfDoc).
 // Antes era pdfkit; ahora se unifica para que TODOS los PDFs (legacy + nuevos +
@@ -8801,6 +8863,10 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`ALTER TABLE "AuditCaja" ADD COLUMN IF NOT EXISTS "prevHash" TEXT`)
     await prisma.$executeRawUnsafe(`ALTER TABLE "AuditCaja" ADD COLUMN IF NOT EXISTS "hash"     TEXT`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditCaja_hash_idx" ON "AuditCaja"("hash")`)
+    // Hash chain inmutable para AuditLog (mismo principio: prevHash + hash HMAC).
+    await prisma.$executeRawUnsafe(`ALTER TABLE "AuditLog"  ADD COLUMN IF NOT EXISTS "prevHash" TEXT`)
+    await prisma.$executeRawUnsafe(`ALTER TABLE "AuditLog"  ADD COLUMN IF NOT EXISTS "hash"     TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AuditLog_hash_idx"  ON "AuditLog"("hash")`)
     // BOM Instalacion: consumoInterno en líneas de OT.
     await prisma.$executeRawUnsafe(`ALTER TABLE "LineaOrdenTrabajo" ADD COLUMN IF NOT EXISTS "consumoInterno" BOOLEAN NOT NULL DEFAULT false`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "LineaOrdenTrabajo_consumoInterno_idx" ON "LineaOrdenTrabajo"("consumoInterno")`)

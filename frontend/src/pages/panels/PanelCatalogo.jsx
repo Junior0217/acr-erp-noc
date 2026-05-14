@@ -311,6 +311,7 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
   const [filtroCategoria, setFiltroCategoria] = useState('')
   const [filtroActivo,    setFiltroActivo]    = useState('true')
   const [modalItem,       setModalItem]       = useState(null)
+  const [detalle,         setDetalle]         = useState(null)
 
   const fetchCatalogo = useCallback(async () => {
     setLoading(true)
@@ -460,7 +461,8 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
                   : item.codigo?.startsWith('REC') ? 'bg-violet-600/15 text-violet-300 border-violet-600/30'
                   : 'bg-slate-700/40 text-slate-400 border-slate-700'
                 return (
-                  <tr key={item.id} className="hover:bg-slate-800/50 transition-colors">
+                  <tr key={item.id} onClick={() => setDetalle(item)}
+                    className="hover:bg-slate-800/50 transition-colors cursor-pointer">
                     <td className="px-4 py-3 whitespace-nowrap">
                       <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono font-bold border ${codBg}`}>
                         {item.sku ?? item.codigo ?? '—'}
@@ -497,7 +499,7 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
                         : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold bg-slate-500/15 text-slate-500 border border-slate-500/30"><XCircle size={11} />Inactivo</span>
                       }
                     </td>
-                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                    <td className="px-4 py-3 text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
                       <div className="flex items-center gap-1.5 justify-end">
                         {canPOS && onSellNow && item.activo && (
                           <button onClick={() => onSellNow(item)}
@@ -544,6 +546,160 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
           onSaved={() => { setModalItem(null); fetchCatalogo() }}
         />
       )}
+
+      {detalle && (
+        <CatalogoDetalleDrawer
+          item={detalle}
+          canSeeCosts={canSeeCosts}
+          canPOS={canPOS}
+          onSellNow={onSellNow}
+          onEdit={canEdit ? () => { setDetalle(null); setModalItem(detalle) } : null}
+          onClose={() => setDetalle(null)}
+        />
+      )}
     </div>
+  )
+}
+
+// ── CatalogoDetalleDrawer ────────────────────────────────────────────────────
+// Slide-over lateral: muestra todos los detalles del item (SKU/Código, precios,
+// stock, vínculo a producto físico, descripción rica) sin sacar al usuario del
+// listado. Click en backdrop o X cierra. Acciones rápidas: editar / vender.
+function CatalogoDetalleDrawer({ item, canSeeCosts, canPOS, onSellNow, onEdit, onClose }) {
+  const precio = Number(item.precio)
+  const costo  = Number(item.costo ?? 0)
+  const margen = precio > 0 ? Math.round(((precio - costo) / precio) * 100) : 0
+  const descParsed = _descParse(item.descripcion)
+  const descTexto = descParsed && typeof descParsed === 'object' && descParsed.v === 1
+    ? (descParsed.titulo ?? '') + (descParsed.lineas?.length ? '\n' + descParsed.lineas.map(l => `• ${l.texto ?? ''}`).join('\n') : '')
+    : (typeof descParsed === 'string' ? descParsed : '')
+  return (
+    <>
+      <div className="fixed inset-0 z-[55] bg-black/40 backdrop-blur-[2px]" onClick={onClose} />
+      <aside className="fixed inset-y-0 right-0 z-[60] w-full sm:w-[28rem] lg:w-[34rem] bg-slate-950 border-l border-slate-800 shadow-2xl flex flex-col">
+        <header className="px-5 py-4 border-b border-slate-800 flex items-center justify-between flex-shrink-0">
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-bold text-slate-100 truncate">{item.nombre}</h2>
+            <p className="text-[10px] font-mono text-blue-400 mt-0.5">{item.sku ?? item.codigo ?? '—'}</p>
+          </div>
+          <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors flex-shrink-0 ml-2"><X size={18} /></button>
+        </header>
+
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {item.imagenUrl && (
+            <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-900">
+              <img src={item.imagenUrl} alt={item.nombre} className="w-full h-44 object-cover" />
+            </div>
+          )}
+
+          <section className="grid grid-cols-2 gap-3">
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Tipo</p>
+              <TipoBadge tipo={item.tipo} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Categoría</p>
+              <CatBadge cat={item.categoria} />
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Naturaleza</p>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                item.tipoItem === 'ARTICULO'
+                  ? 'bg-amber-600/15 text-amber-300 border-amber-600/30'
+                  : 'bg-sky-600/15 text-sky-300 border-sky-600/30'
+              }`}>
+                {item.tipoItem === 'ARTICULO' ? <Package size={11} /> : <Wrench size={11} />}
+                {item.tipoItem === 'ARTICULO' ? 'Artículo' : 'Servicio'}
+              </span>
+            </div>
+            <div>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Estado</p>
+              {item.activo
+                ? <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/15 text-emerald-400 border border-emerald-500/30"><CheckCircle size={11} />Activo</span>
+                : <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-slate-500/15 text-slate-500 border border-slate-500/30"><XCircle size={11} />Inactivo</span>
+              }
+            </div>
+            {item.esBundle && (
+              <div className="col-span-2">
+                <span className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-bold bg-violet-600/15 text-violet-300 border border-violet-600/30">
+                  <Layers size={11} />Bundle (kit con BOM)
+                </span>
+              </div>
+            )}
+          </section>
+
+          <section className="grid grid-cols-2 gap-3 bg-slate-900/50 border border-slate-800 rounded-lg p-3">
+            <div>
+              <p className="text-[10px] text-slate-500">Precio</p>
+              <p className="text-lg font-bold text-emerald-400 font-mono">{formatCurrency(precio)}</p>
+            </div>
+            {canSeeCosts && (
+              <div>
+                <p className="text-[10px] text-slate-500">Costo</p>
+                <p className="text-lg font-bold text-slate-300 font-mono">{formatCurrency(costo)}</p>
+              </div>
+            )}
+            {canSeeCosts && (
+              <div className="col-span-2 flex items-center gap-2">
+                <p className="text-[10px] text-slate-500">Margen:</p>
+                <span className={`text-xs font-mono font-bold ${margen >= 30 ? 'text-emerald-400' : margen >= 10 ? 'text-amber-400' : 'text-red-400'}`}>
+                  {margen}%
+                </span>
+              </div>
+            )}
+          </section>
+
+          {(item.tipoItem === 'ARTICULO' || item.producto) && (
+            <section>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Inventario</p>
+              <div className={`rounded-lg p-3 border ${item.producto ? 'bg-emerald-900/15 border-emerald-700/30' : 'bg-amber-900/10 border-amber-700/30'}`}>
+                {item.producto ? (
+                  <>
+                    <div className="flex items-center gap-2 mb-1">
+                      <Link2 size={12} className="text-emerald-400" />
+                      <p className="text-xs font-semibold text-slate-200">{item.producto.nombre}</p>
+                    </div>
+                    <p className="text-[10px] font-mono text-slate-400">
+                      SKU <span className="text-emerald-300">{item.producto.sku}</span> · Stock actual:
+                      <span className={`ml-1 ${item.producto.stockActual <= 0 ? 'text-red-400' : 'text-emerald-400'}`}>{item.producto.stockActual}</span>
+                    </p>
+                  </>
+                ) : item.stock != null ? (
+                  <p className="text-xs text-amber-300">Stock manual: <span className="font-mono font-bold">{item.stock}</span> uds. (sin vínculo a producto físico)</p>
+                ) : (
+                  <p className="text-xs text-amber-300">Sin stock asociado. Vincúlalo a un producto del inventario.</p>
+                )}
+              </div>
+            </section>
+          )}
+
+          {descTexto && (
+            <section>
+              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1">Descripción comercial</p>
+              <p className="text-xs text-slate-300 whitespace-pre-wrap bg-slate-900/50 border border-slate-800 rounded-lg p-2.5">{descTexto}</p>
+            </section>
+          )}
+        </div>
+
+        <footer className="px-5 py-3 border-t border-slate-800 flex items-center justify-end gap-2 flex-shrink-0">
+          {canPOS && onSellNow && item.activo && (
+            <button onClick={() => { onSellNow(item); onClose() }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-orange-600/15 hover:bg-orange-600/25 border border-orange-600/30 text-orange-300 text-xs font-semibold transition-all">
+              <ShoppingBag size={12} />Vender
+            </button>
+          )}
+          {onEdit && (
+            <button onClick={onEdit}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600/15 hover:bg-blue-600/25 border border-blue-600/30 text-blue-300 text-xs font-semibold transition-all">
+              <Pencil size={12} />Editar
+            </button>
+          )}
+          <button onClick={onClose}
+            className="px-3 py-1.5 rounded-lg text-slate-400 hover:text-slate-100 text-xs font-semibold transition-colors">
+            Cerrar
+          </button>
+        </footer>
+      </aside>
+    </>
   )
 }
