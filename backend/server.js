@@ -316,9 +316,18 @@ const APP_BOOT_AT = Date.now()
 console.log(`[VERSION] APP_VERSION=${APP_VERSION} boot=${new Date(APP_BOOT_AT).toISOString()}`)
 
 // Middleware: inyecta X-App-Version + X-Boot-At en TODAS las /api/*. Cheap.
+// Además: respuestas JSON de la API NUNCA deben quedar en cache del browser
+// ni de proxies intermedios — un response cacheado con permisos viejos podría
+// servir datos stale tras un cambio de rol o un re-deploy. Las imágenes /
+// PDFs binarios que pasan por endpoints separados ponen su propio Cache-Control.
 app.use('/api/', (req, res, next) => {
   res.setHeader('X-App-Version', APP_VERSION)
   res.setHeader('X-Boot-At',     String(APP_BOOT_AT))
+  // Por defecto: no cachear nada del API. Endpoints que sí permitan cache
+  // (PDFs servidos desde Supabase, /api/health, etc) sobrescriben esto explícito.
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, private')
+  res.setHeader('Pragma', 'no-cache')
+  res.setHeader('Expires', '0')
   next()
 })
 
@@ -3190,6 +3199,38 @@ async function persistirVerifyHash(factura) {
 // PUBLIC_URL para verificación (frontend host). Si no se configura, omite el link en el PDF.
 const PUBLIC_VERIFY_BASE = (process.env.PUBLIC_FRONTEND_URL ?? '').replace(/\/+$/, '')
 
+// ─── Invalidación auto de PDFs cacheados por versión de template ──────────────
+// Cuando cambia la plantilla (paleta, layout, QR, etc), las copias en Supabase
+// quedan desfasadas. Persistimos la versión activa en EmpresaPerfil.secuenciasConfig
+// bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
+// vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
+// el template nuevo. Cero intervención manual, cero migración de schema.
+const PDF_TEMPLATE_VERSION = 'v4-2026-05-14-qr-anti-fraude-compacto'
+let _pdfCacheVersionChecked = false
+async function invalidarPdfsSiCambioTemplate() {
+  if (_pdfCacheVersionChecked) return
+  _pdfCacheVersionChecked = true
+  try {
+    const emp = await prisma.empresaPerfil.findUnique({
+      where:  { id: 1 },
+      select: { secuenciasConfig: true },
+    })
+    const cfg = (emp?.secuenciasConfig && typeof emp.secuenciasConfig === 'object') ? emp.secuenciasConfig : {}
+    if (cfg._pdfCacheVersion === PDF_TEMPLATE_VERSION) return
+    const r = await prisma.factura.updateMany({
+      where: { pdfUrl: { not: null } },
+      data:  { pdfUrl: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
+    })
+    await prisma.empresaPerfil.update({
+      where: { id: 1 },
+      data:  { secuenciasConfig: { ...cfg, _pdfCacheVersion: PDF_TEMPLATE_VERSION } },
+    })
+    console.log(`[PDF] template ${PDF_TEMPLATE_VERSION} activa — invalidados ${r.count} PDFs cacheados`)
+  } catch (e) { console.warn('[PDF] cache-version check fail:', e.message) }
+}
+// Disparamos asíncrono al boot — no bloquea el listen ni la rate-limit warmup.
+invalidarPdfsSiCambioTemplate().catch(() => {})
+
 // ─── Cache PDF en Supabase Storage ────────────────────────────────────────────
 const PDF_CACHE_BUCKET = process.env.SUPABASE_PDF_BUCKET ?? 'documentos-pdf'
 
@@ -3340,6 +3381,37 @@ async function buildPdfData(facturaOrCotizacion) {
       hash: facturaVerifyHash(f),
       url:  `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`,
     } : null,
+    // QR pre-renderizado como data:image/png;base64 — el destinatario escanea
+    // con cualquier cámara y aterriza en /verify/:hash. Si edita el PDF con
+    // Photoshop, el hash en pantalla deja de matchear con el calculado por el
+    // backend y la página marca el documento como ALTERADO.
+    verifyQrDataUri: PUBLIC_VERIFY_BASE ? await renderVerifyQr(`${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`) : null,
+  }
+}
+
+// Genera un QR PNG de tamaño fijo y bajo overhead. errorCorrectionLevel 'M'
+// tolera ~15% de daño del impreso (huellas, manchas) sin romper el escaneo.
+// Cache en memoria por URL — los PDFs masivos reutilizan el mismo QR sin
+// re-renderizar.
+const _qrCache = new Map() // url -> dataURI
+const QR_CACHE_MAX = 256
+async function renderVerifyQr(url) {
+  if (!url) return null
+  if (_qrCache.has(url)) return _qrCache.get(url)
+  try {
+    const dataUri = await QRCode.toDataURL(url, {
+      errorCorrectionLevel: 'M',
+      type: 'image/png',
+      margin: 1,
+      width: 256,
+      color: { dark: '#0f172a', light: '#ffffff' },
+    })
+    if (_qrCache.size >= QR_CACHE_MAX) _qrCache.delete(_qrCache.keys().next().value)
+    _qrCache.set(url, dataUri)
+    return dataUri
+  } catch (e) {
+    console.warn('[QR] fallo generar:', e.message)
+    return null
   }
 }
 

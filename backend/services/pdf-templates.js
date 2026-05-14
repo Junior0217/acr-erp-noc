@@ -207,16 +207,18 @@ html, body {
 }
 
 /* ───── Header ───── */
+/* Padding superior reducido + logo más chico = ~30px menos en la zona alta.
+   Ese espacio se libera para la tabla de artículos al final de la hoja. */
 .header {
   display: grid; grid-template-columns: 1fr 1fr;
-  padding: 22px 36px 18px;
+  padding: 12px 36px 10px;
   border-bottom: 1px solid #e2e8f0;
-  gap: 24px;
+  gap: 18px;
   align-items: center;
 }
-.brand { display: flex; align-items: center; gap: 16px; }
+.brand { display: flex; align-items: center; gap: 14px; }
 .logo {
-  width: 130px; height: 130px;
+  width: 96px; height: 96px;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
 }
@@ -231,27 +233,29 @@ html, body {
 .corp-meta .val { color: #0f172a; font-weight: 600; }
 
 /* ───── Document title bar (print-friendly: fondo claro, texto oscuro) ───── */
+/* Padding reducido — antes 14px arriba/abajo, ahora 9px. Mismo peso visual
+   con ~10px menos por arriba y ~10px por abajo = 20px más para la tabla. */
 .title-bar {
   background: #f1f5f9;
   color: #0f172a;
-  padding: 14px 36px;
+  padding: 9px 36px;
   display: grid; grid-template-columns: 1fr auto; align-items: center;
   gap: 20px;
   border-top: 1px solid #e2e8f0;
   border-bottom: 1px solid #e2e8f0;
 }
 .doc-type {
-  font-size: 19px; font-weight: 800; letter-spacing: 0.1em;
+  font-size: 17px; font-weight: 800; letter-spacing: 0.09em;
   text-transform: uppercase;
   color: #1e293b;
 }
-.doc-type .sub { font-size: 9px; font-weight: 500; color: #64748b; letter-spacing: 0.16em; display: block; margin-top: 2px; }
-.doc-meta { text-align: right; font-size: 10px; line-height: 1.4; color: #1e293b; }
-/* Número del documento = elemento dominante visual */
+.doc-type .sub { font-size: 8.5px; font-weight: 500; color: #64748b; letter-spacing: 0.14em; display: block; margin-top: 1px; }
+.doc-meta { text-align: right; font-size: 9.5px; line-height: 1.35; color: #1e293b; }
+/* Número del documento = elemento dominante visual (más compacto) */
 .doc-meta .num {
-  font-size: 22px; font-weight: 900; letter-spacing: 0.04em;
+  font-size: 19px; font-weight: 900; letter-spacing: 0.04em;
   color: #0f172a;
-  background: #e2e8f0; padding: 6px 14px; border-radius: 4px;
+  background: #e2e8f0; padding: 4px 12px; border-radius: 4px;
   display: inline-block;
 }
 /* NCF en segundo plano para no competir con el número principal */
@@ -280,11 +284,13 @@ html, body {
 .estado-Anulada  { background: #f8fafc; color: #7f1d1d; border-color: #cbd5e1; }
 
 /* ───── Sections ───── */
-.body { padding: 18px 36px 12px; }
+/* Padding superior del body reducido (18→11px) — el bloque "Facturar a" /
+   "Cliente" queda inmediatamente debajo del title-bar, sin aire desperdiciado. */
+.body { padding: 11px 36px 12px; }
 .section-label {
   font-size: 8.5px; font-weight: 800; color: #475569;
   text-transform: uppercase; letter-spacing: 0.18em;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   display: flex; align-items: center; gap: 8px;
 }
 .section-label::after {
@@ -299,7 +305,7 @@ html, body {
   overflow: hidden;
 }
 .client-cell {
-  padding: 9px 13px;
+  padding: 7px 13px;
   border-right: 1px solid #e2e8f0;
   background: #f8fafc;
 }
@@ -485,22 +491,38 @@ html, body {
   letter-spacing: 0.04em;
 }
 
-/* ───── Footer ───── */
+/* ───── Footer (anti-fraude QR a la izquierda + leyenda + fecha) ─────────────
+   El QR se imprime SIEMPRE que el backend pueda generar la URL pública. El
+   destinatario escanea con cualquier app de cámara y aterriza en /verify/:hash
+   donde se valida el HMAC del documento. */
 .footer {
   position: absolute; left: 0; right: 0; bottom: 0;
-  padding: 10px 36px 14px;
+  padding: 8px 36px 12px;
   border-top: 1px solid #e2e8f0;
-  display: grid; grid-template-columns: 1fr auto 1fr;
+  display: grid; grid-template-columns: auto 1fr auto;
   align-items: center;
+  gap: 18px;
   font-size: 7.5px; color: #94a3b8;
   background: white;
 }
-.footer .left  { text-align: left; }
+.footer .qr-block {
+  display: flex; align-items: center; gap: 10px;
+}
+.footer .qr-block .qr-img {
+  width: 64px; height: 64px;
+  border: 1px solid #cbd5e1; padding: 3px; background: white;
+  border-radius: 4px;
+  display: block;
+}
+.footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.35; max-width: 140px; }
+.footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; }
+.footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 7px; word-break: break-all; }
 .footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
 .footer .ctr .verify-line { margin-top: 2px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b; font-size: 7px; }
 .footer .ctr .verify-line .lbl { color: #94a3b8; }
 .footer .ctr .verify-line .url { color: #1e40af; }
-.footer .right { text-align: right; }
+.footer .right { text-align: right; font-size: 7.5px; color: #94a3b8; }
+.footer .right .razon { color: #475569; font-weight: 700; font-size: 7.5px; }
 
 /* ───── Pagination del bloque inferior ─────────────────────────────────────
    Totales + condiciones + notas + firmas se imprimen como UN bloque
@@ -553,6 +575,7 @@ function renderDocumento(opts) {
     notas,
     condiciones,     // { validez, pago, entrega, garantia }
     verify,          // { hash, url } o null si PUBLIC_FRONTEND_URL no está seteado
+    verifyQrDataUri, // QR pre-renderizado por el backend (data:image/png;base64,...)
   } = opts
 
   const isFactura = tipo === 'factura'
@@ -659,7 +682,7 @@ function renderDocumento(opts) {
         ${cliente?.noCliente ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">${escape(cliente.noCliente)}</div>` : ''}
       </div>
       <div class="client-cell">
-        <div class="lbl">${cliente?.rnc ? 'RNC' : 'Cédula'}</div>
+        <div class="lbl">${cliente?.rnc ? 'RNC' : 'Documento'}</div>
         <div class="val mono">${escape(cliente?.rnc ?? cliente?.cedula ?? '—')}</div>
         ${cliente?.telefono ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">Tel. ${escape(cliente.telefono)}</div>` : ''}
       </div>
@@ -734,14 +757,23 @@ function renderDocumento(opts) {
   </main>
 
   <footer class="footer">
-    <div class="left">
-      ${escape(emp.razonSocial ?? '')}${emp.rnc ? ` · RNC <span class="mono">${escape(emp.rnc)}</span>` : ''}
+    <div class="qr-block">
+      ${verifyQrDataUri ? `<img class="qr-img" src="${escape(verifyQrDataUri)}" alt="QR de verificación"/>` : ''}
+      <div class="qr-text">
+        <div class="qr-ttl">Verificación Anti-Fraude</div>
+        <div>Escanea para validar la autenticidad de este documento.</div>
+        ${verify?.hash ? `<div class="qr-hash">${escape(verify.hash)}</div>` : ''}
+      </div>
     </div>
     <div class="ctr">
       <div>Documento Electrónico Verificable</div>
-      ${verify ? `<div class="verify-line"><span class="lbl">Cód.</span> <span class="mono">${escape(verify.hash)}</span> · <span class="url">${escape(verify.url)}</span></div>` : ''}
+      ${verify ? `<div class="verify-line"><span class="lbl">URL</span> <span class="url">${escape(verify.url)}</span></div>` : ''}
     </div>
-    <div class="right mono">${fechaLarga(new Date())}</div>
+    <div class="right">
+      <div class="razon">${escape(emp.razonSocial ?? '')}</div>
+      ${emp.rnc ? `<div class="mono">RNC ${escape(emp.rnc)}</div>` : ''}
+      <div class="mono">${fechaLarga(new Date())}</div>
+    </div>
   </footer>
 
 </div>

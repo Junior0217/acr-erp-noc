@@ -81,10 +81,15 @@ export default defineConfig({
       workbox: {
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         cleanupOutdatedCaches: true,
-        cacheId: 'acr-noc-v3',
+        // Bump del cacheId en cada release con cambios estructurales (paleta
+        // PDF, SW strategy, rutas, etc) — fuerza al browser a tirar la caché
+        // previa entera en lugar de hidratar parcialmente. `cleanupOutdatedCaches`
+        // remueve los buckets viejos cuando la versión nueva activa.
+        cacheId: 'acr-noc-v4',
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         skipWaiting: true,
         clientsClaim: true,
+        navigateFallbackDenylist: [/^\/api\//, /^\/verify\//, /^\/portal\//, /^\/track\//],
         // Runtime caching strategy for API calls
         runtimeCaching: [
           {

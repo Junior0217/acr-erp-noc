@@ -259,16 +259,14 @@ export default function AdminLayout() {
   const { user, logout } = useAuth()
   const needs2FASetup = user?.needs2FASetup === true
   const { totalItems, posItemsCount, setOpen: openCart } = useCart()
-  // Badge muestra el TOTAL real (cart-tienda + cart-POS). Click prioriza:
-  //   POS abierto → ir a Ventas/POS (donde el cajero ve su carrito local)
-  //   Sino → abrir slideover de carrito tienda
+  // Badge muestra el TOTAL real (cart-tienda + cart-POS). El click SIEMPRE
+  // abre el slide-over por encima de la vista actual — antes saltaba al POS
+  // si solo había items POS, lo cual rompía el flujo del usuario (navegación
+  // forzada en lugar de ventana flotante). Ahora es coherente: el carrito es
+  // un overlay global, no un link disfrazado.
   const totalCartBadge = (totalItems ?? 0) + (posItemsCount ?? 0)
   function handleCartClick() {
-    if ((posItemsCount ?? 0) > 0 && (totalItems ?? 0) === 0) {
-      navigate('/ventas?tab=pos')
-    } else {
-      openCart(true)
-    }
+    openCart(true)
   }
   const navigate  = useNavigate()
 
@@ -314,7 +312,7 @@ export default function AdminLayout() {
             <SessionsWidget />
             <button
               onClick={handleCartClick}
-              title={posItemsCount > 0 ? `${posItemsCount} en POS · click para ir a Ventas/POS` : `${totalItems} en carrito`}
+              title={totalCartBadge > 0 ? `Abrir carrito (${totalCartBadge} ítems)` : 'Abrir carrito'}
               className="relative w-9 h-9 rounded-full bg-slate-800 hover:bg-blue-900/30 border border-slate-700 hover:border-blue-700/40 flex items-center justify-center flex-shrink-0 transition-colors"
             >
               <ShoppingCart size={15} className={totalCartBadge > 0 ? 'text-blue-300' : 'text-slate-400'} />
