@@ -758,16 +758,16 @@ function renderDocumento(opts) {
 
   <footer class="footer">
     <div class="qr-block">
-      ${verifyQrDataUri ? `<img class="qr-img" src="${escape(verifyQrDataUri)}" alt="QR de verificación"/>` : ''}
+      <img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/>
       <div class="qr-text">
         <div class="qr-ttl">Verificación Anti-Fraude</div>
         <div>Escanea para validar la autenticidad de este documento.</div>
-        ${verify?.hash ? `<div class="qr-hash">${escape(verify.hash)}</div>` : ''}
+        <div class="qr-hash">${escape(verify?.hash || '—')}</div>
       </div>
     </div>
     <div class="ctr">
       <div>Documento Electrónico Verificable</div>
-      ${verify ? `<div class="verify-line"><span class="lbl">URL</span> <span class="url">${escape(verify.url)}</span></div>` : ''}
+      <div class="verify-line"><span class="lbl">URL</span> <span class="url">${escape(verify?.url || '—')}</span></div>
     </div>
     <div class="right">
       <div class="razon">${escape(emp.razonSocial ?? '')}</div>

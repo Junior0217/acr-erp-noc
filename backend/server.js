@@ -3196,8 +3196,24 @@ async function persistirVerifyHash(factura) {
   return factura
 }
 
-// PUBLIC_URL para verificación (frontend host). Si no se configura, omite el link en el PDF.
-const PUBLIC_VERIFY_BASE = (process.env.PUBLIC_FRONTEND_URL ?? '').replace(/\/+$/, '')
+// PUBLIC_URL para verificación (frontend host). Cadena de fallbacks para que
+// el QR del PDF SIEMPRE tenga URL que apuntar. Antes: si PUBLIC_FRONTEND_URL
+// no estaba seteado en prod, verifyQrDataUri quedaba null y el QR no se
+// imprimía. Ahora derivamos en orden:
+//   1. PUBLIC_FRONTEND_URL — preferida, configurada explícitamente.
+//   2. CORS_ORIGIN — primer origen de la lista (típicamente el frontend prod).
+//   3. localhost:5173 — último recurso para no romper dev.
+function resolverVerifyBase() {
+  const explicit = (process.env.PUBLIC_FRONTEND_URL ?? '').trim().replace(/\/+$/, '')
+  if (explicit) return explicit
+  const corsList = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  const httpsCors = corsList.find(o => /^https:\/\//i.test(o))
+  if (httpsCors) return httpsCors.replace(/\/+$/, '')
+  if (corsList[0]) return corsList[0].replace(/\/+$/, '')
+  return 'http://localhost:5173'
+}
+const PUBLIC_VERIFY_BASE = resolverVerifyBase()
+console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${PUBLIC_VERIFY_BASE}`)
 
 // ─── Invalidación auto de PDFs cacheados por versión de template ──────────────
 // Cuando cambia la plantilla (paleta, layout, QR, etc), las copias en Supabase
@@ -3205,7 +3221,7 @@ const PUBLIC_VERIFY_BASE = (process.env.PUBLIC_FRONTEND_URL ?? '').replace(/\/+$
 // bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
 // vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
 // el template nuevo. Cero intervención manual, cero migración de schema.
-const PDF_TEMPLATE_VERSION = 'v4-2026-05-14-qr-anti-fraude-compacto'
+const PDF_TEMPLATE_VERSION = 'v5-2026-05-14-qr-fallback-unconditional'
 let _pdfCacheVersionChecked = false
 async function invalidarPdfsSiCambioTemplate() {
   if (_pdfCacheVersionChecked) return
@@ -3216,15 +3232,28 @@ async function invalidarPdfsSiCambioTemplate() {
       select: { secuenciasConfig: true },
     })
     const cfg = (emp?.secuenciasConfig && typeof emp.secuenciasConfig === 'object') ? emp.secuenciasConfig : {}
-    if (cfg._pdfCacheVersion === PDF_TEMPLATE_VERSION) return
+    if (cfg._pdfCacheVersion === PDF_TEMPLATE_VERSION) {
+      console.log(`[PDF] template ${PDF_TEMPLATE_VERSION} ya activa, sin cambios`)
+      return
+    }
     const r = await prisma.factura.updateMany({
       where: { pdfUrl: { not: null } },
       data:  { pdfUrl: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
     })
-    await prisma.empresaPerfil.update({
-      where: { id: 1 },
-      data:  { secuenciasConfig: { ...cfg, _pdfCacheVersion: PDF_TEMPLATE_VERSION } },
-    })
+    // Si el record empresa no existe (DB virgen) o el update falla, NO abortamos
+    // la invalidación masiva — la próxima cold-start lo intentará otra vez. Lo
+    // importante es que los pdfUrl quedaron null y el siguiente render
+    // regenerará con el template nuevo.
+    if (emp) {
+      try {
+        await prisma.empresaPerfil.update({
+          where: { id: 1 },
+          data:  { secuenciasConfig: { ...cfg, _pdfCacheVersion: PDF_TEMPLATE_VERSION } },
+        })
+      } catch (eUp) { console.warn('[PDF] no se pudo persistir versión activa:', eUp.message) }
+    } else {
+      console.warn('[PDF] empresa(id=1) no existe — invalidación corrió igual, marker se persistirá tras crear la empresa')
+    }
     console.log(`[PDF] template ${PDF_TEMPLATE_VERSION} activa — invalidados ${r.count} PDFs cacheados`)
   } catch (e) { console.warn('[PDF] cache-version check fail:', e.message) }
 }
@@ -3377,15 +3406,15 @@ async function buildPdfData(facturaOrCotizacion) {
     estado:       f.estado,
     notas:        f.notas,
     condiciones:  mergeCondiciones(empresa, f),
-    verify: PUBLIC_VERIFY_BASE ? {
-      hash: facturaVerifyHash(f),
-      url:  `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`,
-    } : null,
-    // QR pre-renderizado como data:image/png;base64 — el destinatario escanea
-    // con cualquier cámara y aterriza en /verify/:hash. Si edita el PDF con
-    // Photoshop, el hash en pantalla deja de matchear con el calculado por el
-    // backend y la página marca el documento como ALTERADO.
-    verifyQrDataUri: PUBLIC_VERIFY_BASE ? await renderVerifyQr(`${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`) : null,
+    verify: (() => {
+      const hash = facturaVerifyHash(f)
+      return { hash, url: `${PUBLIC_VERIFY_BASE}/verify/${hash}` }
+    })(),
+    // QR pre-renderizado como data:image/png;base64 — SIEMPRE generado. El
+    // destinatario escanea con cualquier cámara y aterriza en /verify/:hash.
+    // Si edita el PDF con Photoshop, el hash en pantalla deja de matchear con
+    // el calculado por el backend y la página marca el documento como ALTERADO.
+    verifyQrDataUri: await renderVerifyQr(`${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`),
   }
 }
 
@@ -8265,7 +8294,8 @@ async function buildFacturaPDFBuffer(factura) {
     estado:       factura.estado,
     notas:        factura.notas,
     condiciones:  mergeCondiciones(empresa, factura),
-    verify:       PUBLIC_VERIFY_BASE ? { hash: facturaVerifyHash(factura), url: `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(factura)}` } : null,
+    verify:       { hash: facturaVerifyHash(factura), url: `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(factura)}` },
+    verifyQrDataUri: await renderVerifyQr(`${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(factura)}`),
   })
   return generarPdfDocumento(html)
 }
