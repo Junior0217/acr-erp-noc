@@ -2,38 +2,38 @@
 import { lazy, Suspense, useEffect } from 'react'
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { Toaster, toast } from 'sonner'
-import { useAuth, AuthProvider } from './contexts/AuthContext'
-import { CartProvider } from './contexts/CartContext'
-import { EmpresaProvider } from './contexts/EmpresaContext'
-import PWAUpdatePrompt from './components/PWAUpdatePrompt'
-import ErrorBoundary from './components/ErrorBoundary'
-import { apiFetch } from './utils/api'
+import { useAuth, AuthProvider } from '@shared/contexts/AuthContext'
+import { CartProvider } from '@shared/contexts/CartContext'
+import { EmpresaProvider } from '@shared/contexts/EmpresaContext'
+import PWAUpdatePrompt from '@shared/components/PWAUpdatePrompt'
+import ErrorBoundary from '@shared/components/ErrorBoundary'
+import { apiFetch } from '@shared/utils/api'
 
 // ─── EAGER (route shell + Login) ──────────────────────────────────────────────
 // AdminLayout + Login se cargan al inicio porque son el camino de entrada.
-import AdminLayout from './layouts/AdminLayout'
-import Login from './pages/Login'
+import AdminLayout from '@shared/layouts/AdminLayout'
+import Login from '@features/auth/Login'
 
 // ─── LAZY (split por ruta para reducir bundle inicial) ────────────────────────
-const Dashboard       = lazy(() => import('./pages/Dashboard'))
-const Ventas          = lazy(() => import('./pages/Ventas'))
-const Compras         = lazy(() => import('./pages/Compras'))
-const Inventario      = lazy(() => import('./pages/Inventario'))
-const Contabilidad    = lazy(() => import('./pages/Contabilidad'))
-const RRHH            = lazy(() => import('./pages/RRHH'))
-const CRM             = lazy(() => import('./pages/CRM'))
-const MapaNOC         = lazy(() => import('./pages/MapaNOC'))
-const Reportes        = lazy(() => import('./pages/Reportes'))
-const Configuracion   = lazy(() => import('./pages/Configuracion'))
-const Servicios       = lazy(() => import('./pages/Servicios'))
-const Taller          = lazy(() => import('./pages/Taller'))
-const CustomerPortal  = lazy(() => import('./pages/CustomerPortal'))
-const PortalTracking  = lazy(() => import('./pages/PortalTracking'))
-const TrackTicket     = lazy(() => import('./pages/TrackTicket'))
-const Tienda          = lazy(() => import('./pages/Tienda'))
-const CotizacionDGII  = lazy(() => import('./pages/CotizacionDGII'))
-const MiEmpresa       = lazy(() => import('./pages/MiEmpresa'))
-const VerifyDocument  = lazy(() => import('./pages/VerifyDocument'))
+const Dashboard       = lazy(() => import('@features/dashboard/Dashboard'))
+const Ventas          = lazy(() => import('@features/sales/Ventas'))
+const Compras         = lazy(() => import('@features/purchases/Compras'))
+const Inventario      = lazy(() => import('@features/inventory/Inventario'))
+const Contabilidad    = lazy(() => import('@features/accounting/Contabilidad'))
+const RRHH            = lazy(() => import('@features/hr/RRHH'))
+const CRM             = lazy(() => import('@features/crm/CRM'))
+const MapaNOC         = lazy(() => import('@features/map/MapaNOC'))
+const Reportes        = lazy(() => import('@features/reports/Reportes'))
+const Configuracion   = lazy(() => import('@features/settings/Configuracion'))
+const Servicios       = lazy(() => import('@features/services/Servicios'))
+const Taller          = lazy(() => import('@features/workshop/Taller'))
+const CustomerPortal  = lazy(() => import('@features/portal/CustomerPortal'))
+const PortalTracking  = lazy(() => import('@features/portal/PortalTracking'))
+const TrackTicket     = lazy(() => import('@features/portal/TrackTicket'))
+const Tienda          = lazy(() => import('@features/store/Tienda'))
+const CotizacionDGII  = lazy(() => import('@features/settings/CotizacionDGII'))
+const MiEmpresa       = lazy(() => import('@features/company/MiEmpresa'))
+const VerifyDocument  = lazy(() => import('@features/settings/VerifyDocument'))
 
 function PageLoader() {
   return (

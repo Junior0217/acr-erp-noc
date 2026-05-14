@@ -1,12 +1,52 @@
 import { defineConfig } from 'vite'
+import path from 'node:path'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+// Vendor splitting — chunks separados con hash inmutable. Cambios en un panel
+// no invalidan el cache de leaflet / dnd / pdf. Headers `immutable` en Vercel
+// hacen que el browser sólo baje el delta del panel modificado.
+function vendorChunk(id) {
+  if (!id.includes('node_modules')) return undefined
+  if (id.includes('react-router'))          return 'vendor-react-router'
+  if (id.includes('react-dom') || /node_modules[\\/](react|scheduler)[\\/]/.test(id)) return 'vendor-react'
+  if (id.includes('@dnd-kit'))              return 'vendor-dnd'
+  if (id.includes('leaflet') || id.includes('react-leaflet')) return 'vendor-leaflet'
+  if (id.includes('lucide-react'))          return 'vendor-icons'
+  if (id.includes('sonner'))                return 'vendor-toast'
+  if (id.includes('marked') || id.includes('react-to-print')) return 'vendor-pdf'
+  return 'vendor'
+}
+
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@':         path.resolve(__dirname, 'src'),
+      '@features': path.resolve(__dirname, 'src/features'),
+      '@shared':   path.resolve(__dirname, 'src/shared'),
+    },
+  },
+  build: {
+    target: 'es2020',
+    cssCodeSplit: true,
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        manualChunks: vendorChunk,
+        chunkFileNames: 'assets/[name]-[hash].js',
+        entryFileNames: 'assets/[name]-[hash].js',
+        assetFileNames: 'assets/[name]-[hash][extname]',
+      },
+    },
+  },
   plugins: [
     react(),
     VitePWA({
-      registerType: 'prompt',
+      // autoUpdate: SW se actualiza solo cuando hay versión nueva (combinado con
+      // skipWaiting + clientsClaim abajo). PWAUpdatePrompt sigue mostrando toast
+      // pero el botón "Actualizar ahora" sólo confirma — la actualización ya
+      // estaba descargándose en background.
+      registerType: 'autoUpdate',
       injectRegister: 'auto',
       includeAssets: ['favicon.ico', 'apple-touch-icon.png', 'masked-icon.svg'],
       manifest: {
@@ -41,7 +81,7 @@ export default defineConfig({
       workbox: {
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         cleanupOutdatedCaches: true,
-        cacheId: 'acr-noc-v2',
+        cacheId: 'acr-noc-v3',
         globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
         skipWaiting: true,
         clientsClaim: true,
