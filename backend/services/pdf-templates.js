@@ -336,9 +336,11 @@ html, body {
 .items thead th.center { text-align: center; }
 .items thead th.right  { text-align: right; }
 .items thead th.col-num  { width: 30px; text-align: center; }
+.items thead th.col-cod  { width: 86px; text-align: left; }
 .items thead th.col-cant { width: 56px; text-align: center; }
 .items thead th.col-pu   { width: 90px; text-align: right; }
 .items thead th.col-amt  { width: 100px; text-align: right; }
+.items tbody td.codigo   { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e293b; font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em; }
 .items tbody td {
   padding: 8px 10px;
   font-size: 10px;
@@ -514,9 +516,10 @@ html, body {
   border-radius: 4px;
   display: block;
 }
-.footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.35; max-width: 140px; }
+.footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.4; max-width: 220px; }
 .footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; }
-.footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 7px; word-break: break-all; }
+.footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 6.5px; word-break: break-all; margin-top: 1px; }
+.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 7px; word-break: break-all; margin-top: 1px; }
 .footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
 .footer .ctr .verify-line { margin-top: 2px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b; font-size: 7px; }
 .footer .ctr .verify-line .lbl { color: #94a3b8; }
@@ -594,13 +597,15 @@ function renderDocumento(opts) {
   const itemsRows = (items ?? []).map((it, idx) => {
     const importe = Number(it.cantidad) * Number(it.precioUnitario)
     const { main, sub, sku: skuParsed } = parseDescripcionEstructurada(it.descripcion, it.detalle)
-    const skuFinal = it.sku ?? skuParsed
+    // Código del artículo: prioridad explícita > SKU del producto > sku parseado de la descripción.
+    // Si no hay nada, deja un guion para que la columna no quede en blanco visualmente.
+    const codigo = it.codigo ?? it.sku ?? skuParsed ?? '—'
     return `<tr>
       <td class="num center">${String(idx + 1).padStart(2, '0')}</td>
+      <td class="codigo">${escape(codigo)}</td>
       <td>
         ${main      ? `<div class="desc-main">${main}</div>` : ''}
         ${sub       ? `<div class="desc-sub">${sub}</div>` : ''}
-        ${skuFinal  ? `<div class="sku mono">SKU: ${escape(skuFinal)}</div>` : ''}
       </td>
       <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
       <td class="right mono">${fmtMoney(it.precioUnitario)}</td>
@@ -617,9 +622,11 @@ function renderDocumento(opts) {
       ${cond.garantia ? `<div class="cond-cell"><div class="lbl">Garantía</div><div class="val">${escape(cond.garantia)}</div></div>` : ''}
     </div>` : ''
 
+  // Dirección de la EMPRESA removida del encabezado superior: ya aparece
+  // implícita en el footer (razón social + RNC) y duplicarla acá desperdiciaba
+  // espacio crítico para el contenido del documento.
   const corpRows = [
     emp.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${escape(emp.rnc)}</span></div>` : '',
-    direccionEmp ? `<div class="row"><span class="lbl">Dirección</span><span class="val">${escape(direccionEmp)}</span></div>` : '',
     emp.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${escape(emp.telefono)}</span></div>` : '',
     emp.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${escape(emp.email)}</span></div>` : '',
     emp.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${escape(emp.website)}</span></div>` : '',
@@ -658,8 +665,7 @@ function renderDocumento(opts) {
 
   <div class="title-bar">
     <div class="doc-type">
-      ${escape(tipoLabel)}${tipoComposicion ? ` · <span style="font-weight:600;color:#475569">${escape(tipoComposicion)}</span>` : ''}
-      <span class="sub">${isFactura ? 'Comprobante Fiscal · República Dominicana' : 'Propuesta Comercial'}</span>
+      ${escape(tipoLabel)}
     </div>
     <div class="doc-meta">
       <div class="num mono">${escape(numero)}</div>
@@ -682,8 +688,8 @@ function renderDocumento(opts) {
         ${cliente?.noCliente ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">${escape(cliente.noCliente)}</div>` : ''}
       </div>
       <div class="client-cell">
-        <div class="lbl">${cliente?.rnc ? 'RNC' : 'Documento'}</div>
-        <div class="val mono">${escape(cliente?.rnc ?? cliente?.cedula ?? '—')}</div>
+        <div class="lbl">${cliente?.rnc ? 'RNC' : 'Contacto'}</div>
+        <div class="val${cliente?.rnc ? ' mono' : ''}">${escape(cliente?.rnc ?? cliente?.contacto ?? '—')}</div>
         ${cliente?.telefono ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">Tel. ${escape(cliente.telefono)}</div>` : ''}
       </div>
       <div class="client-cell">
@@ -698,13 +704,14 @@ function renderDocumento(opts) {
       <thead>
         <tr>
           <th class="col-num">#</th>
+          <th class="col-cod">Código</th>
           <th>Descripción</th>
           <th class="col-cant center">Cant.</th>
           <th class="col-pu right">Precio Unit.</th>
           <th class="col-amt right">Importe</th>
         </tr>
       </thead>
-      <tbody>${itemsRows || `<tr><td colspan="5" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
+      <tbody>${itemsRows || `<tr><td colspan="6" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
     </table>
 
     <div class="doc-footer">
@@ -761,19 +768,16 @@ function renderDocumento(opts) {
       <img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/>
       <div class="qr-text">
         <div class="qr-ttl">Verificación Anti-Fraude</div>
-        <div>Escanea para validar la autenticidad de este documento.</div>
+        <div>Escanea o visita la URL para validar.</div>
         <div class="qr-hash">${escape(verify?.hash || '—')}</div>
+        <div class="qr-url">${escape(verify?.url || '—')}</div>
       </div>
     </div>
     <div class="ctr">
       <div>Documento Electrónico Verificable</div>
-      <div class="verify-line"><span class="lbl">URL</span> <span class="url">${escape(verify?.url || '—')}</span></div>
+      <div class="verify-line">${escape(emp.razonSocial ?? '')}${emp.rnc ? ` · RNC ${escape(emp.rnc)}` : ''}</div>
     </div>
-    <div class="right">
-      <div class="razon">${escape(emp.razonSocial ?? '')}</div>
-      ${emp.rnc ? `<div class="mono">RNC ${escape(emp.rnc)}</div>` : ''}
-      <div class="mono">${fechaLarga(new Date())}</div>
-    </div>
+    <div class="right mono">${fechaLarga(new Date())}</div>
   </footer>
 
 </div>

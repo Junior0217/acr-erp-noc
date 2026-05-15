@@ -51,7 +51,7 @@ export default function Ventas() {
   ].filter(t => t.show)
 
   return (
-    <div className="space-y-5 max-w-7xl">
+    <div className="space-y-5 w-full">
       <div>
         <h1 className="text-2xl font-bold text-slate-100 font-mono tracking-tight">Ventas & Servicios</h1>
         <p className="text-sm text-slate-500 mt-0.5">Catálogo Universal · Órdenes de Trabajo · Facturación NCF · POS Interno</p>

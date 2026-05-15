@@ -615,7 +615,9 @@ const clienteBaseShape = z.object({
   direccion:           z.string().min(2).max(300),
   sector:              z.string().min(1).max(100),
   provincia:           z.string().min(1).max(100),
-  telefonoPrincipal:   z.string().min(7).max(20),
+  // telefonoPrincipal AHORA opcional: el usuario pidió que el teléfono del
+  // contacto no sea obligatorio. Acepta string corto, vacío o ausencia.
+  telefonoPrincipal:   z.string().max(20).optional().nullable().transform(v => (v == null || v === '') ? null : v),
   telefonoAlternativo: nullStr(20),
   email:               z.string().email().trim(),
   website:             nullStr(100),
@@ -3221,7 +3223,7 @@ console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${PUBLIC_VERIFY_BASE}`)
 // bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
 // vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
 // el template nuevo. Cero intervención manual, cero migración de schema.
-const PDF_TEMPLATE_VERSION = 'v5-2026-05-14-qr-fallback-unconditional'
+const PDF_TEMPLATE_VERSION = 'v6-2026-05-15-codigo-col-contacto-no-sku'
 let _pdfCacheVersionChecked = false
 async function invalidarPdfsSiCambioTemplate() {
   if (_pdfCacheVersionChecked) return
@@ -3374,11 +3376,12 @@ async function buildPdfData(facturaOrCotizacion) {
       razonSocial: c.razonSocial,
       noCliente:   c.noCliente,
       rnc:         c.rnc,
+      contacto:    c.nombreContacto ?? c.contacto ?? null,
       cedula:      cedulaParaPDF,
       direccion:   c.direccion,
       sector:      c.sector,
       provincia:   c.provincia,
-      telefono:    c.telefono ?? c.telefonoPrincipal,
+      telefono:    c.telefono ?? c.telefonoPrincipal ?? c.telefonoContacto ?? null,
       email:       c.email,
     },
     // LineaFactura SOLO tiene relación con producto (no con itemCatalogo).
@@ -3387,6 +3390,7 @@ async function buildPdfData(facturaOrCotizacion) {
     items: ((f.lineas?.length ? f.lineas : (f.orden?.lineas ?? []))
       .filter(l => !l.consumoInterno)
       .map(l => ({
+        codigo:         l.producto?.sku ?? (l.producto?.id ? `ART-${String(l.producto.id).padStart(3, '0')}` : null),
         descripcion:    l.descripcion,
         detalle:        l.producto?.nombre && l.producto.nombre !== l.descripcion ? l.producto.nombre : null,
         sku:            l.producto?.sku ?? null,
@@ -7287,6 +7291,41 @@ const posVentaSchema = z.object({
   lineas:              z.array(lineaPOSCatalogoSchema).min(1),
 })
 
+// Validación previa del PIN supervisor sin emitir factura. La UI lo usa para
+// desbloquear los inputs de descuento (global y por línea) en el carrito y
+// POS. La verificación real al emitir sigue ocurriendo en /api/pos/venta,
+// este endpoint solo confirma "el PIN es correcto, deja al cajero seguir".
+const pinVerifyLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000, max: 10,
+  keyGenerator: (req) => req.user?.sub ? `pin:${req.user.sub}` : reqFingerprint(req),
+  store: makeRateLimitStore(),
+  skipSuccessfulRequests: true,
+  message: { valid: false, error: 'Demasiados intentos de PIN. Espera 5 minutos.' },
+})
+app.post('/api/pos/verificar-pin', verificarJWT, pinVerifyLimiter, async (req, res) => {
+  try {
+    const pin = String(req.body?.pin ?? '').trim()
+    if (!/^\d{4,12}$/.test(pin)) {
+      return res.status(400).json({ valid: false, error: 'PIN debe contener 4-12 dígitos.' })
+    }
+    const empCfg = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true } })
+    const pinReal = empCfg?.pinSupervisor ?? '1234'
+    // Comparación con timingSafeEqual evita timing-attacks por longitud.
+    const a = Buffer.from(pin.padEnd(16, '\0'))
+    const b = Buffer.from(String(pinReal).padEnd(16, '\0'))
+    const ok = a.length === b.length && crypto.timingSafeEqual(a, b)
+    if (!ok) {
+      auditReq('pos:pin_invalid', req)
+      return res.status(401).json({ valid: false, error: 'PIN inválido.' })
+    }
+    auditReq('pos:pin_ok', req)
+    return res.json({ valid: true })
+  } catch (e) {
+    console.error('[POS verificar-pin]', e.message)
+    return res.status(500).json({ valid: false, error: 'Error de verificación.' })
+  }
+})
+
 app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
   try {
     const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas } = posVentaSchema.parse(req.body)
@@ -8262,6 +8301,7 @@ async function buildFacturaPDFBuffer(factura) {
   // Soporta tanto factura.lineas (POS) como factura.orden.lineas (OT) — coge la primera no vacía.
   const lineasSrc = (factura.lineas?.length ? factura.lineas : factura.orden?.lineas) ?? []
   const items = lineasSrc.map(l => ({
+    codigo:         l.producto?.sku ?? l.itemCatalogo?.sku ?? (l.producto?.id ? `ART-${String(l.producto.id).padStart(3, '0')}` : null),
     descripcion:    l.descripcion ?? l.itemCatalogo?.nombre ?? '—',
     detalle:        l.itemCatalogo?.descripcion ?? null,
     sku:            l.producto?.sku ?? null,
@@ -8278,11 +8318,12 @@ async function buildFacturaPDFBuffer(factura) {
       razonSocial: c.razonSocial,
       noCliente:   c.noCliente,
       rnc:         c.rnc,
+      contacto:    c.nombreContacto ?? c.contacto ?? null,
       cedula:      c.cedula,
       direccion:   c.direccion,
       sector:      c.sector,
       provincia:   c.provincia,
-      telefono:    c.telefono ?? c.telefonoPrincipal,
+      telefono:    c.telefono ?? c.telefonoPrincipal ?? c.telefonoContacto ?? null,
       email:       c.email,
     },
     items,

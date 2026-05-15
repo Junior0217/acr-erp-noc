@@ -1,19 +1,12 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag } from 'lucide-react'
+import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
 import { apiFetch } from '../utils/api'
 import { useDebounce } from '../hooks/useDebounce'
 import { toast } from 'sonner'
+import PinAuthModal from './PinAuthModal'
 
 const fmt = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
-
-const NCF_OPTIONS = [
-  { value: '',     label: 'Auto (según cliente)' },
-  { value: 'Fiscal',           label: 'B01 — Crédito Fiscal' },
-  { value: 'Consumidor Final', label: 'B02 — Consumidor Final' },
-  { value: 'Gubernamental',    label: 'B14 — Gubernamental' },
-  { value: 'Regímenes Especiales', label: 'B15 — Régimenes Especiales' },
-]
 
 function ClienteSearch({ clienteActual, onSelect }) {
   const [query, setQuery]   = useState(clienteActual?.razonSocial ?? '')
@@ -79,7 +72,7 @@ function ClienteSearch({ clienteActual, onSelect }) {
   )
 }
 
-function LineaRow({ linea, onUpdate, onRemove }) {
+function LineaRow({ linea, onUpdate, onRemove, descuentosUnlocked }) {
   const [cant, setCant] = useState(linea.cantidad)
   const [precio, setPrecio] = useState(linea.precioUnitario)
   const [dctPct, setDctPct] = useState(linea.descuentoPorcentaje)
@@ -152,14 +145,20 @@ function LineaRow({ linea, onUpdate, onRemove }) {
             className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
         </div>
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1">Desc. %</label>
-          <input type="number" min="0" max="100" step="0.01" value={dctPct} onChange={e => setDPct(e.target.value)}
-            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
+          <label className="block text-[10px] text-slate-500 mb-1 flex items-center gap-1">Desc. % {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}</label>
+          <input type="number" min="0" max="100" step="0.01" value={dctPct}
+            onChange={e => setDPct(e.target.value)}
+            disabled={!descuentosUnlocked}
+            title={!descuentosUnlocked ? 'Bloqueado — requiere PIN de supervisor' : ''}
+            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
         </div>
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1">Desc. RD$</label>
-          <input type="number" min="0" step="0.01" value={dctMon} onChange={e => setDMon(e.target.value)}
-            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
+          <label className="block text-[10px] text-slate-500 mb-1 flex items-center gap-1">Desc. RD$ {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}</label>
+          <input type="number" min="0" step="0.01" value={dctMon}
+            onChange={e => setDMon(e.target.value)}
+            disabled={!descuentosUnlocked}
+            title={!descuentosUnlocked ? 'Bloqueado — requiere PIN de supervisor' : ''}
+            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
         </div>
       </div>
 
@@ -172,10 +171,26 @@ function LineaRow({ linea, onUpdate, onRemove }) {
 
 export default function CarritoSlideOver() {
   const { carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout } = useCart()
-  const [tipoNcf, setTipoNcf]           = useState('')
   const [nombreWalkIn, setNombreWalkIn] = useState('')
   const [descTipo, setDescTipo]         = useState('pct')
   const [descValor, setDescValor]       = useState(0)
+  // Bloqueo de descuentos: por defecto LOCK. Solo se libera tras autorizar
+  // con PIN del supervisor. Aplica también al owner — sin excepciones.
+  // Un PIN válido libera tanto el descuento global como el descuento por
+  // línea, y vuelve a bloquearse al cerrar el slide-over (vía useEffect).
+  const [descuentosUnlocked, setDescuentosUnlocked] = useState(false)
+  const [pinSupervisor, setPinSupervisor] = useState('')   // viaja al backend
+  const [pinModalOpen, setPinModalOpen] = useState(false)
+
+  // Re-bloqueo automático: cada vez que el slide-over se cierra, perdemos
+  // la autorización. El siguiente "open" requiere PIN otra vez.
+  useEffect(() => {
+    if (!open) {
+      setDescuentosUnlocked(false)
+      setPinSupervisor('')
+      setDescValor(0)
+    }
+  }, [open])
 
   if (!open) return null
 
@@ -195,14 +210,22 @@ export default function CarritoSlideOver() {
 
   async function handleCheckout(esCotizacion) {
     if (!lineas.length) { toast.warning('El carrito está vacío.'); return }
+    // Validación dura: cliente o contacto walk-in son OBLIGATORIOS para
+    // emitir un documento. Antes ambos podían ser null y la factura quedaba
+    // huérfana — ahora se exige al menos uno.
     const nombre = !cliente && nombreWalkIn.trim() ? nombreWalkIn.trim() : undefined
-    const ncf    = tipoNcf || undefined
+    if (!cliente && !nombre) {
+      toast.error('Vincula un cliente o ingresa un nombre de contacto antes de continuar.')
+      return
+    }
+    // tipoNcf eliminado del UI: se infiere automáticamente del cliente
+    // seleccionado en el backend (cliente.tipoNCF / tipo fiscal default).
     const descuento = descValor > 0
       ? (descTipo === 'pct' ? { descuentoGlobalPct: descValor } : { descuentoGlobalMonto: descValor })
       : {}
-    const f = await checkout(esCotizacion, ncf, nombre, descuento)
+    const extra = { ...descuento, ...(pinSupervisor ? { pinSupervisor } : {}) }
+    const f = await checkout(esCotizacion, undefined, nombre, extra)
     if (f) {
-      setTipoNcf('')
       setNombreWalkIn('')
       setDescValor(0)
       setDescTipo('pct')
@@ -263,20 +286,9 @@ export default function CarritoSlideOver() {
             )}
           </div>
 
-          <div>
-            <label className="block text-xs text-slate-500 mb-1.5 font-medium flex items-center gap-1.5">
-              <Receipt size={11} /> Tipo de Comprobante
-            </label>
-            <select
-              value={tipoNcf}
-              onChange={e => setTipoNcf(e.target.value)}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 focus:outline-none focus:border-blue-500 transition-colors"
-            >
-              {NCF_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
+          {/* Tipo de Comprobante eliminado: el backend deriva el NCF
+              automáticamente desde el cliente seleccionado (cliente.tipoNCF
+              o el default fiscal del walk-in). Cero selector manual. */}
 
           <div className="flex items-center justify-between">
             <label className="text-xs text-slate-400 font-medium">Aplicar ITBIS (18%)</label>
@@ -288,25 +300,37 @@ export default function CarritoSlideOver() {
             </button>
           </div>
 
-          {/* Global discount */}
+          {/* Descuento global — BLOQUEADO por defecto. Click en candado abre
+              el modal de PIN supervisor. Una vez desbloqueado, los inputs
+              quedan editables hasta cerrar el slide-over. */}
           <div className="pt-1">
             <div className="flex items-center justify-between mb-1.5">
               <label className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
                 <Tag size={11} /> Descuento Global
+                {!descuentosUnlocked && <Lock size={10} className="text-amber-400" />}
               </label>
               <div className="flex items-center gap-1">
-                <button
-                  onClick={() => { setDescTipo('pct'); setDescValor(0) }}
-                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${descTipo === 'pct' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
-                >
-                  %
-                </button>
-                <button
-                  onClick={() => { setDescTipo('monto'); setDescValor(0) }}
-                  className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${descTipo === 'monto' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
-                >
-                  RD$
-                </button>
+                {!descuentosUnlocked && (
+                  <button
+                    onClick={() => setPinModalOpen(true)}
+                    className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-600/20 text-amber-400 border border-amber-600/40 hover:bg-amber-600/40 transition-colors flex items-center gap-1"
+                    title="Solicitar autorización del supervisor"
+                  >
+                    <KeyRound size={9} /> Autorizar
+                  </button>
+                )}
+                {descuentosUnlocked && (
+                  <>
+                    <button
+                      onClick={() => { setDescTipo('pct'); setDescValor(0) }}
+                      className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${descTipo === 'pct' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                    >%</button>
+                    <button
+                      onClick={() => { setDescTipo('monto'); setDescValor(0) }}
+                      className={`px-2 py-0.5 rounded text-xs font-semibold transition-colors ${descTipo === 'monto' ? 'bg-blue-600 text-white' : 'bg-slate-700 text-slate-400 hover:bg-slate-600'}`}
+                    >RD$</button>
+                  </>
+                )}
               </div>
             </div>
             <input
@@ -316,11 +340,20 @@ export default function CarritoSlideOver() {
               step="0.01"
               value={descValor || ''}
               onChange={e => setDescValor(Math.max(0, parseFloat(e.target.value) || 0))}
-              placeholder={descTipo === 'pct' ? '0.00 %' : '0.00 RD$'}
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
+              disabled={!descuentosUnlocked}
+              placeholder={descuentosUnlocked
+                ? (descTipo === 'pct' ? '0.00 %' : '0.00 RD$')
+                : 'Bloqueado · pide PIN para habilitar'}
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             />
           </div>
         </div>
+
+        <PinAuthModal
+          open={pinModalOpen}
+          onClose={() => setPinModalOpen(false)}
+          onUnlock={(pin) => { setPinSupervisor(pin); setDescuentosUnlocked(true); toast.success('Descuentos habilitados para esta sesión del carrito.') }}
+        />
 
         <div className="flex-1 overflow-y-auto">
           {lineas.length === 0 && (
@@ -331,7 +364,7 @@ export default function CarritoSlideOver() {
             </div>
           )}
           {lineas.map(l => (
-            <LineaRow key={l.id} linea={l} onUpdate={updateItem} onRemove={removeItem} />
+            <LineaRow key={l.id} linea={l} onUpdate={updateItem} onRemove={removeItem} descuentosUnlocked={descuentosUnlocked} />
           ))}
         </div>
 
@@ -360,12 +393,7 @@ export default function CarritoSlideOver() {
               </div>
             </div>
 
-            {tipoNcf && (
-              <div className="px-4 pb-1 flex items-center gap-1.5">
-                <Receipt size={11} className="text-amber-400" />
-                <span className="text-xs text-amber-400">{NCF_OPTIONS.find(o => o.value === tipoNcf)?.label}</span>
-              </div>
-            )}
+            {/* NCF indicador removido — se infiere del cliente automáticamente. */}
             {!cliente && nombreWalkIn.trim() && (
               <div className="px-4 pb-1 flex items-center gap-1.5">
                 <UserCheck size={11} className="text-sky-400" />

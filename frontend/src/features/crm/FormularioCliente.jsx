@@ -692,8 +692,8 @@ export default function FormularioCliente({ onClose, onSave, onToggleStatus, nex
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div className={SECTION}><Phone size={13} />Contacto</div>
             <div>
-              <label className={LABEL}>Teléfono Principal *</label>
-              <input required className={INPUT} value={form.telefono} onChange={masked("telefono", formatPhone)} placeholder="809-XXX-XXXX" maxLength={12} />
+              <label className={LABEL}>Teléfono Principal</label>
+              <input className={INPUT} value={form.telefono} onChange={masked("telefono", formatPhone)} placeholder="809-XXX-XXXX (opcional)" maxLength={12} />
             </div>
             <div>
               <label className={LABEL}>Teléfono Alternativo</label>

@@ -12,7 +12,7 @@ import { useDebounce }     from '@shared/hooks/useDebounce'
 import { exportCsv }       from '@shared/utils/exportCsv'
 import { apiFetch }        from '@shared/utils/api'
 import { useAuth }         from '@shared/contexts/AuthContext'
-import { useCart }         from '@shared/contexts/CartContext'
+// CartContext import removido: el inventario ya no añade al carrito directamente.
 import { InvCatBadge, EmptyState } from '@features/sales/panels/_shared'
 
 const LOW_STOCK = 5
@@ -120,7 +120,8 @@ function ModalVistaProducto({ producto, onClose, onEdit }) {
 // ─── Tab: Catálogo (Artículos o Servicios) ────────────────────────────────────
 
 function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
-  const { addItem, loading: cartLoading } = useCart()
+  // useCart() removido: ya no se usa en el listado de inventario — el carrito
+  // se llena exclusivamente desde el catálogo de Ventas, no desde Inventario.
   const [rows, setRows]       = useState([])
   const [meta, setMeta]       = useState({ total: 0, page: 1, totalPages: 1 })
   const [search, setSearch]   = useState('')
@@ -275,18 +276,14 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
                     </span>
                   )}
                 </div>
-                <div className="flex gap-1 mt-1.5" onClick={e => e.stopPropagation()}>
-                  <button onClick={() => addItem(p.id, 1)} disabled={cartLoading || (!esServicio && p.stockActual <= 0)}
-                    className="flex-1 flex items-center justify-center gap-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/40 transition-colors disabled:opacity-40">
-                    <ShoppingCart size={11} />Añadir
-                  </button>
-                  {canCreate && (
+                {canCreate && (
+                  <div className="flex gap-1 mt-1.5" onClick={e => e.stopPropagation()}>
                     <button onClick={() => setModal(p)}
-                      className="px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors">
-                      <Pencil size={11} />
+                      className="flex-1 px-2 py-1.5 rounded-lg text-[10px] font-semibold bg-slate-700 text-slate-300 hover:bg-slate-600 transition-colors flex items-center justify-center gap-1">
+                      <Pencil size={11} />Editar
                     </button>
-                  )}
-                </div>
+                  </div>
+                )}
               </div>
             </div>
           ))}
@@ -331,14 +328,6 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
                 )}
                 <td className="px-4 py-3" onClick={e => e.stopPropagation()}>
                   <div className="flex items-center justify-end gap-1">
-                    <button
-                      onClick={() => addItem(p.id, 1)}
-                      disabled={cartLoading}
-                      title="Añadir al carrito"
-                      className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600/20 text-emerald-400 border border-emerald-600/30 hover:bg-emerald-600/40 hover:text-emerald-300 transition-colors disabled:opacity-40"
-                    >
-                      <ShoppingCart size={12} /> Añadir
-                    </button>
                     {canCreate && (
                       <>
                         <button onClick={() => setModal(p)} className="p-1.5 rounded-lg text-slate-500 hover:text-blue-400 hover:bg-blue-900/20 transition-colors"><Pencil size={14} /></button>

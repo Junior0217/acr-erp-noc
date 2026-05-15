@@ -1,12 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink,
-  Wifi, Camera, Wrench, Zap, Package, Network, Boxes, GripVertical,
+  Wifi, Camera, Wrench, Zap, Package, Network, Boxes, GripVertical, Lock, KeyRound, Keyboard,
 } from 'lucide-react'
 import { apiFetch } from '@shared/utils/api'
 import { useAuth } from '@shared/contexts/AuthContext'
 import { useCart } from '@shared/contexts/CartContext'
 import { useEmpresa } from '@shared/contexts/EmpresaContext'
+import PinAuthModal from '@shared/components/PinAuthModal'
 import { toast } from 'sonner'
 import { marked } from 'marked'
 // Native HTML5 DnD para catálogo → carrito. Más simple que @dnd-kit para
@@ -511,7 +512,7 @@ function CrossSellBanner({ cart, onAdd }) {
 }
 
 // ── CartLine ──────────────────────────────────────────────────────────────────
-function CartLine({ linea, onChange, onRemove }) {
+function CartLine({ linea, onChange, onRemove, descuentosUnlocked }) {
   const pu  = linea.precioUnitario
   const pct = linea.descuentoPorcentaje ?? 0
   const mon = linea.descuentoMonto ?? 0
@@ -541,14 +542,15 @@ function CartLine({ linea, onChange, onRemove }) {
             className="w-20 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500"
           />
         </div>
-        {/* discount % */}
-        <div className="flex items-center gap-1 text-xs text-slate-500">
-          <Tag size={10} />
+        {/* discount % — BLOQUEADO sin PIN supervisor (aplica a todos, incluyendo owner) */}
+        <div className="flex items-center gap-1 text-xs text-slate-500" title={!descuentosUnlocked ? 'Bloqueado · requiere PIN supervisor' : ''}>
+          {descuentosUnlocked ? <Tag size={10} /> : <Lock size={10} className="text-amber-400" />}
           <input
             type="number" min="0" max="100" step="1"
             value={pct}
             onChange={e => onChange({ descuentoPorcentaje: parseFloat(e.target.value) || 0 })}
-            className="w-12 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500"
+            disabled={!descuentosUnlocked}
+            className="w-12 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
           />
           <span>%</span>
         </div>
@@ -571,9 +573,19 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const [applyItbis, setApplyItbis] = useState(true)
   const [descGlobalPct, setDescGlobalPct] = useState(0)
   const [descGlobalMonto, setDescGlobalMonto] = useState(0)
-  const [tipoNcf, setTipoNcf]       = useState('Auto')
   const [submitting, setSubmitting] = useState(false)
   const [lastFacturaId, setLastFacturaId] = useState(null)
+  // Bloqueo de descuentos: por defecto LOCK. Se libera con PIN supervisor
+  // y aplica a todos los usuarios (incluyendo sistema:owner). El bloqueo
+  // se restaura al limpiar el carrito o al recargar el panel.
+  const [descuentosUnlocked, setDescuentosUnlocked] = useState(false)
+  const [pinSupervisorState, setPinSupervisorState] = useState('')
+  const [pinModalOpen, setPinModalOpen] = useState(false)
+  // Hotkeys "Cajero Express": F2 cliente · F3 catálogo · F4 PIN descuentos
+  // F8 cotización · F9 facturar · ESC limpia preload del carrito
+  const refClienteInput = useRef(null)
+  const refCatalogoInput = useRef(null)
+  const [hotkeysHint, setHotkeysHint] = useState(true)
 
   const prevPreload = useRef([])
   useEffect(() => {
@@ -585,9 +597,54 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preloadItems])
 
+  // POS Cajero Express — hotkeys nativas para reducir tiempo por transacción.
+  // F2 cliente · F3 catálogo · F4 PIN descuentos · F8 cotización · F9 facturar.
+  // Ignora si el foco está en un input/textarea (excepto F4 que SIEMPRE abre PIN).
+  useEffect(() => {
+    function onKey(e) {
+      const tag = (e.target?.tagName || '').toLowerCase()
+      const inField = tag === 'input' || tag === 'textarea' || tag === 'select'
+      if (e.key === 'F4') {
+        e.preventDefault()
+        if (!descuentosUnlocked) setPinModalOpen(true)
+        return
+      }
+      if (inField) return
+      // F2 → busca input del cliente. F3 → busca input del catálogo. Si no
+      // encuentra, noop (los componentes hijos pueden re-ordenarse sin romper).
+      if (e.key === 'F2') {
+        e.preventDefault()
+        const el = document.querySelector('input[placeholder*="cliente" i], input[placeholder*="rnc" i]')
+        el?.focus?.()
+      }
+      else if (e.key === 'F3') {
+        e.preventDefault()
+        const el = document.querySelector('input[placeholder*="producto" i], input[placeholder*="catálogo" i]')
+        el?.focus?.()
+      }
+      else if (e.key === 'F8' && canCotizar && cart.length) { e.preventDefault(); submit(true) }
+      else if (e.key === 'F9' && canFacturar && cart.length) { e.preventDefault(); setShowCheckout(true) }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart.length, descuentosUnlocked, canCotizar, canFacturar])
+
+  // Re-lock descuentos cuando se limpia el carrito (después de venta exitosa).
+  useEffect(() => {
+    if (!cart.length) {
+      setDescuentosUnlocked(false)
+      setPinSupervisorState('')
+      setDescGlobalPct(0)
+      setDescGlobalMonto(0)
+    }
+  }, [cart.length])
+
   const canCotizar  = tienePermiso('pos:cotizar')  || tienePermiso('sistema:owner')
   const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
-  const canDescuento = tienePermiso('pos:descuentos') || tienePermiso('sistema:owner')
+  // canDescuento removido: el descuento ya no se gate por PERMISO sino por
+  // PIN supervisor. Cualquier rol con pos:facturar puede aplicar descuento
+  // SI tiene el PIN — incluyendo el owner.
 
   function addItem(item, qty = 1) {
     posAddItem(item, qty)
@@ -609,21 +666,28 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   async function submit(esCotizacion, opts = {}) {
     const { pagos = null, pinSupervisor = null } = opts
     if (!cart.length) { toast.error('El carrito está vacío.'); return }
+    // Validación dura: cliente o walk-in obligatorio. Antes pasaba con ambos
+    // null y dejaba la factura sin contraparte identificable.
+    if (!cliente && !nombreWalkin.trim()) {
+      toast.error('Selecciona un cliente o ingresa un nombre de contacto antes de continuar.')
+      return
+    }
     const requiredPerm = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
     if (!tienePermiso(requiredPerm) && !tienePermiso('sistema:owner')) {
       toast.error(`Sin permiso: ${requiredPerm}`); return
     }
     setSubmitting(true)
     try {
+      const pinFinal = pinSupervisor || pinSupervisorState || null
       const body = {
         clienteId:            cliente?.id ?? undefined,
         nombreTemporal:       !cliente && nombreWalkin ? nombreWalkin : undefined,
-        tipoNcf:              tipoNcf === 'Auto' ? undefined : tipoNcf,
+        // tipoNcf eliminado del UI: backend deriva de cliente.tipoNCF.
         applyItbis,
         esCotizacion,
         descuentoGlobalPct:   descGlobalPct,
         descuentoGlobalMonto: descGlobalMonto,
-        ...(pinSupervisor ? { pinSupervisor } : {}),
+        ...(pinFinal ? { pinSupervisor: pinFinal } : {}),
         ...(pagos ? { pagos } : {}),
         lineas: (Array.isArray(cart) ? cart : []).map(l => ({
           // Backend exige exactly-one-of: itemCatalogoId (UUID) o productoId (Int).
@@ -652,10 +716,28 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
     } finally { setSubmitting(false) }
   }
 
-  const NCF_TYPES = ['Auto', 'Consumidor Final', 'Fiscal', 'Gubernamental', 'Regimen Especial']
+  // NCF_TYPES removido: el comprobante se infiere del cliente. Sin selector manual.
 
   return (
-    <div className="flex gap-4 h-[calc(100vh-200px)] min-h-[540px]">
+    <div className="flex flex-col gap-2 h-[calc(100vh-180px)] min-h-[540px]">
+    {hotkeysHint && (
+      <div className="flex items-center justify-between bg-slate-900/60 border border-slate-700/40 rounded-lg px-3 py-1.5 text-[11px] text-slate-400">
+        <div className="flex items-center gap-2 overflow-x-auto">
+          <Keyboard size={12} className="text-blue-400 flex-shrink-0" />
+          <span className="font-mono">
+            <kbd className="px-1 py-0.5 bg-slate-800 rounded">F2</kbd> Cliente ·{' '}
+            <kbd className="px-1 py-0.5 bg-slate-800 rounded">F3</kbd> Catálogo ·{' '}
+            <kbd className="px-1 py-0.5 bg-slate-800 rounded">F4</kbd> Autorizar Desc. ·{' '}
+            <kbd className="px-1 py-0.5 bg-slate-800 rounded">F8</kbd> Cotización ·{' '}
+            <kbd className="px-1 py-0.5 bg-slate-800 rounded">F9</kbd> Facturar
+          </span>
+        </div>
+        <button onClick={() => setHotkeysHint(false)} className="text-slate-600 hover:text-slate-300 flex-shrink-0 ml-2">
+          <X size={12} />
+        </button>
+      </div>
+    )}
+    <div className="flex gap-4 flex-1 min-h-0">
       {/* Left — Catálogo + sugerencias (cross-sell pegado a la base) */}
       <div className="flex-1 min-w-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl flex flex-col overflow-hidden">
         <div className="flex-1 min-h-0 p-4 flex flex-col gap-3">
@@ -713,29 +795,41 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
               <p className="text-xs font-mono">Vacío</p>
             </div>
           ) : (Array.isArray(cart) ? cart : []).map((l, i) => (
-            <CartLine key={i} linea={l} onChange={ch => updateLine(i, ch)} onRemove={() => removeLine(i)} />
+            <CartLine key={i} linea={l} onChange={ch => updateLine(i, ch)} onRemove={() => removeLine(i)} descuentosUnlocked={descuentosUnlocked} />
           ))}
         </div>
 
         {/* Totals + options */}
         {cart.length > 0 && (
           <div className="border-t border-slate-700/50 pt-3 space-y-2">
-            {canDescuento && (
-              <div className="flex gap-2">
-                <div className="flex-1">
-                  <label className="text-[10px] text-slate-500">Desc. global %</label>
-                  <input type="number" min="0" max="100" value={descGlobalPct}
-                    onChange={e => setDescGlobalPct(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500" />
-                </div>
-                <div className="flex-1">
-                  <label className="text-[10px] text-slate-500">Desc. RD$</label>
-                  <input type="number" min="0" value={descGlobalMonto}
-                    onChange={e => setDescGlobalMonto(parseFloat(e.target.value) || 0)}
-                    className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500" />
-                </div>
+            {/* Descuentos bloqueados por defecto · click "Autorizar" → PIN supervisor */}
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <label className="text-[10px] text-slate-500 flex items-center gap-1">
+                  Desc. global % {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}
+                </label>
+                <input type="number" min="0" max="100" value={descGlobalPct}
+                  onChange={e => setDescGlobalPct(parseFloat(e.target.value) || 0)}
+                  disabled={!descuentosUnlocked}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
               </div>
-            )}
+              <div className="flex-1">
+                <label className="text-[10px] text-slate-500 flex items-center gap-1">
+                  Desc. RD$ {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}
+                </label>
+                <input type="number" min="0" value={descGlobalMonto}
+                  onChange={e => setDescGlobalMonto(parseFloat(e.target.value) || 0)}
+                  disabled={!descuentosUnlocked}
+                  className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
+              </div>
+              {!descuentosUnlocked && (
+                <button onClick={() => setPinModalOpen(true)}
+                  title="Autorizar descuentos (F4)"
+                  className="h-7 px-2 rounded text-[10px] font-bold bg-amber-600/20 text-amber-400 border border-amber-600/40 hover:bg-amber-600/40 transition-colors flex items-center gap-1">
+                  <KeyRound size={10} /> F4
+                </button>
+              )}
+            </div>
             <div className="flex items-center justify-between">
               <span className="text-xs text-slate-500">ITBIS 18%</span>
               <button onClick={() => setApplyItbis(v => !v)}
@@ -743,13 +837,9 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                 <span className={`block w-4 h-4 rounded-full bg-white transition-transform mx-0.5 ${applyItbis ? 'translate-x-4' : 'translate-x-0'}`} />
               </button>
             </div>
-            <div>
-              <label className="text-[10px] text-slate-500 block mb-0.5">Tipo NCF</label>
-              <select value={tipoNcf} onChange={e => setTipoNcf(e.target.value)}
-                className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-300 focus:outline-none focus:border-blue-500">
-                {NCF_TYPES.map(t => <option key={t} value={t}>{t}</option>)}
-              </select>
-            </div>
+            {/* Selector "Tipo NCF" eliminado: el comprobante se infiere del
+                cliente seleccionado (cliente.tipoNCF), o del default fiscal
+                cuando es walk-in. Cero ambigüedad para el cajero. */}
             <div className="space-y-0.5 text-xs font-mono">
               <div className="flex justify-between text-slate-500"><span>Subtotal</span><span>RD$ {fmt(subtotal)}</span></div>
               {applyItbis && <div className="flex justify-between text-slate-500"><span>ITBIS</span><span>RD$ {fmt(itbisAmt)}</span></div>}
@@ -784,6 +874,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
           )}
         </div>
       </div>
+      </div>
 
       {showCheckout && (
         <CheckoutModal
@@ -796,6 +887,18 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
           onSubmit={(pagos, pinSupervisor) => submit(false, { pagos, pinSupervisor })}
         />
       )}
+
+      <PinAuthModal
+        open={pinModalOpen}
+        onClose={() => setPinModalOpen(false)}
+        titulo="Autorizar Descuentos"
+        descripcion="Habilita los campos de descuento global y descuento por línea para esta sesión de POS. Requiere el PIN de supervisor configurado en Mi Empresa."
+        onUnlock={(pin) => {
+          setPinSupervisorState(pin)
+          setDescuentosUnlocked(true)
+          toast.success('Descuentos habilitados para esta sesión.')
+        }}
+      />
     </div>
   )
 }
