@@ -587,12 +587,31 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const refCatalogoInput = useRef(null)
   const [hotkeysHint, setHotkeysHint] = useState(true)
 
+  // ─── CONST DERIVADOS ──────────────────────────────────────────────────────
+  // IMPORTANTE: estas const DEBEN ir ANTES de cualquier useEffect que las
+  // referencie en su array de deps. El TDZ del deps array (evaluado sincronía
+  // durante render) crasheaba la página de POS con:
+  //   ReferenceError: Cannot access 'canCotizar' before initialization
+  // canDescuento removido — descuentos ahora gate por PIN, no por permiso.
+  const canCotizar  = tienePermiso('pos:cotizar')  || tienePermiso('sistema:owner')
+  const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
+
+  // showCheckout también declarado antes de los effects que lo usan.
+  const [showCheckout, setShowCheckout] = useState(false)
+
+  function addItemRaw(item, qty = 1) {
+    // Helper estable: hoisted en el closure de los useEffect. La función
+    // addItem real con toast vive más abajo, pero los effects pueden necesitar
+    // este helper indirectamente vía `submit`.
+    posAddItem(item, qty)
+  }
+
   const prevPreload = useRef([])
   useEffect(() => {
     if (!preloadItems.length) return
     if (preloadItems === prevPreload.current) return
     prevPreload.current = preloadItems
-    preloadItems.forEach(item => addItem(item))
+    preloadItems.forEach(item => addItemRaw(item))
     onClearPreload?.()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preloadItems])
@@ -640,12 +659,6 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
     }
   }, [cart.length])
 
-  const canCotizar  = tienePermiso('pos:cotizar')  || tienePermiso('sistema:owner')
-  const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
-  // canDescuento removido: el descuento ya no se gate por PERMISO sino por
-  // PIN supervisor. Cualquier rol con pos:facturar puede aplicar descuento
-  // SI tiene el PIN — incluyendo el owner.
-
   function addItem(item, qty = 1) {
     posAddItem(item, qty)
     toast.success(`${item.nombre} × ${qty}`, { duration: 1500 })
@@ -661,7 +674,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const total         = Math.round((subtotal + itbisAmt) * 100) / 100
   // Trigger del PIN: descuento global > maxDescuentoCajero requiere PIN supervisor.
   const necesitaPIN  = descGlobalPct > maxDescuentoCajero
-  const [showCheckout, setShowCheckout] = useState(false)
+  // showCheckout movido al tope del componente para evitar TDZ desde la
+  // hotkey useEffect (F9). No re-declarar aquí.
 
   async function submit(esCotizacion, opts = {}) {
     const { pagos = null, pinSupervisor = null } = opts

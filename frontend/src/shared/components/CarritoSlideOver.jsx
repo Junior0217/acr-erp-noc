@@ -182,15 +182,51 @@ export default function CarritoSlideOver() {
   const [pinSupervisor, setPinSupervisor] = useState('')   // viaja al backend
   const [pinModalOpen, setPinModalOpen] = useState(false)
 
+  // Condiciones (Validez / Pago / Entrega / Garantía) y Notas: cada uno
+  // tiene un switch "incluir". Por defecto las condiciones se incluyen
+  // (heredan default de empresa); las notas NO se incluyen por defecto.
+  // CRÍTICO: cambiar cualquier switch dispara PinAuthModal. Solo se aplica
+  // el toggle si el PIN es correcto, sino se revierte al estado anterior.
+  const [incluirCond, setIncluirCond] = useState({ validez: true, pago: true, entrega: true, garantia: true })
+  const [incluirNotas, setIncluirNotas] = useState(false)
+  const [notasTexto,   setNotasTexto]   = useState('')
+  // pendingCondToggle: { campo: 'validez'|'pago'|...|'notas', nextValue: bool }
+  // Se vacía al abrir/cancelar el modal. Al confirmar el PIN, aplicamos el
+  // toggle al estado real (incluirCond/incluirNotas).
+  const [pendingCondToggle, setPendingCondToggle] = useState(null)
+  const [condPinModalOpen, setCondPinModalOpen] = useState(false)
+
   // Re-bloqueo automático: cada vez que el slide-over se cierra, perdemos
-  // la autorización. El siguiente "open" requiere PIN otra vez.
+  // toda autorización (descuentos + condiciones). El siguiente "open" exige PIN.
   useEffect(() => {
     if (!open) {
       setDescuentosUnlocked(false)
       setPinSupervisor('')
       setDescValor(0)
+      setIncluirCond({ validez: true, pago: true, entrega: true, garantia: true })
+      setIncluirNotas(false)
+      setNotasTexto('')
     }
   }, [open])
+
+  // Solicita PIN para cambiar un switch de condiciones/notas. Si el usuario
+  // cancela o el PIN falla, el switch debe permanecer en su valor anterior
+  // (lo logramos no aplicando el cambio hasta confirmar).
+  function requestToggleCondicion(campo, nextValue) {
+    setPendingCondToggle({ campo, nextValue })
+    setCondPinModalOpen(true)
+  }
+  function aplicarToggleConfirmado() {
+    if (!pendingCondToggle) return
+    const { campo, nextValue } = pendingCondToggle
+    if (campo === 'notas') setIncluirNotas(nextValue)
+    else setIncluirCond(prev => ({ ...prev, [campo]: nextValue }))
+    setPendingCondToggle(null)
+  }
+  function cancelarToggle() {
+    setPendingCondToggle(null)
+    setCondPinModalOpen(false)
+  }
 
   if (!open) return null
 
@@ -223,7 +259,23 @@ export default function CarritoSlideOver() {
     const descuento = descValor > 0
       ? (descTipo === 'pct' ? { descuentoGlobalPct: descValor } : { descuentoGlobalMonto: descValor })
       : {}
-    const extra = { ...descuento, ...(pinSupervisor ? { pinSupervisor } : {}) }
+    // condicionesOverride: solo enviamos campos donde el usuario tocó el
+    // switch (incluir=false). Los que siguen true los omitimos para que
+    // el backend caiga al default de empresa via mergeCondiciones.
+    const condicionesOverride = {}
+    for (const k of ['validez','pago','entrega','garantia']) {
+      if (incluirCond[k] === false) condicionesOverride[k] = { incluir: false, texto: null }
+    }
+    // notasOverride: si el switch está OFF (default), enviamos string vacío
+    // para que el backend persista null y el PDF oculte la sección. Si está
+    // ON con texto, enviamos el texto. Si está ON sin texto, también vacío.
+    const notasOverride = incluirNotas && notasTexto.trim() ? notasTexto.trim() : ''
+    const extra = {
+      ...descuento,
+      ...(pinSupervisor ? { pinSupervisor } : {}),
+      ...(Object.keys(condicionesOverride).length ? { condicionesOverride } : {}),
+      notasOverride,
+    }
     const f = await checkout(esCotizacion, undefined, nombre, extra)
     if (f) {
       setNombreWalkIn('')
@@ -300,6 +352,58 @@ export default function CarritoSlideOver() {
             </button>
           </div>
 
+          {/* Condiciones del documento — switches togglables, cada cambio
+              pide PIN supervisor. Si el PIN falla o se cancela, el switch
+              NO cambia. Estado por defecto: todas ON (heredan empresa). */}
+          <div className="pt-1 border-t border-slate-800 mt-1">
+            <div className="text-[10px] uppercase tracking-widest text-slate-500 mb-1.5 flex items-center gap-1.5">
+              <Lock size={9} className="text-amber-400" />
+              Términos en PDF (cambios requieren PIN)
+            </div>
+            <div className="grid grid-cols-2 gap-y-1.5 gap-x-3">
+              {[
+                { k: 'validez',  label: 'Validez' },
+                { k: 'pago',     label: 'Forma de Pago' },
+                { k: 'entrega',  label: 'Entrega' },
+                { k: 'garantia', label: 'Garantía' },
+              ].map(({ k, label }) => (
+                <label key={k} className="flex items-center justify-between text-[11px] text-slate-300 cursor-pointer">
+                  <span>{label}</span>
+                  <button
+                    type="button"
+                    onClick={() => requestToggleCondicion(k, !incluirCond[k])}
+                    className={`w-7 h-4 rounded-full transition-colors relative ${incluirCond[k] ? 'bg-blue-600' : 'bg-slate-700'}`}
+                    aria-label={`Toggle ${label}`}
+                  >
+                    <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${incluirCond[k] ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                  </button>
+                </label>
+              ))}
+              {/* Notas — switch independiente abajo, span 2 columnas */}
+              <label className="col-span-2 flex items-center justify-between text-[11px] text-slate-300 cursor-pointer pt-1 mt-1 border-t border-slate-800/50">
+                <span>Agregar Notas al PDF</span>
+                <button
+                  type="button"
+                  onClick={() => requestToggleCondicion('notas', !incluirNotas)}
+                  className={`w-7 h-4 rounded-full transition-colors relative ${incluirNotas ? 'bg-blue-600' : 'bg-slate-700'}`}
+                  aria-label="Toggle Notas"
+                >
+                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${incluirNotas ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                </button>
+              </label>
+              {incluirNotas && (
+                <textarea
+                  value={notasTexto}
+                  onChange={e => setNotasTexto(e.target.value)}
+                  maxLength={2000}
+                  rows={2}
+                  placeholder="Notas internas / aclaraciones para el cliente..."
+                  className="col-span-2 mt-1 w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors resize-none"
+                />
+              )}
+            </div>
+          </div>
+
           {/* Descuento global — BLOQUEADO por defecto. Click en candado abre
               el modal de PIN supervisor. Una vez desbloqueado, los inputs
               quedan editables hasta cerrar el slide-over. */}
@@ -353,6 +457,16 @@ export default function CarritoSlideOver() {
           open={pinModalOpen}
           onClose={() => setPinModalOpen(false)}
           onUnlock={(pin) => { setPinSupervisor(pin); setDescuentosUnlocked(true); toast.success('Descuentos habilitados para esta sesión del carrito.') }}
+        />
+
+        {/* PIN gate de los switches de condiciones/notas — separado del PIN
+            de descuentos para que la UI muestre el contexto correcto. */}
+        <PinAuthModal
+          open={condPinModalOpen}
+          onClose={cancelarToggle}
+          titulo="Modificar Términos del PDF"
+          descripcion="Los términos comerciales (Validez · Pago · Entrega · Garantía · Notas) son fijos por defecto. Modificar cualquiera requiere PIN supervisor."
+          onUnlock={(pin) => { setPinSupervisor(pin); aplicarToggleConfirmado(); toast.success('Cambio aplicado al documento.') }}
         />
 
         <div className="flex-1 overflow-y-auto">

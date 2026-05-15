@@ -132,14 +132,19 @@ export function CartProvider({ children }) {
     } catch {}
   }
 
-  async function checkout(esCotizacion = false, tipoNcfOverride, nombreTemporal, descuentoGlobal = {}) {
+  async function checkout(esCotizacion = false, tipoNcfOverride, nombreTemporal, extra = {}) {
     setLoading(true)
     try {
       const body = { esCotizacion }
       if (tipoNcfOverride) body.tipoNcfOverride = tipoNcfOverride
       if (nombreTemporal)  body.nombreTemporal  = nombreTemporal
-      if (descuentoGlobal.descuentoGlobalPct   > 0) body.descuentoGlobalPct   = descuentoGlobal.descuentoGlobalPct
-      if (descuentoGlobal.descuentoGlobalMonto > 0) body.descuentoGlobalMonto = descuentoGlobal.descuentoGlobalMonto
+      // descuentos / PIN supervisor / overrides de condiciones / notas viajan
+      // todos en `extra`. El backend los expone vía posVentaSchema.
+      if (extra.descuentoGlobalPct   > 0) body.descuentoGlobalPct   = extra.descuentoGlobalPct
+      if (extra.descuentoGlobalMonto > 0) body.descuentoGlobalMonto = extra.descuentoGlobalMonto
+      if (extra.pinSupervisor)        body.pinSupervisor      = extra.pinSupervisor
+      if (extra.condicionesOverride)  body.condicionesOverride = extra.condicionesOverride
+      if (extra.notasOverride !== undefined) body.notasOverride = extra.notasOverride
       const r = await apiFetch('/api/carrito/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

@@ -7051,7 +7051,7 @@ async function expandirLineaAComponentes(tx, linea) {
   return []
 }
 
-async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0, puedeOverridePrecio = false, empleadoId = null }) {
+async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0, puedeOverridePrecio = false, empleadoId = null, condicionesOverride = undefined, notasOverride = undefined }) {
   return prisma.$transaction(async (tx) => {
     // 1. Resolve client
     let cliente
@@ -7188,17 +7188,27 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
 
     // 7. Create Factura + LineaFactura (nested write)
     const lineaData = lineasEnriquecidas.map(({ _tipoItem, ...rest }) => rest)
+    // Notas: override del usuario (PIN-autorizado) > auto-generadas. Si el
+    // user envió notasOverride === '' (toggle OFF), persistimos null y el
+    // PDF oculta la sección Notas vía mergeCondiciones/templater.
+    const notasFinales = (notasOverride !== undefined)
+      ? (notasOverride === '' ? null : notasOverride)
+      : (esCotizacion
+          ? `Cotización POS — ${lineas.length} línea(s)`
+          : nombreTemporal
+            ? `[WALK-IN] ${nombreTemporal} | Factura manual POS — ${lineas.length} línea(s)`
+            : `Factura manual POS — ${lineas.length} línea(s)`)
     const f = await tx.factura.create({
       data: {
         noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
         ncf, tipoNcf, esCotizacion,
         empleadoId,                              // C6: ownership trail
         snapshot,
-        notas:      esCotizacion
-          ? `Cotización POS — ${lineas.length} línea(s)`
-          : nombreTemporal
-            ? `[WALK-IN] ${nombreTemporal} | Factura manual POS — ${lineas.length} línea(s)`
-            : `Factura manual POS — ${lineas.length} línea(s)`,
+        notas:      notasFinales,
+        // condiciones override per-doc: {validez,pago,entrega,garantia} cada
+        // uno con {incluir, texto?}. mergeCondiciones en buildPdfData filtra
+        // los incluir=false para que el PDF oculte esas filas.
+        condiciones: condicionesOverride ?? {},
         fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
         lineas:     { createMany: { data: lineaData } },
       },
@@ -7289,6 +7299,17 @@ const posVentaSchema = z.object({
   pinSupervisor:       z.string().max(20).optional(),         // requerido si desc > 15%
   pagos:               z.array(pagoMetodoSchema).max(20, 'Máximo 20 métodos de pago por factura.').optional(),  // null = no desglosado (legacy). H8: cap anti-DoS
   lineas:              z.array(lineaPOSCatalogoSchema).min(1),
+  // Override per-documento de condiciones comerciales y notas. La UI las
+  // togglea con PIN supervisor; el shape {incluir:false, texto:...} oculta
+  // la fila en el PDF. Si campo viene undefined, mergeCondiciones cae al
+  // default de EmpresaPerfil.condicionesDefault.
+  condicionesOverride: z.object({
+    validez:  z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+    pago:     z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+    entrega:  z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+    garantia: z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+  }).optional(),
+  notasOverride: z.string().max(2000).nullable().optional(),
 })
 
 // Validación previa del PIN supervisor sin emitir factura. La UI lo usa para
@@ -7328,7 +7349,7 @@ app.post('/api/pos/verificar-pin', verificarJWT, pinVerifyLimiter, async (req, r
 
 app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
   try {
-    const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas } = posVentaSchema.parse(req.body)
+    const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas, condicionesOverride, notasOverride } = posVentaSchema.parse(req.body)
     const permReq = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
     const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
@@ -7582,6 +7603,18 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         pagosValidados = pagos.map(p => ({ metodo: p.metodo, monto: Number(p.monto), refer: p.refer ?? null }))
       }
 
+      // Notas finales: override del usuario (autorizado por PIN) > auto-generadas.
+      // Si notasOverride viene null se persiste null (oculta la sección en PDF).
+      // Si viene undefined (sin override), se aplica la nota auto-generada
+      // legacy de POS para mantener trazabilidad mínima.
+      const notasFinales = (notasOverride !== undefined)
+        ? (notasOverride === '' ? null : notasOverride)
+        : (esCotizacion
+            ? `Cotización POS (catálogo) — ${lineas.length} línea(s)`
+            : nombreTemporal
+              ? `[WALK-IN] ${nombreTemporal} — ${lineas.length} línea(s)`
+              : `Factura POS (catálogo) — ${lineas.length} línea(s)`)
+
       // 5. Create Factura (no productoId — catalog items don't deduct stock)
       return tx.factura.create({
         data: {
@@ -7589,11 +7622,11 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
           ncf, tipoNcf, esCotizacion,
           empleadoId: req.user?.sub ?? null,    // C6: ownership trail (RBAC Kanban)
           pagos: pagosValidados,
-          notas: esCotizacion
-            ? `Cotización POS (catálogo) — ${lineas.length} línea(s)`
-            : nombreTemporal
-              ? `[WALK-IN] ${nombreTemporal} — ${lineas.length} línea(s)`
-              : `Factura POS (catálogo) — ${lineas.length} línea(s)`,
+          notas: notasFinales,
+          // condiciones override per-doc: cada campo {incluir, texto}. Si el
+          // user togglea OFF "Validez" en el carrito, llega { validez: {incluir:false} }
+          // → mergeCondiciones en buildPdfData retorna null para validez → PDF oculta la fila.
+          condiciones: condicionesOverride ?? {},
           fechaVence: diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
           // Strip marker interno (_isProducto) antes de Prisma. productoId pasa intacto al schema.
           lineas: { createMany: { data: lineasEnriquecidas.map(({ _isProducto, ...rest }) => rest) } },
@@ -7814,9 +7847,17 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
     nombreTemporal:     z.string().max(100).optional(),
     descuentoGlobalPct: z.number().min(0).max(100).optional().default(0),
     descuentoGlobalMonto: z.number().min(0).optional().default(0),
+    pinSupervisor:      z.string().max(20).optional(),
+    condicionesOverride: z.object({
+      validez:  z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+      pago:     z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+      entrega:  z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+      garantia: z.object({ incluir: z.boolean(), texto: z.string().max(500).nullable().optional() }).optional(),
+    }).optional(),
+    notasOverride:      z.string().max(2000).nullable().optional(),
   })
   try {
-    const { esCotizacion, tipoNcfOverride, nombreTemporal, descuentoGlobalPct, descuentoGlobalMonto } = schema.parse(req.body)
+    const { esCotizacion, tipoNcfOverride, nombreTemporal, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, condicionesOverride, notasOverride } = schema.parse(req.body)
     const carrito = await prisma.carritoTemp.findUnique({
       where: { empleadoId: req.user.sub },
       include: { lineas: true },
@@ -7843,6 +7884,8 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
       descuentoGlobalMonto,
       puedeOverridePrecio: _puedeOverride,
       empleadoId:          req.user?.sub ?? null,
+      condicionesOverride,
+      notasOverride,
     })
     await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
     auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
