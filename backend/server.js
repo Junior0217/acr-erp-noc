@@ -3223,7 +3223,7 @@ console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${PUBLIC_VERIFY_BASE}`)
 // bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
 // vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
 // el template nuevo. Cero intervención manual, cero migración de schema.
-const PDF_TEMPLATE_VERSION = 'v6-2026-05-15-codigo-col-contacto-no-sku'
+const PDF_TEMPLATE_VERSION = 'v7-2026-05-15-direccion-sin-label'
 let _pdfCacheVersionChecked = false
 async function invalidarPdfsSiCambioTemplate() {
   if (_pdfCacheVersionChecked) return

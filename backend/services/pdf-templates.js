@@ -231,6 +231,10 @@ html, body {
 .corp-meta .row { display: flex; justify-content: flex-end; align-items: baseline; gap: 6px; }
 .corp-meta .lbl { color: #94a3b8; font-size: 8.5px; text-transform: uppercase; letter-spacing: 0.08em; font-weight: 700; min-width: 56px; text-align: right; }
 .corp-meta .val { color: #0f172a; font-weight: 600; }
+/* Dirección sin etiqueta — texto puro alineado a la derecha. Color un poco
+   más tenue para que no compita con razón social ni RNC, pero perfectamente
+   legible. Sin font-weight bold para distinguirla de valores fiscales. */
+.corp-meta .val-direccion { color: #334155; font-weight: 500; max-width: 280px; text-align: right; }
 
 /* ───── Document title bar (print-friendly: fondo claro, texto oscuro) ───── */
 /* Padding reducido — antes 14px arriba/abajo, ahora 9px. Mismo peso visual
@@ -622,11 +626,13 @@ function renderDocumento(opts) {
       ${cond.garantia ? `<div class="cond-cell"><div class="lbl">Garantía</div><div class="val">${escape(cond.garantia)}</div></div>` : ''}
     </div>` : ''
 
-  // Dirección de la EMPRESA removida del encabezado superior: ya aparece
-  // implícita en el footer (razón social + RNC) y duplicarla acá desperdiciaba
-  // espacio crítico para el contenido del documento.
+  // Dirección de la EMPRESA: el usuario pidió eliminar la ETIQUETA "Dirección:"
+  // pero CONSERVAR el texto físico de la ubicación. Va en su propia fila sin
+  // <span class="lbl">; el .row sin lbl colapsa a una sola línea de val al
+  // 100% del ancho corp-meta (alineado a la derecha como el resto).
   const corpRows = [
     emp.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${escape(emp.rnc)}</span></div>` : '',
+    direccionEmp ? `<div class="row row-noticket"><span class="val val-direccion">${escape(direccionEmp)}</span></div>` : '',
     emp.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${escape(emp.telefono)}</span></div>` : '',
     emp.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${escape(emp.email)}</span></div>` : '',
     emp.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${escape(emp.website)}</span></div>` : '',

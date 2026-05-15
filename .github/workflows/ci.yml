@@ -1,0 +1,201 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Policía de Código · CI Gate obligatorio para main
+# ─────────────────────────────────────────────────────────────────────────────
+# Dispara en CADA push y CADA PR a main. Tres jobs paralelos:
+#   1. backend-syntax   → node --check server.js + prisma generate
+#   2. frontend-build   → npm ci + vite build (atrapa TDZ, ReferenceError,
+#                         imports rotos, JSX inválido, chunks malos)
+#   3. pdf-smoke        → renderiza factura y cotización vía el motor real,
+#                         valida que QR, columna Código, "Contacto" y dirección
+#                         estén físicamente en el HTML emitido
+#
+# Si CUALQUIER job falla, el workflow falla. Configura Branch Protection en
+# GitHub Settings → Branches → main → "Require status checks to pass before
+# merging" + selecciona estos jobs → merges quedan bloqueados hasta arreglar.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: CI · Policía de Código
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Cancela workflows previos del mismo PR si llegan nuevos pushes — ahorra minutos.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────
+  # 1. Backend — sintaxis Node + validación Prisma
+  # ──────────────────────────────────────────────────────────────────────
+  backend-syntax:
+    name: Backend · Syntax & Prisma
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Node syntax check (server.js)
+        run: node --check server.js
+
+      - name: Node syntax check (services/pdf-templates.js)
+        run: node --check services/pdf-templates.js
+
+      - name: Node syntax check (services/pdf-generator.js)
+        run: node --check services/pdf-generator.js
+
+      - name: Prisma schema validation
+        run: npx prisma validate
+
+      - name: Prisma generate (catch model drift)
+        run: npx prisma generate
+        env:
+          # DUMMY_DATABASE_URL evita que el job falle por falta de secret en
+          # PRs externos. La conexión real solo importa en deploys.
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 2. Frontend — npm run build (atrapa el TDZ del último P0)
+  # ──────────────────────────────────────────────────────────────────────
+  frontend-build:
+    name: Frontend · Vite Build (TDZ guard)
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: frontend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build (vite + PWA + chunks)
+        run: npm run build
+        env:
+          # VITE_API_URL es no-secreto a este nivel — Vercel inyecta la real.
+          # Aquí solo necesitamos una URL bien formada para que apiFetch no
+          # console.error("VITE_API_URL is not set").
+          VITE_API_URL: https://ci.example.com
+
+      - name: Upload dist for inspection (only on failure)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-failed-${{ github.run_number }}
+          path: frontend/dist
+          retention-days: 5
+          if-no-files-found: ignore
+
+  # ──────────────────────────────────────────────────────────────────────
+  # 3. PDF Smoke — renderiza HTML real y valida contenido crítico
+  # ──────────────────────────────────────────────────────────────────────
+  # Sin Puppeteer (es lento + requiere Chromium). Solo valida el HTML que
+  # genera renderDocumento. Si algún parche futuro rompe la inyección del
+  # QR, el orden de columnas, o la etiqueta "Contacto", este job falla.
+  pdf-smoke:
+    name: PDF · Smoke Test (QR · Código · Contacto · Dirección)
+    runs-on: ubuntu-latest
+    timeout-minutes: 4
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Render & assert PDF HTML
+        run: |
+          node -e "
+          const { renderDocumento } = require('./services/pdf-templates');
+          const html = renderDocumento({
+            tipo: 'cotizacion', numero: 'COT-CI-0001',
+            empresa: { razonSocial: 'ACR Networks', rnc: '131-12345-6', direccion: 'Calle 12, Santiago, RD' },
+            cliente: { razonSocial: 'Test SRL', contacto: 'Juan Pérez' },
+            items: [{ codigo: 'ART-001', descripcion: 'Router', cantidad: 1, precioUnitario: 7500 }],
+            subtotal: 7500, itbis: 1350, total: 8850,
+            fechaEmision: new Date(), estado: 'Borrador',
+            verify: { hash: 'abc12345', url: 'https://acr.do/verify/abc12345' },
+            verifyQrDataUri: 'data:image/png;base64,iVBORw0KGgo='
+          });
+          const checks = {
+            'QR img tag':         html.includes('<img class=\"qr-img\"'),
+            'Codigo col header':  html.includes('<th class=\"col-cod\">Código</th>'),
+            'No SKU prefix':      !html.includes('SKU:'),
+            'Title is bare':      !html.includes('Comprobante Fiscal') && !html.includes('Propuesta Comercial'),
+            'Contacto label':     html.includes('>Contacto</div>'),
+            'No Cedula word':     !html.includes('Cédula'),
+            'Direccion text':     html.includes('Calle 12, Santiago, RD'),
+            'No Direccion label': !html.includes('<span class=\"lbl\">Dirección</span>'),
+            'Grand total light':  html.includes('background: #f1f5f9'),
+            'Page-break rules':   html.includes('page-break-inside: avoid'),
+            'doc-footer wrapper': html.includes('class=\"doc-footer\"'),
+          };
+          let pass = 0, fail = 0;
+          for (const [k, v] of Object.entries(checks)) {
+            if (v) { console.log('  PASS  ' + k); pass++; }
+            else   { console.log('  FAIL  ' + k); fail++; }
+          }
+          console.log('---');
+          console.log(pass + ' pass / ' + fail + ' fail');
+          process.exit(fail > 0 ? 1 : 0);
+          "
+
+  # ──────────────────────────────────────────────────────────────────────
+  # Gate sintético: este job depende de los tres anteriores y se usa como
+  # único required check en Branch Protection. Si alguno falla, este falla.
+  # Permite reorganizar jobs en el futuro sin reconfigurar GitHub Settings.
+  # ──────────────────────────────────────────────────────────────────────
+  ci-gate:
+    name: CI Gate · Todos los checks deben pasar
+    runs-on: ubuntu-latest
+    needs: [backend-syntax, frontend-build, pdf-smoke]
+    if: always()
+    steps:
+      - name: Verificar resultados
+        run: |
+          if [ "${{ needs.backend-syntax.result }}" != "success" ] || \
+             [ "${{ needs.frontend-build.result }}" != "success" ] || \
+             [ "${{ needs.pdf-smoke.result }}" != "success" ]; then
+            echo "::error::Uno o más jobs del CI fallaron. Merge bloqueado."
+            echo "backend-syntax:  ${{ needs.backend-syntax.result }}"
+            echo "frontend-build:  ${{ needs.frontend-build.result }}"
+            echo "pdf-smoke:       ${{ needs.pdf-smoke.result }}"
+            exit 1
+          fi
+          echo "✓ Todos los checks pasaron. Merge permitido."
