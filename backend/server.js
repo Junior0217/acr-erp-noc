@@ -36,6 +36,15 @@ const { syncMikrotik } = require('./services/mikrotik');
 const createMiddlewares      = require('./shared/middlewares');
 const sharedSchemas          = require('./shared/schemas');
 const sharedHelpers          = require('./shared/helpers');
+// Infra extraida — Supabase storage helpers + CRON jobs nocturnos.
+const SUPA_INFRA = require('./shared/infra/supabase');
+const {
+  supabase, SUPABASE_BUCKET, INVENTORY_BUCKET,
+  KINDS_VALIDOS, KINDS_INVENTARIO, MIME_EXT,
+  esAssetUrlSegura, esUrlPublicaSegura, pathFromSupabaseUrl,
+  detectMimeFromBuffer, svgSeguro, comprimirImagen,
+} = SUPA_INFRA;
+const startCronJobs = require('./jobs/cron');
 const createAuthRouter       = require('./routes/auth');
 const createCrmRouter        = require('./routes/crm');
 const createInventarioRouter = require('./routes/inventario');
@@ -1075,90 +1084,6 @@ function vaultDecrypt(passwordEnc, passwordIv) {
 
 // ─── Supabase Storage + Validación URL whitelist (anti tracking-pixel) ──────
 
-const SUPABASE_URL    = process.env.SUPABASE_URL || ''
-const SUPABASE_KEY    = process.env.SUPABASE_SERVICE_ROLE_KEY || ''
-const SUPABASE_BUCKET = process.env.SUPABASE_BUCKET || 'empresa-assets'
-const supabase        = (SUPABASE_URL && SUPABASE_KEY)
-  ? createSupabaseClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } })
-  : null
-
-/**
- * Whitelist estricta: URLs en assets DEBEN pertenecer al Supabase configurado
- * o a paths locales (/logo-acr.png para defaults). Bloquea inyección de
- * tracking-pixels externos via URLs como https://attacker.com/x.png.
- */
-function esAssetUrlSegura(url) {
-  if (!url || typeof url !== 'string') return true               // null/'' permitido
-  if (url.startsWith('/'))             return true               // path relativo del propio frontend
-  if (url.startsWith('data:image/'))   return true               // data URI inline (preview)
-  if (!SUPABASE_URL)                   return false              // sin Supabase config = todo URL externo rechazado
-  // Acepta URLs que empiecen con SUPABASE_URL/storage/v1/object/...
-  const allowed = SUPABASE_URL.replace(/\/$/, '') + '/storage/v1/object/'
-  return url.startsWith(allowed)
-}
-
-// Mime detection real (no confiar en header del cliente)
-function detectMimeFromBuffer(buf) {
-  if (!buf || buf.length < 4) return null
-  // PNG: 89 50 4E 47
-  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'image/png'
-  // JPEG: FF D8 FF
-  if (buf[0] === 0xFF && buf[1] === 0xD8 && buf[2] === 0xFF) return 'image/jpeg'
-  // SVG: '<svg' o '<?xml' al inicio (con o sin BOM)
-  const head = buf.slice(0, 100).toString('utf8').trim()
-  if (head.startsWith('<svg') || head.startsWith('<?xml')) return 'image/svg+xml'
-  // GIF: GIF87a / GIF89a
-  if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return 'image/gif'
-  // WebP: RIFF....WEBP
-  if (buf[0] === 0x52 && buf[1] === 0x49 && buf[2] === 0x46 && buf[3] === 0x46
-      && buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50) return 'image/webp'
-  return null
-}
-
-// M6: SVG bloqueado por completo. Aunque sanitize-html podía filtrar, los
-// vectores XSS via SVG son demasiado ricos (xlink:href javascript:, <set>,
-// <animate onbegin=, <use href=data:>). Para logos corporativos PNG/WebP cubre
-// el 100% de casos prácticos sin la superficie de ataque.
-function svgSeguro(_buf) { return false }
-
-const MIME_EXT = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' }
-const KINDS_VALIDOS = ['logoClaro', 'logoOscuro', 'selloFisico', 'firmaGerente']
-
-// Extrae la ruta de Supabase Storage desde una URL pública.
-// Ej: https://xxx.supabase.co/storage/v1/object/public/empresa-assets/acr/logo-123.webp → 'acr/logo-123.webp'
-function pathFromSupabaseUrl(url) {
-  if (!url || typeof url !== 'string') return null
-  const marker = `/object/public/${SUPABASE_BUCKET}/`
-  const idx = url.indexOf(marker)
-  if (idx === -1) {
-    // También aceptar formato firmado /object/sign/<bucket>/...
-    const signMarker = `/object/sign/${SUPABASE_BUCKET}/`
-    const signIdx = url.indexOf(signMarker)
-    if (signIdx === -1) return null
-    return url.slice(signIdx + signMarker.length).split('?')[0]
-  }
-  return url.slice(idx + marker.length).split('?')[0]
-}
-
-// Comprime con sharp: resize 800x800 fit:inside (preserva aspect ratio), convierte a PNG.
-// PNG es lossless + universalmente compatible con pdfkit, Chromium print-to-PDF y editores.
-// WebP fue descartado: rompe pdfkit y editores legacy.
-// SVG pasa intacto (vector, no necesita compresión raster).
-async function comprimirImagen(buf, mime) {
-  if (mime === 'image/svg+xml') {
-    return { buffer: buf, mime: 'image/svg+xml', ext: 'svg' }
-  }
-  const out = await sharp(buf, { failOn: 'error' })
-    .rotate()                                // respeta EXIF orientation
-    .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
-    .png({ compressionLevel: 8, quality: 100, adaptiveFiltering: true, palette: false })
-    .toBuffer()
-  return { buffer: out, mime: 'image/png', ext: 'png' }
-}
-
-// uploadMulter + uploadLimiter ahora viven con los demás rate limiters globales
-// arriba (cerca de billingLimiter) para que endpoints anteriores los puedan usar.
-
 app.post(
   '/api/configuracion/empresa/upload',
   uploadLimiter,
@@ -1173,63 +1098,44 @@ app.post(
       if (!KINDS_VALIDOS.includes(kind)) {
         return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_VALIDOS.join(', ')}.` })
       }
-      // 1. Validación MIME real (header del archivo, no del cliente)
       const inputMime = detectMimeFromBuffer(req.file.buffer)
       if (!inputMime) return res.status(415).json({ error: 'Tipo de archivo no reconocido o corrupto.', code: 'INVALID_MIME' })
       if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
-
-      // 2. SVG: sanitizar contra XSS
       if (inputMime === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
         auditReq('empresa:upload_svg_malicioso', req, { kind, size: req.file.size })
-        return res.status(422).json({ error: 'SVG contiene contenido peligroso (script, eventos, foreignObject).', code: 'SVG_UNSAFE' })
+        return res.status(422).json({ error: 'SVG contiene contenido peligroso.', code: 'SVG_UNSAFE' })
       }
-
-      // 3. Comprimir con sharp (resize 800x800 + WebP). SVG pasa intacto.
       let buffer, finalMime, ext
       try {
         const compressed = await comprimirImagen(req.file.buffer, inputMime)
-        buffer    = compressed.buffer
-        finalMime = compressed.mime
-        ext       = compressed.ext
+        buffer = compressed.buffer; finalMime = compressed.mime; ext = compressed.ext
       } catch (e) {
         console.error('[SHARP COMPRESS]', e.message)
         return res.status(422).json({ error: 'Imagen corrupta o formato no procesable.', code: 'COMPRESS_FAIL' })
       }
-
       const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
       const path     = `acr/${filename}`
-
-      // Upload a Supabase Storage. NO se escribe en BD aquí — la URL se
-      // persiste sólo cuando el usuario envíe el form completo vía
-      // PATCH /api/configuracion/empresa (orphan cleanup vive en esa ruta).
       const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, buffer, {
-        contentType: finalMime,
-        cacheControl: '3600',
-        upsert: false,
+        contentType: finalMime, cacheControl: '3600', upsert: false,
       })
       if (upErr) {
         console.error('[UPLOAD ERROR]', upErr.message)
         return res.status(502).json({ error: `Error al subir: ${upErr.message}`, code: 'STORAGE_UPLOAD_FAIL' })
       }
-
       const { data: pub } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path)
       const publicUrl = pub?.publicUrl
       if (!publicUrl || !esAssetUrlSegura(publicUrl)) {
         return res.status(500).json({ error: 'URL pública generada inválida.', code: 'URL_INVALID' })
       }
-
       const ahorroPct = ((req.file.size - buffer.length) / req.file.size * 100)
       auditReq('empresa:upload', req, {
         kind, inputMime, finalMime,
         sizeOriginal: req.file.size, sizeComprimido: buffer.length,
-        ahorroPct: Number(ahorroPct.toFixed(1)),
-        url: publicUrl,
+        ahorroPct: Number(ahorroPct.toFixed(1)), url: publicUrl,
       })
-
       res.status(201).json({
         kind, url: publicUrl, mime: finalMime,
-        size: buffer.length,
-        sizeOriginal: req.file.size,
+        size: buffer.length, sizeOriginal: req.file.size,
         ahorroPct: Number(ahorroPct.toFixed(1)),
       })
     } catch (e) {
@@ -1239,13 +1145,6 @@ app.post(
     }
   }
 )
-
-// ─── Upload de imágenes de inventario (productos, categorías, items) ─────────
-// Reutiliza la misma pipeline de comprimirImagen + supabase storage. Bucket
-// SUPABASE_INVENTORY_BUCKET (default: inventario-img) — separado de empresa-assets
-// para tener cleanup independiente y políticas distintas.
-const INVENTORY_BUCKET = process.env.SUPABASE_INVENTORY_BUCKET ?? 'inventario-img'
-const KINDS_INVENTARIO = ['producto', 'categoria', 'itemCatalogo']
 
 app.post('/api/inventario/upload-image',
   uploadLimiter,
@@ -1304,23 +1203,6 @@ const urlUploadSchema = z.object({
   url:  z.string().url().max(2048),
   kind: z.enum(KINDS_INVENTARIO).default('producto'),
 })
-
-function esUrlPublicaSegura(u) {
-  try {
-    const url = new URL(u)
-    if (!/^https?:$/.test(url.protocol)) return false
-    const host = url.hostname.toLowerCase()
-    // Bloqueo SSRF básico: localhost / IPs privadas. No es bulletproof
-    // (DNS rebinding requeriría resolver y revalidar) pero cubre el 95%.
-    if (host === 'localhost' || host === '0.0.0.0') return false
-    if (/^127\./.test(host)) return false
-    if (/^10\./.test(host))  return false
-    if (/^192\.168\./.test(host)) return false
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return false
-    if (host.endsWith('.local')) return false
-    return true
-  } catch { return false }
-}
 
 app.post('/api/inventario/upload-url',
   uploadLimiter,
@@ -2215,187 +2097,6 @@ function formatProducto(p) { return { ...p, precio: Number(p.precio) }; }
 
 // ─── Reconciliación nocturna stock vs movimientos (sugerencia #2) ────────────
 // 03:00 AM RD: detecta drift entre Producto.stockActual y la suma neta de
-// MovimientoInventario (entradas - salidas). Registra en AuditCaja para que
-// el panel del owner muestre los productos que necesitan re-conteo físico.
-async function reconciliarStockNocturno() {
-  const t0 = Date.now()
-  try {
-    const drifts = await prisma.$queryRaw`
-      WITH movs AS (
-        SELECT "productoId",
-          SUM(CASE WHEN tipo = 'Entrada' THEN cantidad ELSE 0 END) AS entradas,
-          SUM(CASE WHEN tipo = 'Salida'  THEN cantidad ELSE 0 END) AS salidas
-        FROM "MovimientoInventario"
-        GROUP BY "productoId"
-      )
-      SELECT p.id, p.sku, p.nombre, p."stockActual" AS stock_actual,
-             COALESCE(m.entradas, 0) - COALESCE(m.salidas, 0) AS esperado,
-             p."stockActual" - (COALESCE(m.entradas, 0) - COALESCE(m.salidas, 0)) AS drift
-      FROM "Producto" p
-      LEFT JOIN movs m ON m."productoId" = p.id
-      WHERE p."tipoItem" = 'ARTICULO'
-        AND p."stockActual" <> COALESCE(m.entradas, 0) - COALESCE(m.salidas, 0)
-    `
-    for (const d of drifts) {
-      await prisma.auditCaja.create({ data: {
-        tipo:    'stock_reconciliation_drift',
-        detalle: `Producto ${d.sku} (${d.nombre}): stockActual=${d.stock_actual}, esperado=${d.esperado}, drift=${d.drift}`,
-      }}).catch(() => {})
-    }
-    console.log(`[STOCK RECON] ${drifts.length} drifts detectados en ${Date.now() - t0}ms.`)
-  } catch (e) {
-    console.error('[STOCK RECON]', e.message)
-  }
-}
-cron.schedule('0 3 * * *', reconciliarStockNocturno, { timezone: 'America/Santo_Domingo' })
-
-// ─── Anomalía descuentos por cajero (sugerencia #3) ──────────────────────────
-// 03:30 AM RD: calcula promedio + stddev global de descuentos en últimos 30
-// días. Cualquier cajero con avg > mean + 2σ se flagea para revisión.
-async function detectarAnomaliaDescuentos() {
-  const t0 = Date.now()
-  try {
-    const desde = new Date(Date.now() - 30 * 86_400_000)
-    const overall = await prisma.$queryRaw`
-      SELECT AVG("descPct") AS m, COALESCE(STDDEV("descPct"), 0) AS s
-      FROM "AuditCaja"
-      WHERE tipo IN ('descuento_pin','descuento_rechazado') AND "createdAt" >= ${desde}
-    `
-    const gMean = Number(overall[0]?.m ?? 0)
-    const gStd  = Number(overall[0]?.s ?? 0)
-    const threshold = gMean + 2 * gStd
-    if (threshold <= 0) {
-      console.log('[ANOMALIA DESC] sin datos suficientes (umbral=0).')
-      return
-    }
-    const rows = await prisma.$queryRaw`
-      SELECT a."empleadoId", COALESCE(e.nombre, 'desconocido') AS nombre,
-             COUNT(*)::int AS ventas, AVG(a."descPct") AS avg_desc,
-             MAX(a."descPct") AS max_desc
-      FROM "AuditCaja" a
-      LEFT JOIN "Empleado" e ON e.id = a."empleadoId"
-      WHERE a.tipo IN ('descuento_pin','descuento_rechazado')
-        AND a."createdAt" >= ${desde}
-        AND a."empleadoId" IS NOT NULL
-      GROUP BY a."empleadoId", e.nombre
-      HAVING COUNT(*) >= 5 AND AVG(a."descPct") > ${threshold}
-    `
-    for (const r of rows) {
-      await prisma.auditCaja.create({ data: {
-        tipo:       'anomalia_descuentos',
-        empleadoId: Number(r.empleadoId),
-        descPct:    Number(r.avg_desc),
-        detalle:    `Cajero ${r.nombre} avg descuento ${Number(r.avg_desc).toFixed(2)}% (umbral ${threshold.toFixed(2)}%) en ${r.ventas} ventas últimos 30 días. Max=${Number(r.max_desc).toFixed(2)}%.`,
-      }}).catch(() => {})
-    }
-    console.log(`[ANOMALIA DESC] ${rows.length} cajeros anómalos. Umbral 2σ=${threshold.toFixed(2)}%. Tiempo ${Date.now() - t0}ms.`)
-  } catch (e) {
-    console.error('[ANOMALIA DESC]', e.message)
-  }
-}
-cron.schedule('30 3 * * *', detectarAnomaliaDescuentos, { timezone: 'America/Santo_Domingo' })
-
-// ─── Alerta NCF vencimiento / agotamiento (sugerencia #5) ────────────────────
-// 04:00 AM RD: revisa ConfiguracionNCF y alerta cuando una secuencia tiene
-// < 100 NCF disponibles O vence en menos de 30 días. Owner ve en AuditCaja.
-async function alertaNCFVencimiento() {
-  const t0 = Date.now()
-  try {
-    const configs = await prisma.configuracionNCF.findMany({
-      where:  { activo: true },
-      select: { id: true, prefijo: true, tipoNcf: true, secuenciaActual: true, limite: true, vencimiento: true },
-    })
-    let alertas = 0
-    for (const c of configs) {
-      const restante = Number(c.limite) - Number(c.secuenciaActual)
-      const venceEnDias = c.vencimiento
-        ? Math.floor((new Date(c.vencimiento).getTime() - Date.now()) / 86_400_000)
-        : null
-      const lowStock  = restante < 100
-      const expiring  = venceEnDias !== null && venceEnDias < 30
-      if (lowStock || expiring) {
-        await prisma.auditCaja.create({ data: {
-          tipo:    'ncf_alerta',
-          detalle: `NCF ${c.tipoNcf} (${c.prefijo}): ${restante} secuencias restantes${venceEnDias !== null ? `, vence en ${venceEnDias} día(s)` : ''}. ${lowStock ? '[AGOTAMIENTO]' : ''} ${expiring ? '[VENCIMIENTO]' : ''}`.trim(),
-        }}).catch(() => {})
-        alertas++
-      }
-    }
-    console.log(`[NCF ALERTA] ${alertas}/${configs.length} secuencias en alerta. Tiempo ${Date.now() - t0}ms.`)
-  } catch (e) {
-    console.error('[NCF ALERTA]', e.message)
-  }
-}
-cron.schedule('0 4 * * *', alertaNCFVencimiento, { timezone: 'America/Santo_Domingo' })
-
-// ─── Auto-rotación recordatorio backup codes (sugerencia #4) ─────────────────
-// 04:30 AM RD: empleados con 2FA + ≤2 backup codes -> registra en auditoría
-// para que el owner les recuerde rotar. Frontend muestra banner via /api/auth/me.
-async function recordarRotacionBackupCodes() {
-  const t0 = Date.now()
-  try {
-    const empleados = await prisma.empleado.findMany({
-      where:  { twoFactorEnabled: true, deletedAt: null },
-      select: { id: true, nombre: true, email: true, backupCodes: true },
-    })
-    let recordatorios = 0
-    for (const emp of empleados) {
-      const count = Array.isArray(emp.backupCodes) ? emp.backupCodes.length : 0
-      if (count <= 2) {
-        await prisma.auditCaja.create({ data: {
-          tipo:       'backup_codes_low',
-          empleadoId: emp.id,
-          detalle:    `Empleado ${emp.nombre} (${emp.email}) tiene ${count} backup code(s) restantes. Recomendar rotación.`,
-        }}).catch(() => {})
-        recordatorios++
-      }
-    }
-    console.log(`[BACKUP CODES] ${recordatorios}/${empleados.length} empleados con códigos bajos. Tiempo ${Date.now() - t0}ms.`)
-  } catch (e) {
-    console.error('[BACKUP CODES]', e.message)
-  }
-}
-cron.schedule('30 4 * * *', recordarRotacionBackupCodes, { timezone: 'America/Santo_Domingo' })
-
-// ─── Expirar reservas de stock de OTs estancadas (TTL 7 días) ────────────────
-// Cada 30 min recorre ReservaInventario.ordenId con expiraEn < NOW. Si la OT
-// asociada sigue 'Pendiente', libera la reserva (marca liberada=true). Si la OT
-// avanzó a EnProceso/Cerrada/Cancelada, el flujo de estado ya las manejó —
-// solo liberamos las verdaderamente abandonadas.
-async function expirarReservasOTPendientes() {
-  const t0 = Date.now()
-  try {
-    const expiradas = await prisma.reservaInventario.findMany({
-      where: {
-        ordenId:  { not: null },
-        liberada: false,
-        expiraEn: { lt: new Date() },
-      },
-      include: { orden: { select: { id: true, noOT: true, estado: true } } },
-    })
-    let liberadas = 0
-    for (const r of expiradas) {
-      // Solo libera reservas de OTs aún Pendientes (sin movimiento).
-      if (r.orden?.estado === 'Pendiente') {
-        await prisma.reservaInventario.update({
-          where: { id: r.id },
-          data:  { liberada: true, motivo: `${r.motivo ?? ''} · TTL expirado ${new Date().toISOString().slice(0,10)}`.trim() },
-        }).catch(() => {})
-        liberadas++
-      }
-    }
-    if (liberadas > 0) {
-      console.log(`[OT TTL] ${liberadas}/${expiradas.length} reservas liberadas en ${Date.now() - t0}ms.`)
-      await prisma.auditCaja.create({ data: {
-        tipo: 'ot_reservas_ttl',
-        detalle: `${liberadas} reservas liberadas por TTL 7d sobre OTs en Pendiente.`,
-      }}).catch(() => {})
-    }
-  } catch (e) {
-    console.error('[OT TTL]', e.message)
-  }
-}
-cron.schedule('*/30 * * * *', expirarReservasOTPendientes, { timezone: 'America/Santo_Domingo' })
 
 
 // ─── Server ───────────────────────────────────────────────────────────────────
@@ -2915,6 +2616,10 @@ app.use('/api', createCrmRouter(_routerDeps));
 app.use('/api', createInventarioRouter(_routerDeps));
 app.use('/api', createVentasRouter(_routerDeps));
 app.use('/api', createAdminRouter(_routerDeps));
+
+// Arranca CRON jobs nocturnos (idempotente — solo registra una vez).
+// Vive en backend/jobs/cron.js · cierra sobre prisma inyectado.
+startCronJobs({ prisma });
 
 async function startServer() {
   try {

@@ -73,7 +73,7 @@ function createOrdenesRouter(deps) {
   const {
     validUUID, rejectBadId, sendErr, sendOk, validarCedulaRD,
     formatCliente, formatSuplidor, formatProspecto,
-    fmtPhone, fmtCedula, fmtRNC, getClientIp,
+    fmtPhone, fmtCedula, fmtRNC, getClientIp, reqFingerprint, computeDeviceHash, labelFromUA, bodyLimit,
     nullStr, optIdent, emptyStr, optCedulaRD,
   } = helpers;
   const {

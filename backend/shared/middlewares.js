@@ -204,6 +204,25 @@ function createMiddlewares(deps) {
     next();
   }
 
+  // Basic TOTP guard (no-op si user no tiene 2FA activo). Usado por endpoints
+  // destructivos (delete empleado, etc.) — más laxo que requerirTOTPEstricto del vault.
+  async function requerirTOTP(req, res, next) {
+    try {
+      const emp = await prisma.empleado.findUnique({
+        where: { id: req.user.sub },
+        select: { twoFactorEnabled: true, twoFactorSecret: true },
+      });
+      if (!emp?.twoFactorEnabled) return next();   // sin 2FA -> permite
+      const code = req.headers['x-totp'] || req.body?.totp;
+      if (!code) return res.status(403).json({ error: 'Esta acción destructiva requiere tu código TOTP de 2FA.' });
+      const secret = decryptTOTP(emp.twoFactorSecret);
+      if (!authenticator.verify({ token: String(code), secret })) {
+        return res.status(401).json({ error: 'Código TOTP inválido o expirado.' });
+      }
+      next();
+    } catch { next(); }
+  }
+
   return {
     NIVEL_PROPIETARIO_ABSOLUTO,
     verificarJWT,
@@ -212,6 +231,7 @@ function createMiddlewares(deps) {
     requerirNivel,
     esPropietarioAbsoluto,
     protegerPropietario,
+    requerirTOTP,
     requerirTOTPEstricto,
     vaultCooldownGuard,
     vaultLastReveal,

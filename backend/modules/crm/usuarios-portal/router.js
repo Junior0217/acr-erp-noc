@@ -1,7 +1,7 @@
 /**
- * backend/modules/ventas/ncf/router.js
+ * backend/modules/crm/usuarios-portal/router.js
  *
- * Auto-extraido de routes/ventas.js (Stage 4 split DDD).
+ * Auto-extraido de routes/crm.js (Stage 4 DDD split).
  * Factory recibe deps + helpers compartidos del modulo padre.
  */
 
@@ -45,7 +45,7 @@ function descripcionToRaw(value) {
   return null;
 }
 
-function createNcfRouter(deps) {
+function createUsuariosPortalRouter(deps) {
   const router = express.Router();
 
   const {
@@ -61,15 +61,15 @@ function createNcfRouter(deps) {
     esAssetUrlSegura, esUrlPublicaSegura, pathFromSupabaseUrl,
     signPortalToken, NIVEL_PROPIETARIO_ABSOLUTO, protegerPropietario,
     SECUENCIA_DEFAULTS,
-    nextNomenclatura, buildFacturaPDFBuffer,
   } = deps;
   const {
     verificarJWT, verificarPortalJWT, requerirPermiso, requerirNivel,
     esPropietarioAbsoluto, requerirTOTPEstricto, vaultCooldownGuard,
   } = middlewares;
   const {
-    passwordSchema, empleadoSchema, asistenciaSchema,
-    clienteSchema, suplidorSchema, prospectoSchema,
+    passwordSchema, empleadoSchema, empleadoUpdateSchema, asistenciaSchema,
+    clienteSchema, clienteUpdateSchema, suplidorSchema, suplidorUpdateSchema,
+    prospectoSchema, prospectoUpdateSchema,
   } = schemas;
   const {
     validUUID, rejectBadId, sendErr, sendOk, validarCedulaRD,
@@ -84,40 +84,69 @@ function createNcfRouter(deps) {
     verifyLimiter, empresaPublicLimiter, bulkPdfLimiter, pinVerifyLimiter,
   } = limiters;
 
-  // === ROUTES (extraidas del monolito) ==================================
-// ─── Configuración NCF ────────────────────────────────────────────────────────
+  // === ROUTES (extraidas del monolito) =================================
+// ─── Usuarios Portal (NOC Admin) ──────────────────────────────────────────────
 
-const ncfSchema = z.object({
-  prefijo:         z.string().min(1).max(3),
-  tipoNcf:         z.string().min(1),
-  tipoDescripcion: z.string().min(1),
-  secuenciaActual: z.number().int().min(0).default(0),
-  limite:          z.number().int().min(1).default(9999999),
-  vencimiento:     z.string().datetime().optional().nullable(),
-  activo:          z.boolean().default(true),
-})
-
-router.get('/ncf-config', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
+router.get('/usuarios-portal', verificarJWT, requerirPermiso('crm:ver'), async (req, res) => {
   try {
-    const configs = await prisma.configuracionNCF.findMany({ orderBy: { tipoNcf: 'asc' } })
-    res.json({ data: configs })
-  } catch { res.status(500).json({ error: 'Error interno.' }) }
-})
-
-router.post('/ncf-config', verificarJWT, requerirPermiso('sistema:admin'), async (req, res) => {
-  try {
-    const data = ncfSchema.parse(req.body)
-    const config = await prisma.configuracionNCF.upsert({
-      where:  { tipoNcf: data.tipoNcf },
-      create: { ...data, vencimiento: data.vencimiento ? new Date(data.vencimiento) : null },
-      update: { ...data, vencimiento: data.vencimiento ? new Date(data.vencimiento) : null },
-    })
-    res.json(config)
+    const { search, page = '1', limit = '50' } = req.query;
+    const take    = Math.min(Math.max(parseInt(limit) || 50, 1), 100);
+    const pageNum = Math.max(parseInt(page) || 1, 1);
+    const skip    = (pageNum - 1) * take;
+    const where   = {};
+    if (search) {
+      where.OR = [
+        { nombre:    { contains: search, mode: 'insensitive' } },
+        { email:     { contains: search, mode: 'insensitive' } },
+        { noUsuario: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+    const [usuarios, total] = await Promise.all([
+      prisma.usuarioPortal.findMany({
+        where,
+        select: {
+          id: true, noUsuario: true, nombre: true, email: true,
+          telefono: true, activo: true, clienteId: true, createdAt: true,
+          cliente: { select: { id: true, noCliente: true, razonSocial: true } },
+        },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take,
+      }),
+      prisma.usuarioPortal.count({ where }),
+    ]);
+    res.json({ data: usuarios, meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1) } });
   } catch (e) {
-    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
-    res.status(500).json({ error: 'Error interno.' })
+    console.error('[USUARIOS PORTAL]', e.message);
+    res.status(500).json({ error: 'Error interno.' });
   }
-})
+});
+
+router.post('/usuarios-portal/:id/vincular', verificarJWT, requerirPermiso('crm:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' });
+  const { clienteId } = req.body;
+  if (clienteId !== null && !validUUID(clienteId)) return res.status(400).json({ error: 'clienteId inválido.' });
+  try {
+    if (clienteId) {
+      const cliente = await prisma.cliente.findUnique({ where: { id: clienteId } });
+      if (!cliente) return res.status(404).json({ error: 'Cliente no encontrado.' });
+    }
+    const usuario = await prisma.usuarioPortal.update({
+      where:  { id: req.params.id },
+      data:   { clienteId: clienteId ?? null },
+      select: {
+        id: true, noUsuario: true, nombre: true, email: true, activo: true, clienteId: true,
+        cliente: { select: { id: true, noCliente: true, razonSocial: true } },
+      },
+    });
+    auditReq('portal:vincular', req, { usuarioId: req.params.id, clienteId });
+    res.json({ usuario });
+  } catch (e) {
+    if (e.code === 'P2025') return res.status(404).json({ error: 'Usuario portal no encontrado.' });
+    console.error('[VINCULAR PORTAL]', e.message);
+    res.status(500).json({ error: 'Error interno.' });
+  }
+});
 
 
 
@@ -125,4 +154,4 @@ router.post('/ncf-config', verificarJWT, requerirPermiso('sistema:admin'), async
   return router;
 }
 
-module.exports = createNcfRouter;
+module.exports = createUsuariosPortalRouter;
