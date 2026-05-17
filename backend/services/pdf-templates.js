@@ -520,14 +520,15 @@ html, body {
   border-radius: 4px;
   display: block;
 }
-.footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.4; max-width: 220px; }
-.footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; }
-/* Anti-OCR mobile: la URL textual se imprime en UNA SOLA linea fisica. El
-   hash crudo NO se imprime (era ruido visual que el OCR movil truncaba). El
-   <a> envolvente garantiza link clickable correcto y el QR funciona como
-   fallback tactil gigante (ver qr-anchor). */
-.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 8.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; max-width: 220px; font-weight: 600; }
-.footer .qr-block .qr-text .qr-url a { color: inherit; text-decoration: none; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.4; max-width: 360px; }
+.footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; margin-bottom: 1px; }
+/* URL imprime COMPLETA — se permite wrap en 2 líneas si hace falta. El user
+   debe poder TECLEAR la URL desde el PDF, así que cero ellipsis y cero
+   overflow:hidden. break-all garantiza que URLs largas (con hash en path) se
+   partan limpio en cualquier carácter. El <a> es display:block para que el
+   tap-target en móvil abarque todo el texto visible. */
+.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 8.5px; margin-top: 2px; max-width: 360px; font-weight: 600; word-break: break-all; line-height: 1.25; }
+.footer .qr-block .qr-text .qr-url a { color: inherit; text-decoration: none; display: block; word-break: break-all; }
 .footer .qr-block .qr-anchor { display: inline-block; line-height: 0; text-decoration: none; }
 .footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
 .footer .ctr .verify-line { margin-top: 2px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b; font-size: 7px; }
@@ -843,7 +844,7 @@ function renderDocumento(opts) {
         <div class="qr-ttl">Verificación Anti-Fraude</div>
         <div>Escanea el QR o toca la URL para validar.</div>
         ${verify?.url
-          ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escape(verify.url)}</a></div>`
+          ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit; display:block; word-break:break-all;">${escape(verify.url)}</a></div>`
           : ''}
       </div>
     </div>
