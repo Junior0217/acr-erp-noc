@@ -12,8 +12,9 @@ const createPosRouter          = require('./pos/router');
 const createCarritoRouter      = require('./carrito/router');
 const createOrdenesRouter      = require('./ordenes/router');
 const createTallerRouter       = require('./taller/router');
-const createNcfRouter          = require('./ncf/router');
 const createCatalogoRouter     = require('./catalogo/router');
+// ncf/ MIGRADO a admin/empresa/ncf/ (Fase 2.3) — config NCF es dominio empresa,
+// no ventas. El allocator atómico vive en shared/services/ncf.service.js.
 
 function createVentasRouter(deps) {
   const router = express.Router();
@@ -40,7 +41,6 @@ function createVentasRouter(deps) {
   router.use('/', createCarritoRouter(subDeps));
   router.use('/', createOrdenesRouter(subDeps));
   router.use('/', createTallerRouter(subDeps));
-  router.use('/', createNcfRouter(subDeps));
   router.use('/', createCatalogoRouter(subDeps));
 
   // Misc: health detallado (legacy, sin sub-dominio claro)

@@ -41,6 +41,7 @@ const { wrapJWT, unwrapJWT, encryptTOTP, decryptTOTP, PORTAL_JWT_SECRET }
 const createAuditService      = require('./shared/services/audit.service');
 const createSequencesService  = require('./shared/services/sequences.service');
 const createVerifyHashService = require('./shared/services/verify-hash.service');
+const createNcfService        = require('./shared/services/ncf.service');
 // Helpers + Schemas destructurados al scope global para que los handlers legacy
 // inline que aún viven en server.js sigan funcionando sin tocarlos uno por uno.
 // A medida que cada handler migre a routes/*.js, esta lista se irá vaciando.
@@ -167,6 +168,7 @@ const prisma = prismaBase.$extends({
 // $extends arriba: solo prisma.auditLog.create + $executeRaw (retención) escriben.
 const { _canonicalizarLog, appendAuditLog, auditReq } = createAuditService({ prisma });
 const { SECUENCIA_DEFAULTS, generarSiguienteCodigo }  = createSequencesService({ prisma });
+const _ncfService = createNcfService({ prisma });
 const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
   = createVerifyHashService({ prisma });
 
@@ -914,6 +916,10 @@ const _routerDeps = {
   IDLE_TTL_MS,
   generarSiguienteCodigo,
   pdfModule:        _pdfModule,
+  // NCF DGII allocator centralizado (Fase 2.3). El config admin
+  // (modules/admin/empresa/ncf/) lo consume; facturas/notas también lo
+  // consumen. CERO acceso directo a prisma.configuracionNCF desde routers.
+  ncfService:       _ncfService,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,
