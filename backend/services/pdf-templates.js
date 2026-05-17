@@ -522,8 +522,16 @@ html, body {
 }
 .footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.4; max-width: 220px; }
 .footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; }
-.footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 6.5px; word-break: break-all; margin-top: 1px; }
-.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 7px; word-break: break-all; margin-top: 1px; }
+/* Anti-OCR mobile: URL/HASH se imprimen en UNA SOLA línea física. Los visores
+   móviles (WhatsApp PDF preview, Chrome móvil) hacen OCR del texto visual y,
+   si la URL salta de línea, truncan el link visible — el lector tap-tappea y
+   aterriza en un dominio incompleto. nowrap + ellipsis garantiza una línea
+   completa: el <a> sigue funcionando como link clickable correcto, y el QR
+   se queda como fallback táctil gigante (ver `<a class="qr-anchor">`). */
+.footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; max-width: 220px; }
+.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; max-width: 220px; }
+.footer .qr-block .qr-text .qr-url a { color: inherit; text-decoration: none; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.footer .qr-block .qr-anchor { display: inline-block; line-height: 0; text-decoration: none; }
 .footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
 .footer .ctr .verify-line { margin-top: 2px; font-weight: 500; text-transform: none; letter-spacing: 0; color: #64748b; font-size: 7px; }
 .footer .ctr .verify-line .lbl { color: #94a3b8; }
@@ -561,14 +569,34 @@ html, body {
 .watermark.cotizacion {
   color: #1e40af; opacity: 0.045; font-size: 110px;
 }
+.watermark.notacredito {
+  color: #b91c1c; opacity: 0.065; font-size: 110px;
+}
+
+/* ───── Nota de Crédito — banda informativa "Modifica al Comprobante:" ─────
+   Va inmediatamente debajo del bloque cliente. Rojo tenue para señalar la
+   naturaleza correctiva del documento (vs azul corporativo de factura
+   normal). Sin gritar: alta jerarquía sin saturar tinta. */
+.nc-ref-bar {
+  margin-top: 12px;
+  padding: 9px 14px;
+  background: #fef2f2;
+  border: 1px solid #fecaca; border-left: 4px solid #b91c1c;
+  border-radius: 4px;
+  display: grid; grid-template-columns: auto 1fr; column-gap: 14px; row-gap: 3px;
+  align-items: baseline;
+}
+.nc-ref-bar .lbl { font-size: 8.5px; font-weight: 800; color: #7f1d1d; text-transform: uppercase; letter-spacing: 0.12em; }
+.nc-ref-bar .val { font-size: 11px; font-weight: 700; color: #0f172a; font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; letter-spacing: 0.02em; }
+.nc-ref-bar .val.motivo { font-family: inherit; font-weight: 500; color: #334155; font-size: 10px; }
 `
 
 function renderDocumento(opts) {
   const {
-    tipo,            // 'cotizacion' | 'factura'
+    tipo,            // 'cotizacion' | 'factura' | 'nota-credito'
     numero,          // string ej. 'COT-2026-0512-001'
     ncf,             // factura NCF (opt)
-    tipoNcf,         // 'B01' / 'B02' / etc.
+    tipoNcf,         // 'B01' / 'B02' / 'B04' (NC) ...
     tipoComposicion, // 'Artículos' | 'Servicio' | 'Mixto' — calculado en buildPdfData
     empresa,         // EmpresaPerfil row (NO defaults: si falta algo, oculta esa sección)
     cliente,         // { razonSocial, rnc, direccion, sector, provincia, telefono, email }
@@ -583,10 +611,15 @@ function renderDocumento(opts) {
     condiciones,     // { validez, pago, entrega, garantia }
     verify,          // { hash, url } o null si PUBLIC_FRONTEND_URL no está seteado
     verifyQrDataUri, // QR pre-renderizado por el backend (data:image/png;base64,...)
+    // ── Datos exclusivos Nota de Crédito (DGII B04) ─────────────────────────
+    esNotaCredito,
+    facturaOrigen,     // { noFactura, ncf, tipoNcf } | null
+    motivoNotaCredito, // string | null
   } = opts
 
-  const isFactura = tipo === 'factura'
-  const tipoLabel = isFactura ? 'Factura' : 'Cotización'
+  const isNotaCredito = tipo === 'nota-credito' || !!esNotaCredito
+  const isFactura     = tipo === 'factura' && !isNotaCredito
+  const tipoLabel     = isNotaCredito ? 'Nota de Crédito' : (isFactura ? 'Factura' : 'Cotización')
 
   const emp = empresa ?? {}
   const assets = emp.assets ?? {}
@@ -594,9 +627,11 @@ function renderDocumento(opts) {
   const direccionEmp = buildDireccion([emp.direccion, emp.sector, emp.provincia])
   const direccionCli = buildDireccion([cliente?.direccion, cliente?.sector, cliente?.provincia])
 
-  const watermark = estado === 'Anulada'
-    ? '<div class="watermark">Anulada</div>'
-    : (!isFactura ? '<div class="watermark cotizacion">Cotización</div>' : '')
+  const watermark = isNotaCredito
+    ? '<div class="watermark notacredito">Nota de Crédito</div>'
+    : estado === 'Anulada'
+      ? '<div class="watermark">Anulada</div>'
+      : (!isFactura ? '<div class="watermark cotizacion">Cotización</div>' : '')
 
   const itemsRows = (items ?? []).map((it, idx) => {
     const importe = Number(it.cantidad) * Number(it.precioUnitario)
@@ -705,6 +740,13 @@ function renderDocumento(opts) {
       </div>
     </div>
 
+    ${isNotaCredito ? `
+    <div class="nc-ref-bar">
+      <div class="lbl">Modifica al Comprobante</div>
+      <div class="val">${escape(facturaOrigen?.ncf || facturaOrigen?.noFactura || '—')}${facturaOrigen?.noFactura && facturaOrigen?.ncf ? ` · ${escape(facturaOrigen.noFactura)}` : ''}</div>
+      ${motivoNotaCredito ? `<div class="lbl">Motivo</div><div class="val motivo">${escape(motivoNotaCredito)}</div>` : ''}
+    </div>` : ''}
+
     <div style="margin-top:16px;" class="section-label">Detalle de productos y servicios</div>
     <table class="items">
       <thead>
@@ -772,14 +814,14 @@ function renderDocumento(opts) {
   <footer class="footer">
     <div class="qr-block">
       ${verify?.url
-        ? `<a href="${escape(verify.url)}" style="text-decoration:none; line-height:0; display:inline-block;"><img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/></a>`
+        ? `<a class="qr-anchor" href="${escape(verify.url)}"><img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/></a>`
         : `<img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/>`}
       <div class="qr-text">
         <div class="qr-ttl">Verificación Anti-Fraude</div>
         <div>Escanea o visita la URL para validar.</div>
-        <div class="qr-hash">${escape(verify?.hash || '—')}</div>
+        <div class="qr-hash" title="${escape(verify?.hash || '')}">${escape(verify?.hash || '—')}</div>
         ${verify?.url
-          ? `<div class="qr-url"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit;">${escape(verify.url)}</a></div>`
+          ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}">${escape(verify.url)}</a></div>`
           : `<div class="qr-url">—</div>`}
       </div>
     </div>

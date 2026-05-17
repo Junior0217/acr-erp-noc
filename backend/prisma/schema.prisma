@@ -658,6 +658,20 @@ model Factura {
   noFactura         String         @unique
   clienteId         String
   ordenId           String?
+  // ─── Nota de Crédito DGII B04 ────────────────────────────────────────────
+  // facturaOrigenId: self-relation. Cuando esta fila ES una nota de crédito,
+  // apunta a la Factura que está modificando (la "factura origen"). El PDF
+  // imprime "Modifica al Comprobante: <NCF origen>" debajo del cliente, y la
+  // factura origen queda con estado=Anulada (full reversal). Permitimos N
+  // notasCredito por factura origen (DGII admite notas parciales) — no es
+  // unique a propósito.
+  facturaOrigenId   String?
+  facturaOrigen     Factura?       @relation("NotaCreditoOrigen", fields: [facturaOrigenId], references: [id], onDelete: SetNull)
+  notasCredito      Factura[]      @relation("NotaCreditoOrigen")
+  esNotaCredito     Boolean        @default(false)
+  // Motivo libre exigido al emitir la NC (mínimo 10 chars en backend).
+  // Va impreso en el PDF B04 como "Motivo: ..." debajo del NCF origen.
+  motivoNotaCredito String?
   estado            EstadoFactura  @default(Borrador)
   subtotal          Decimal        @db.Decimal(12, 2)
   itbis             Decimal        @default(0) @db.Decimal(12, 2)
@@ -725,6 +739,8 @@ model Factura {
   @@index([clienteId, estado])
   @@index([clienteId, fechaEmision])
   @@index([estado, fechaEmision])
+  @@index([facturaOrigenId])
+  @@index([esNotaCredito])
 }
 
 model LineaFactura {

@@ -4,6 +4,7 @@ import {
   Loader2, RefreshCw, DollarSign, Plus, Trash2, X,
   Search, Receipt, Printer, FileText, Download, FileArchive,
   CheckSquare, Square, Eye, User, Hash, Calendar, Edit3, Save,
+  Ban, ShieldAlert, Lock,
 } from 'lucide-react'
 import { apiFetch } from '@shared/utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '@shared/utils/pdf'
@@ -795,6 +796,7 @@ export default function PanelFacturas({ highlightId = null }) {
           onPreviewPDF={previewPDF}
           downloadingId={downloadingId}
           onCondicionesGuardadas={() => fetchFacturas()}
+          onNotaCreditoEmitida={(nc) => { fetchFacturas(); if (nc?.id) previewPDF(nc) }}
         />
       )}
     </div>
@@ -803,9 +805,11 @@ export default function PanelFacturas({ highlightId = null }) {
 
 // ─── FacturaDetailsModal: slide-over con detalle + edición de condiciones ────
 
-function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, canEdit, onPreviewPDF, downloadingId, onCondicionesGuardadas }) {
+function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, canEdit, onPreviewPDF, downloadingId, onCondicionesGuardadas, onNotaCreditoEmitida }) {
   const [full, setFull] = useState(null)
   const [loading, setLoading] = useState(true)
+  // NC modal: visible cuando el usuario presiona "Anular con Nota de Crédito"
+  const [ncOpen, setNcOpen] = useState(false)
   // Edición de condiciones comerciales (override del default empresa).
   // Shape interno: { k: { incluir: bool, texto: string } }. Soporta lectura legacy (string).
   const [editCond, setEditCond] = useState(false)
@@ -1015,7 +1019,7 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
         </div>
 
         {/* Footer actions */}
-        <div className="flex items-center gap-2 px-5 py-3 border-t border-slate-800 bg-slate-900/60 flex-shrink-0">
+        <div className="flex flex-wrap items-center gap-2 px-5 py-3 border-t border-slate-800 bg-slate-900/60 flex-shrink-0">
           {canEdit && factura.estado === 'Emitida' && (
             <>
               <button onClick={() => onActualizarEstado(factura, 'Pagada')} disabled={updating === factura.id}
@@ -1028,10 +1032,127 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
               </button>
             </>
           )}
+          {/* Nota de Crédito (DGII B04): solo facturas reales Emitida/Pagada no-NC. */}
+          {canEdit && !factura.esCotizacion && !factura.esNotaCredito && (factura.estado === 'Emitida' || factura.estado === 'Pagada') && (
+            <button onClick={() => setNcOpen(true)} disabled={updating === factura.id}
+              title="Emitir Nota de Crédito DGII B04 que anula esta factura."
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all disabled:opacity-40 shadow-md shadow-red-600/30">
+              <Ban size={12} /> Anular con Nota de Crédito
+            </button>
+          )}
           <button onClick={() => onPreviewPDF(factura)} disabled={downloadingId === factura.id}
             className="ml-auto flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors disabled:opacity-40 shadow-md shadow-blue-600/20">
             {downloadingId === factura.id ? <Loader2 size={12} className="animate-spin" /> : <Eye size={12} />}
             Ver / Imprimir PDF
+          </button>
+        </div>
+      </div>
+
+      {ncOpen && (
+        <ModalNotaCredito
+          factura={factura}
+          onClose={() => setNcOpen(false)}
+          onSuccess={(nc) => {
+            setNcOpen(false)
+            onClose()
+            onNotaCreditoEmitida?.(nc)
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+// ─── ModalNotaCredito: motivo + PIN supervisor → POST /api/facturas/:id/nota-credito ──
+function ModalNotaCredito({ factura, onClose, onSuccess }) {
+  const [motivo, setMotivo] = useState('')
+  const [pin, setPin] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    const h = e => { if (e.key === 'Escape' && !busy) onClose() }
+    window.addEventListener('keydown', h)
+    return () => window.removeEventListener('keydown', h)
+  }, [busy, onClose])
+
+  async function emitir() {
+    setError('')
+    if (motivo.trim().length < 10) { setError('El motivo debe tener al menos 10 caracteres.'); return }
+    if (!/^\d{4,8}$/.test(pin))    { setError('PIN inválido (4-8 dígitos numéricos).'); return }
+    setBusy(true)
+    try {
+      const r = await apiFetch(`/api/facturas/${factura.id}/nota-credito`, {
+        method: 'POST',
+        body:   JSON.stringify({ motivo: motivo.trim(), pinSupervisor: pin }),
+      })
+      const j = await r.json().catch(() => ({}))
+      if (!r.ok) { setError(j.error ?? 'No se pudo emitir la Nota de Crédito.'); return }
+      toast.success(`Nota de Crédito ${j.notaCredito?.ncf ?? ''} emitida. Factura origen ANULADA.`)
+      onSuccess?.(j.notaCredito)
+    } catch {
+      setError('Error de conexión.')
+    } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => !busy && onClose()} />
+      <div className="relative w-full max-w-md bg-slate-950 border border-red-700/40 rounded-2xl shadow-2xl shadow-red-900/50 overflow-hidden">
+        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-slate-800 bg-gradient-to-r from-red-950/60 to-slate-900">
+          <div className="w-10 h-10 rounded-lg bg-red-600/15 border border-red-600/30 flex items-center justify-center flex-shrink-0">
+            <ShieldAlert size={18} className="text-red-400" />
+          </div>
+          <div className="min-w-0">
+            <p className="text-sm font-bold text-slate-100">Anular con Nota de Crédito</p>
+            <p className="text-[11px] text-slate-500 font-mono truncate">DGII B04 · {factura.noFactura}{factura.ncf ? ` · NCF ${factura.ncf}` : ''}</p>
+          </div>
+          <button onClick={onClose} disabled={busy}
+            className="ml-auto p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 transition-colors disabled:opacity-40">
+            <X size={16} />
+          </button>
+        </div>
+
+        <div className="px-5 py-4 space-y-3">
+          <div className="px-3 py-2 rounded-lg bg-red-900/20 border border-red-700/30 text-[11px] text-red-300 leading-relaxed">
+            <span className="font-bold uppercase tracking-wider">Acción irreversible:</span> esta operación generará un comprobante <strong>B04</strong>, dejará la factura origen en estado <strong>Anulada</strong> y restaurará el stock al inventario si la factura ya estaba <em>Pagada</em>.
+          </div>
+
+          <div>
+            <label className={LABEL}>Motivo de la Nota de Crédito <span className="text-red-400">*</span></label>
+            <textarea value={motivo} onChange={e => setMotivo(e.target.value)} disabled={busy}
+              maxLength={500} rows={3}
+              placeholder="Ej: Devolución por equipo defectuoso, error en facturación de cantidad, etc."
+              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/30 transition-colors resize-none" />
+            <p className="text-[10px] text-slate-600 mt-0.5 font-mono">{motivo.length}/500 — mínimo 10 caracteres</p>
+          </div>
+
+          <div>
+            <label className={LABEL}>PIN de Supervisor <span className="text-red-400">*</span></label>
+            <div className="relative">
+              <Lock size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
+              <input type="password" inputMode="numeric" maxLength={8}
+                value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} disabled={busy}
+                placeholder="••••"
+                className="w-full pl-9 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 font-mono tracking-widest placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/30 transition-colors" />
+            </div>
+            <p className="text-[10px] text-slate-600 mt-0.5">Configurado en Configuración &gt; Empresa &gt; PIN Supervisor.</p>
+          </div>
+
+          {error && (
+            <div className="px-3 py-2 rounded-lg bg-red-900/30 border border-red-600/40 text-xs text-red-300">{error}</div>
+          )}
+        </div>
+
+        <div className="flex items-center justify-end gap-2 px-5 py-3 border-t border-slate-800 bg-slate-900/60">
+          <button onClick={onClose} disabled={busy}
+            className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors disabled:opacity-40">
+            Cancelar
+          </button>
+          <button onClick={emitir} disabled={busy || motivo.trim().length < 10 || !/^\d{4,8}$/.test(pin)}
+            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors disabled:opacity-40 shadow-md shadow-red-600/30">
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}
+            Emitir Nota de Crédito
           </button>
         </div>
       </div>

@@ -3515,6 +3515,13 @@ async function buildPdfData(facturaOrCotizacion) {
     estado:       f.estado,
     notas:        f.notas,
     condiciones:  mergeCondiciones(empresa, f),
+    // Datos exclusivos de Nota de Crédito (DGII B04). El template los usa para
+    // pintar el badge "NOTA DE CRÉDITO" + la línea "Modifica al Comprobante:".
+    esNotaCredito:     !!f.esNotaCredito,
+    facturaOrigen:     f.facturaOrigen
+      ? { noFactura: f.facturaOrigen.noFactura, ncf: f.facturaOrigen.ncf, tipoNcf: f.facturaOrigen.tipoNcf }
+      : null,
+    motivoNotaCredito: f.motivoNotaCredito ?? null,
     verify: { hash: verifyHashFinal, url: verifyUrl },
     // QR pre-renderizado como data:image/png;base64 — SIEMPRE generado. El
     // destinatario escanea con cualquier cámara y aterriza en /verify/:hash.
@@ -3616,14 +3623,16 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
     const fact = await prisma.factura.findUnique({
       where:   { id: req.params.id },
       include: {
-        cliente: true,
-        lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
+        cliente:       true,
+        lineas:        { include: { producto: { select: { sku: true, nombre: true } } } },
+        facturaOrigen: { select: { noFactura: true, ncf: true, tipoNcf: true } },
       },
     })
     if (!fact) return res.status(404).json({ error: 'Factura no encontrada.' })
 
     const data = await buildPdfData(fact)
-    const html = renderPdfDoc({ tipo: 'factura', numero: fact.noFactura, ...data })
+    const tipoDoc = fact.esNotaCredito ? 'nota-credito' : 'factura'
+    const html = renderPdfDoc({ tipo: tipoDoc, numero: fact.noFactura, ...data })
     const pdfBuf = await generarPdfDocumento(html)
 
     setImmediate(async () => {
@@ -3632,7 +3641,7 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
     })
 
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="factura-${fact.noFactura}.pdf"`)
+    res.setHeader('Content-Disposition', `inline; filename="${fact.esNotaCredito ? 'nota-credito' : 'factura'}-${fact.noFactura}.pdf"`)
     res.setHeader('Content-Length', pdfBuf.length)
     auditReq('pdf:factura', req, { id: fact.id, noFactura: fact.noFactura, ncf: fact.ncf })
     res.end(pdfBuf)
@@ -3661,15 +3670,18 @@ async function generarPdfDeFactura(id, tipo) {
   const f = await prisma.factura.findUnique({
     where: { id },
     include: {
-      cliente: true,
-      lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
+      cliente:       true,
+      lineas:        { include: { producto: { select: { sku: true, nombre: true } } } },
+      facturaOrigen: { select: { noFactura: true, ncf: true, tipoNcf: true } },
     },
   })
   if (!f || f.deletedAt) return null
   if (tipo === 'cotizacion' && !f.esCotizacion) return null
   if (tipo === 'factura'    && f.esCotizacion)  return null
   const data = await buildPdfData(f)
-  const html = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
+  // Si la factura ES nota de crédito, fuerza la variante 'nota-credito' en el render.
+  const tipoFinal = (tipo === 'factura' && f.esNotaCredito) ? 'nota-credito' : tipo
+  const html = renderPdfDoc({ tipo: tipoFinal, numero: f.noFactura, ...data })
   const buf  = await generarPdfDocumento(html)
   return { buf, noFactura: f.noFactura }
 }
@@ -7026,13 +7038,17 @@ async function nextNomenclatura(tx, tipo) {
 // y reciben códigos distintos (no race). Defaults se aplican si la entidad no
 // existe aún en secuenciasConfig — un INSERT diferido no hace falta.
 const SECUENCIA_DEFAULTS = {
-  factura:    { prefijo: 'FAC', actual: 0, padding: 6 },
-  cotizacion: { prefijo: 'COT', actual: 0, padding: 6 },
-  producto:   { prefijo: 'ART', actual: 0, padding: 6 },
-  servicio:   { prefijo: 'SVC', actual: 0, padding: 6 },
-  cliente:    { prefijo: 'CLI', actual: 0, padding: 6 },
-  rma:        { prefijo: 'RMA', actual: 0, padding: 5 },
-  plan:       { prefijo: 'PLN', actual: 0, padding: 6 },
+  factura:     { prefijo: 'FAC', actual: 0, padding: 6 },
+  cotizacion:  { prefijo: 'COT', actual: 0, padding: 6 },
+  producto:    { prefijo: 'ART', actual: 0, padding: 6 },
+  servicio:    { prefijo: 'SVC', actual: 0, padding: 6 },
+  cliente:     { prefijo: 'CLI', actual: 0, padding: 6 },
+  rma:         { prefijo: 'RMA', actual: 0, padding: 5 },
+  plan:        { prefijo: 'PLN', actual: 0, padding: 6 },
+  // Secuenciador interno para el "noFactura" de Notas de Crédito (NC-000001).
+  // El NCF B04 sigue su PROPIA secuencia DGII en ConfiguracionNCF — son
+  // numeradores independientes (no confundir interno vs fiscal).
+  notaCredito: { prefijo: 'NC',  actual: 0, padding: 6 },
 }
 
 async function generarSiguienteCodigo(entidad, tx) {
@@ -8356,6 +8372,173 @@ app.post('/api/facturas/:id/revertir', verificarJWT, billingLimiter, requerirPer
   }
 })
 
+// ─── Notas de Crédito (DGII B04) ──────────────────────────────────────────────
+// Emite una Nota de Crédito que ANULA por completo una factura origen y revierte
+// su impacto (stock + estado). El documento resultante es una Factura con:
+//   - esNotaCredito = true
+//   - facturaOrigenId apuntando a la factura modificada
+//   - ncf  = secuencia DGII B04 (auto-upsert si la fila ConfiguracionNCF no existe)
+//   - noFactura = secuencia interna 'NC-000001' vía generarSiguienteCodigo('notaCredito')
+//   - subtotal/itbis/total como NEGATIVOS conceptuales (almacenamos positivos pero
+//     el PDF imprime "Nota de Crédito" y la factura origen queda Anulada).
+//
+// Autorización:
+//   - Permiso 'factura:anular' o 'sistema:owner'.
+//   - pinSupervisor (EmpresaPerfil.pinSupervisor) obligatorio en body.
+//   - motivo mínimo 10 caracteres (queda en motivoNotaCredito + AuditCaja).
+//
+// El stock se RESTAURA solo si la factura origen estaba en 'Pagada' (mismo
+// criterio que /revertir): si estaba Emitida, el stock nunca salió.
+const notaCreditoSchema = z.object({
+  motivo:        z.string().min(10, 'Motivo de mínimo 10 caracteres.').max(500),
+  pinSupervisor: z.string().min(4).max(8).regex(/^\d+$/, 'PIN solo dígitos.'),
+})
+
+app.post('/api/facturas/:id/nota-credito', verificarJWT, billingLimiter, async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    const puedeAnular = permisos.includes('sistema:owner') || permisos.includes('factura:anular')
+    if (!puedeAnular) {
+      auditReq('nc:denied_perm', req, { facturaId: req.params.id })
+      return res.status(403).json({ error: 'Emitir Nota de Crédito requiere permiso "factura:anular".', code: 'NC_PERMISSION' })
+    }
+
+    const parsed = notaCreditoSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' })
+    }
+    const { motivo, pinSupervisor } = parsed.data
+
+    const empCfg = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true } })
+    const pinReal = empCfg?.pinSupervisor ?? '1234'
+    if (pinSupervisor !== pinReal) {
+      auditReq('nc:pin_fail', req, { facturaId: req.params.id })
+      return res.status(401).json({ error: 'PIN de supervisor inválido.', code: 'NC_PIN_INVALID' })
+    }
+
+    const origen = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      include: { lineas: { include: { producto: { select: { id: true, tipoItem: true } } } } },
+    })
+    if (!origen)                         return res.status(404).json({ error: 'Factura origen no encontrada.' })
+    if (origen.esCotizacion)             return res.status(409).json({ error: 'No se puede emitir NC sobre una cotización.' })
+    if (origen.esNotaCredito)            return res.status(409).json({ error: 'No se puede emitir NC sobre otra Nota de Crédito.' })
+    if (origen.estado === 'Anulada')     return res.status(409).json({ error: 'La factura origen ya está Anulada.' })
+    if (origen.estado === 'Borrador')    return res.status(409).json({ error: 'La factura origen aún está en Borrador, no requiere NC.' })
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      // 1. Secuencia NCF B04 — atomic upsert + increment.
+      //    Si la fila no existe, la creamos con prefijo B04 / límite 99,999,999.
+      await tx.$executeRaw`
+        INSERT INTO "ConfiguracionNCF" ("prefijo", "tipoNcf", "tipoDescripcion", "secuenciaActual", "limite", "activo", "createdAt", "updatedAt")
+        VALUES ('B04', 'Nota de Crédito', 'Notas de Crédito (DGII B04)', 0, 99999999, true, NOW(), NOW())
+        ON CONFLICT ("tipoNcf") DO NOTHING
+      `
+      const rows = await tx.$queryRaw`
+        UPDATE "ConfiguracionNCF"
+        SET    "secuenciaActual" = "secuenciaActual" + 1
+        WHERE  "tipoNcf"         = 'Nota de Crédito'
+          AND  "activo"          = true
+          AND  "secuenciaActual" < "limite"
+        RETURNING *
+      `
+      if (!rows || rows.length === 0) {
+        throw Object.assign(new Error('Secuencia NCF B04 agotada o inactiva. Revisa Configuración > Secuencias NCF.'), { status: 422 })
+      }
+      const seq        = String(rows[0].secuenciaActual).padStart(8, '0')
+      const ncfNC      = `${rows[0].prefijo}${seq}`
+      const noFacturaNC = await generarSiguienteCodigo('notaCredito', tx)
+
+      // 2. Restaurar stock SOLO si la origen estaba Pagada (la salida había ocurrido).
+      let stockRestaurado = 0
+      if (origen.estado === 'Pagada') {
+        for (const l of origen.lineas) {
+          if (l.productoId && l.producto?.tipoItem !== 'SERVICIO' && Number(l.cantidad) > 0) {
+            await tx.producto.update({ where: { id: l.productoId }, data: { stockActual: { increment: l.cantidad } } })
+            await tx.movimientoInventario.create({ data: { productoId: l.productoId, tipo: 'Entrada', cantidad: l.cantidad } })
+            stockRestaurado++
+          }
+        }
+      }
+
+      // 3. Crear la Nota de Crédito como Factura(esNotaCredito=true).
+      //    Copia las mismas líneas de la origen (totales idénticos en magnitud).
+      //    El estado inicial es 'Emitida' — no requiere flujo de cobro.
+      const nc = await tx.factura.create({
+        data: {
+          noFactura:         noFacturaNC,
+          clienteId:         origen.clienteId,
+          ordenId:           origen.ordenId,
+          empleadoId:        req.user?.sub ?? null,
+          estado:            'Emitida',
+          subtotal:          origen.subtotal,
+          itbis:             origen.itbis,
+          total:             origen.total,
+          ncf:               ncfNC,
+          tipoNcf:           'Nota de Crédito',
+          fechaEmision:      new Date(),
+          fechaVence:        null,
+          esNotaCredito:     true,
+          facturaOrigenId:   origen.id,
+          motivoNotaCredito: motivo,
+          notas:             `Anula a ${origen.noFactura}${origen.ncf ? ` (NCF ${origen.ncf})` : ''}. Motivo: ${motivo}`,
+          lineas: {
+            create: origen.lineas.map(l => ({
+              productoId:          l.productoId ?? null,
+              descripcion:         l.descripcion,
+              cantidad:            l.cantidad,
+              precioUnitario:      l.precioUnitario,
+              descuentoPorcentaje: l.descuentoPorcentaje,
+              descuentoMonto:      l.descuentoMonto,
+            })),
+          },
+        },
+      })
+
+      // 4. Anular la factura origen + invalidar cache PDF.
+      const origenAnulada = await tx.factura.update({
+        where: { id: origen.id },
+        data:  { estado: 'Anulada', pdfUrl: null, pdfInvalidatedAt: new Date() },
+      })
+
+      return { nc, origenAnulada, stockRestaurado }
+    })
+
+    invalidarPdfCache(resultado.nc.id).catch(() => {})
+    invalidarPdfCache(resultado.origenAnulada.id).catch(() => {})
+
+    auditReq('nc:emitida', req, {
+      ncId:          resultado.nc.id,
+      ncfNC:         resultado.nc.ncf,
+      origenId:      origen.id,
+      ncfOrigen:     origen.ncf,
+      total:         Number(origen.total),
+      stockRestaurado: resultado.stockRestaurado,
+      motivo,
+    })
+    await appendAuditCaja({
+      tipo:       'nota_credito_emitida',
+      empleadoId: req.user?.sub ?? null,
+      facturaId:  resultado.nc.id,
+      monto:      Number(origen.total),
+      detalle:    `NC ${resultado.nc.ncf} anula a ${origen.noFactura} (NCF ${origen.ncf ?? '—'}). Stock restaurado: ${resultado.stockRestaurado}. Motivo: ${motivo}`,
+      ip:         req.ip,
+      ua:         (req.headers['user-agent'] ?? '').slice(0, 200),
+    }).catch(() => {})
+
+    res.status(201).json({
+      ok: true,
+      notaCredito: resultado.nc,
+      origen:      resultado.origenAnulada,
+      stockRestaurado: resultado.stockRestaurado,
+    })
+  } catch (e) {
+    console.error('[NC EMITIR]', e.status ?? 500, e.message)
+    res.status(e.status ?? 500).json({ error: e.message ?? 'Error interno emitiendo Nota de Crédito.' })
+  }
+})
+
 // ─── Audit hash chain helpers + verify endpoint ──────────────────────────────
 // Cada INSERT a AuditCaja debería pasar por appendAuditCaja() para mantener
 // la cadena. El secret rotable AUDIT_SECRET protege contra reescritura post-facto.
@@ -8469,7 +8652,7 @@ async function buildFacturaPDFBuffer(factura) {
     precioUnitario: Number(l.precioUnitario),
   }))
   const html = renderPdfDoc({
-    tipo:         factura.esCotizacion ? 'cotizacion' : 'factura',
+    tipo:         factura.esCotizacion ? 'cotizacion' : (factura.esNotaCredito ? 'nota-credito' : 'factura'),
     numero:       factura.noFactura,
     ncf:          factura.ncf ?? null,
     tipoNcf:      factura.tipoNcf ?? null,
@@ -8495,6 +8678,11 @@ async function buildFacturaPDFBuffer(factura) {
     estado:       factura.estado,
     notas:        factura.notas,
     condiciones:  mergeCondiciones(empresa, factura),
+    esNotaCredito:     !!factura.esNotaCredito,
+    facturaOrigen:     factura.facturaOrigen
+      ? { noFactura: factura.facturaOrigen.noFactura, ncf: factura.facturaOrigen.ncf, tipoNcf: factura.facturaOrigen.tipoNcf }
+      : null,
+    motivoNotaCredito: factura.motivoNotaCredito ?? null,
     verify:       { hash: legacyHash, url: legacyVerifyUrl },
     verifyQrDataUri: await renderVerifyQr(legacyVerifyUrl),
   })
@@ -8702,15 +8890,16 @@ async function prerenderPdfsBatch() {
         const f = await prisma.factura.findUnique({
           where:   { id: c.id },
           include: {
-            cliente: true,
-            lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
+            cliente:       true,
+            lineas:        { include: { producto: { select: { sku: true, nombre: true } } } },
+            facturaOrigen: { select: { noFactura: true, ncf: true, tipoNcf: true } },
           },
         })
         if (!f || f.deletedAt) return
         // M8: snapshot del timestamp de invalidación ANTES de rendrir.
         const invalidatedAtBefore = f.pdfInvalidatedAt
         const data    = await buildPdfData(f)
-        const tipo    = f.esCotizacion ? 'cotizacion' : 'factura'
+        const tipo    = f.esCotizacion ? 'cotizacion' : (f.esNotaCredito ? 'nota-credito' : 'factura')
         const html    = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
         const pdfBuf  = await generarPdfDocumento(html)
 
