@@ -665,13 +665,19 @@ model Factura {
   // factura origen queda con estado=Anulada (full reversal). Permitimos N
   // notasCredito por factura origen (DGII admite notas parciales) — no es
   // unique a propósito.
-  facturaOrigenId   String?
-  facturaOrigen     Factura?       @relation("NotaCreditoOrigen", fields: [facturaOrigenId], references: [id], onDelete: SetNull)
-  notasCredito      Factura[]      @relation("NotaCreditoOrigen")
-  esNotaCredito     Boolean        @default(false)
-  // Motivo libre exigido al emitir la NC (mínimo 10 chars en backend).
-  // Va impreso en el PDF B04 como "Motivo: ..." debajo del NCF origen.
-  motivoNotaCredito String?
+  facturaOrigenId         String?
+  facturaOrigen           Factura?       @relation("NotaCreditoOrigen", fields: [facturaOrigenId], references: [id], onDelete: SetNull)
+  notasCredito            Factura[]      @relation("NotaCreditoOrigen")
+  esNotaCredito           Boolean        @default(false)
+  // Nota de Débito (DGII B03): cobro adicional contra una factura emitida
+  // (penalidades, intereses por mora, ajustes de precio al alza). NO restaura
+  // inventario y NO anula la factura origen — solo se vincula vía
+  // facturaOrigenId y registra el monto a cobrar.
+  esNotaDebito            Boolean        @default(false)
+  // Motivo libre exigido al emitir NC (B04) o ND (B03). Min 10 chars en backend.
+  // Renombrado desde motivoNotaCredito para servir a ambos comprobantes
+  // modificatorios (single source of truth en el PDF "Motivo: ...").
+  motivoNotaModificatoria String?
   estado            EstadoFactura  @default(Borrador)
   subtotal          Decimal        @db.Decimal(12, 2)
   itbis             Decimal        @default(0) @db.Decimal(12, 2)
@@ -741,6 +747,7 @@ model Factura {
   @@index([estado, fechaEmision])
   @@index([facturaOrigenId])
   @@index([esNotaCredito])
+  @@index([esNotaDebito])
 }
 
 model LineaFactura {

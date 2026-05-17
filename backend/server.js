@@ -3515,13 +3515,15 @@ async function buildPdfData(facturaOrCotizacion) {
     estado:       f.estado,
     notas:        f.notas,
     condiciones:  mergeCondiciones(empresa, f),
-    // Datos exclusivos de Nota de Crédito (DGII B04). El template los usa para
-    // pintar el badge "NOTA DE CRÉDITO" + la línea "Modifica al Comprobante:".
-    esNotaCredito:     !!f.esNotaCredito,
-    facturaOrigen:     f.facturaOrigen
+    // Datos exclusivos de comprobantes modificatorios DGII (NC B04 / ND B03).
+    // El template renderiza el título correcto y la línea "Modifica al
+    // Comprobante:" + el motivo debajo del cliente.
+    esNotaCredito:           !!f.esNotaCredito,
+    esNotaDebito:            !!f.esNotaDebito,
+    facturaOrigen:           f.facturaOrigen
       ? { noFactura: f.facturaOrigen.noFactura, ncf: f.facturaOrigen.ncf, tipoNcf: f.facturaOrigen.tipoNcf }
       : null,
-    motivoNotaCredito: f.motivoNotaCredito ?? null,
+    motivoNotaModificatoria: f.motivoNotaModificatoria ?? null,
     verify: { hash: verifyHashFinal, url: verifyUrl },
     // QR pre-renderizado como data:image/png;base64 — SIEMPRE generado. El
     // destinatario escanea con cualquier cámara y aterriza en /verify/:hash.
@@ -3631,7 +3633,9 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
     if (!fact) return res.status(404).json({ error: 'Factura no encontrada.' })
 
     const data = await buildPdfData(fact)
-    const tipoDoc = fact.esNotaCredito ? 'nota-credito' : 'factura'
+    const tipoDoc = fact.esNotaCredito ? 'nota-credito'
+                  : fact.esNotaDebito  ? 'nota-debito'
+                  : 'factura'
     const html = renderPdfDoc({ tipo: tipoDoc, numero: fact.noFactura, ...data })
     const pdfBuf = await generarPdfDocumento(html)
 
@@ -3641,7 +3645,7 @@ app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), a
     })
 
     res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="${fact.esNotaCredito ? 'nota-credito' : 'factura'}-${fact.noFactura}.pdf"`)
+    res.setHeader('Content-Disposition', `inline; filename="${tipoDoc}-${fact.noFactura}.pdf"`)
     res.setHeader('Content-Length', pdfBuf.length)
     auditReq('pdf:factura', req, { id: fact.id, noFactura: fact.noFactura, ncf: fact.ncf })
     res.end(pdfBuf)
@@ -3680,7 +3684,9 @@ async function generarPdfDeFactura(id, tipo) {
   if (tipo === 'factura'    && f.esCotizacion)  return null
   const data = await buildPdfData(f)
   // Si la factura ES nota de crédito, fuerza la variante 'nota-credito' en el render.
-  const tipoFinal = (tipo === 'factura' && f.esNotaCredito) ? 'nota-credito' : tipo
+  const tipoFinal = (tipo === 'factura' && f.esNotaCredito) ? 'nota-credito'
+                  : (tipo === 'factura' && f.esNotaDebito)  ? 'nota-debito'
+                  : tipo
   const html = renderPdfDoc({ tipo: tipoFinal, numero: f.noFactura, ...data })
   const buf  = await generarPdfDocumento(html)
   return { buf, noFactura: f.noFactura }
@@ -7049,6 +7055,9 @@ const SECUENCIA_DEFAULTS = {
   // El NCF B04 sigue su PROPIA secuencia DGII en ConfiguracionNCF — son
   // numeradores independientes (no confundir interno vs fiscal).
   notaCredito: { prefijo: 'NC',  actual: 0, padding: 6 },
+  // Idem para Nota de Débito interna (ND-000001) — NCF B03 vive aparte en
+  // ConfiguracionNCF para que el numerador fiscal nunca dependa del interno.
+  notaDebito:  { prefijo: 'ND',  actual: 0, padding: 6 },
 }
 
 async function generarSiguienteCodigo(entidad, tx) {
@@ -8385,7 +8394,7 @@ app.post('/api/facturas/:id/revertir', verificarJWT, billingLimiter, requerirPer
 // Autorización:
 //   - Permiso 'factura:anular' o 'sistema:owner'.
 //   - pinSupervisor (EmpresaPerfil.pinSupervisor) obligatorio en body.
-//   - motivo mínimo 10 caracteres (queda en motivoNotaCredito + AuditCaja).
+//   - motivo mínimo 10 caracteres (queda en motivoNotaModificatoria + AuditCaja).
 //
 // El stock se RESTAURA solo si la factura origen estaba en 'Pagada' (mismo
 // criterio que /revertir): si estaba Emitida, el stock nunca salió.
@@ -8424,6 +8433,7 @@ app.post('/api/facturas/:id/nota-credito', verificarJWT, billingLimiter, async (
     if (!origen)                         return res.status(404).json({ error: 'Factura origen no encontrada.' })
     if (origen.esCotizacion)             return res.status(409).json({ error: 'No se puede emitir NC sobre una cotización.' })
     if (origen.esNotaCredito)            return res.status(409).json({ error: 'No se puede emitir NC sobre otra Nota de Crédito.' })
+    if (origen.esNotaDebito)             return res.status(409).json({ error: 'No se puede emitir NC sobre una Nota de Débito (emite NC contra la factura original).' })
     if (origen.estado === 'Anulada')     return res.status(409).json({ error: 'La factura origen ya está Anulada.' })
     if (origen.estado === 'Borrador')    return res.status(409).json({ error: 'La factura origen aún está en Borrador, no requiere NC.' })
 
@@ -8479,10 +8489,10 @@ app.post('/api/facturas/:id/nota-credito', verificarJWT, billingLimiter, async (
           tipoNcf:           'Nota de Crédito',
           fechaEmision:      new Date(),
           fechaVence:        null,
-          esNotaCredito:     true,
-          facturaOrigenId:   origen.id,
-          motivoNotaCredito: motivo,
-          notas:             `Anula a ${origen.noFactura}${origen.ncf ? ` (NCF ${origen.ncf})` : ''}. Motivo: ${motivo}`,
+          esNotaCredito:           true,
+          facturaOrigenId:         origen.id,
+          motivoNotaModificatoria: motivo,
+          notas:                   `Anula a ${origen.noFactura}${origen.ncf ? ` (NCF ${origen.ncf})` : ''}. Motivo: ${motivo}`,
           lineas: {
             create: origen.lineas.map(l => ({
               productoId:          l.productoId ?? null,
@@ -8536,6 +8546,147 @@ app.post('/api/facturas/:id/nota-credito', verificarJWT, billingLimiter, async (
   } catch (e) {
     console.error('[NC EMITIR]', e.status ?? 500, e.message)
     res.status(e.status ?? 500).json({ error: e.message ?? 'Error interno emitiendo Nota de Crédito.' })
+  }
+})
+
+// ─── Notas de Débito (DGII B03) ──────────────────────────────────────────────
+// Emite una Nota de Débito que AÑADE un cargo adicional contra una factura
+// origen (penalidad, interés por mora, ajuste de precio al alza). A diferencia
+// de la NC:
+//   - NO restaura inventario (no hubo devolución física de mercancía).
+//   - NO anula la factura origen — solo la vincula vía facturaOrigenId.
+//   - El monto a cobrar es INPUT del usuario (no copia los totales del origen).
+//   - Una sola línea descriptiva con el motivo + monto.
+//
+// El estado inicial es 'Emitida' — el cliente debe pagarla como un cargo extra.
+const notaDebitoSchema = z.object({
+  motivo:        z.string().min(10, 'Motivo de mínimo 10 caracteres.').max(500),
+  pinSupervisor: z.string().min(4).max(8).regex(/^\d+$/, 'PIN solo dígitos.'),
+  monto:         z.number().positive('El monto debe ser positivo.').max(99999999),
+  aplicarItbis:  z.boolean().optional().default(false),
+})
+
+app.post('/api/facturas/:id/nota-debito', verificarJWT, billingLimiter, async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+    // Usa el mismo permiso 'factura:anular' (umbral correcto para emitir
+    // comprobantes modificatorios fiscales). Si quieres separarlo a futuro,
+    // crea 'factura:nota_debito'.
+    const puede = permisos.includes('sistema:owner') || permisos.includes('factura:anular')
+    if (!puede) {
+      auditReq('nd:denied_perm', req, { facturaId: req.params.id })
+      return res.status(403).json({ error: 'Emitir Nota de Débito requiere permiso "factura:anular".', code: 'ND_PERMISSION' })
+    }
+
+    const parsed = notaDebitoSchema.safeParse(req.body)
+    if (!parsed.success) {
+      return res.status(400).json({ error: parsed.error.issues[0]?.message ?? 'Datos inválidos.' })
+    }
+    const { motivo, pinSupervisor, monto, aplicarItbis } = parsed.data
+
+    const empCfg = await prisma.empresaPerfil.findUnique({ where: { id: 1 }, select: { pinSupervisor: true } })
+    const pinReal = empCfg?.pinSupervisor ?? '1234'
+    if (pinSupervisor !== pinReal) {
+      auditReq('nd:pin_fail', req, { facturaId: req.params.id })
+      return res.status(401).json({ error: 'PIN de supervisor inválido.', code: 'ND_PIN_INVALID' })
+    }
+
+    const origen = await prisma.factura.findUnique({
+      where:   { id: req.params.id },
+      select:  { id: true, noFactura: true, ncf: true, clienteId: true, ordenId: true, estado: true, esCotizacion: true, esNotaCredito: true, esNotaDebito: true },
+    })
+    if (!origen)                      return res.status(404).json({ error: 'Factura origen no encontrada.' })
+    if (origen.esCotizacion)          return res.status(409).json({ error: 'No se puede emitir ND sobre una cotización.' })
+    if (origen.esNotaCredito)         return res.status(409).json({ error: 'No se puede emitir ND sobre una Nota de Crédito.' })
+    if (origen.esNotaDebito)          return res.status(409).json({ error: 'No se puede emitir ND sobre otra Nota de Débito.' })
+    if (origen.estado === 'Anulada')  return res.status(409).json({ error: 'La factura origen está Anulada, no admite ajustes.' })
+    if (origen.estado === 'Borrador') return res.status(409).json({ error: 'La factura origen aún está en Borrador, no requiere ND.' })
+
+    // Totales del ND: subtotal = monto neto, itbis 18% opcional, total = subtotal + itbis.
+    const subtotal = Math.round(Number(monto) * 100) / 100
+    const itbis    = aplicarItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
+    const total    = Math.round((subtotal + itbis) * 100) / 100
+
+    const resultado = await prisma.$transaction(async (tx) => {
+      // 1. Secuencia NCF B03 — atomic upsert + increment.
+      await tx.$executeRaw`
+        INSERT INTO "ConfiguracionNCF" ("prefijo", "tipoNcf", "tipoDescripcion", "secuenciaActual", "limite", "activo", "createdAt", "updatedAt")
+        VALUES ('B03', 'Nota de Débito', 'Notas de Débito (DGII B03)', 0, 99999999, true, NOW(), NOW())
+        ON CONFLICT ("tipoNcf") DO NOTHING
+      `
+      const rows = await tx.$queryRaw`
+        UPDATE "ConfiguracionNCF"
+        SET    "secuenciaActual" = "secuenciaActual" + 1
+        WHERE  "tipoNcf"         = 'Nota de Débito'
+          AND  "activo"          = true
+          AND  "secuenciaActual" < "limite"
+        RETURNING *
+      `
+      if (!rows || rows.length === 0) {
+        throw Object.assign(new Error('Secuencia NCF B03 agotada o inactiva. Revisa Configuración > Secuencias NCF.'), { status: 422 })
+      }
+      const seq         = String(rows[0].secuenciaActual).padStart(8, '0')
+      const ncfND       = `${rows[0].prefijo}${seq}`
+      const noFacturaND = await generarSiguienteCodigo('notaDebito', tx)
+
+      // 2. Crear la Nota de Débito como Factura(esNotaDebito=true) con UNA línea
+      //    descriptiva del cargo. NO toca inventario ni anula la factura origen.
+      const nd = await tx.factura.create({
+        data: {
+          noFactura:               noFacturaND,
+          clienteId:               origen.clienteId,
+          ordenId:                 origen.ordenId,
+          empleadoId:              req.user?.sub ?? null,
+          estado:                  'Emitida',
+          subtotal,
+          itbis,
+          total,
+          ncf:                     ncfND,
+          tipoNcf:                 'Nota de Débito',
+          fechaEmision:            new Date(),
+          fechaVence:              new Date(Date.now() + 30 * 24 * 60 * 60 * 1000),
+          esNotaDebito:            true,
+          facturaOrigenId:         origen.id,
+          motivoNotaModificatoria: motivo,
+          notas:                   `Cargo adicional contra ${origen.noFactura}${origen.ncf ? ` (NCF ${origen.ncf})` : ''}. Motivo: ${motivo}`,
+          lineas: {
+            create: [{
+              descripcion:    `Ajuste / Cargo adicional · ${motivo}`,
+              cantidad:       1,
+              precioUnitario: subtotal,
+            }],
+          },
+        },
+      })
+
+      return { nd, stockRestaurado: 0 }
+    })
+
+    invalidarPdfCache(resultado.nd.id).catch(() => {})
+
+    auditReq('nd:emitida', req, {
+      ndId:      resultado.nd.id,
+      ncfND:     resultado.nd.ncf,
+      origenId:  origen.id,
+      ncfOrigen: origen.ncf,
+      monto:     total,
+      motivo,
+    })
+    await appendAuditCaja({
+      tipo:       'nota_debito_emitida',
+      empleadoId: req.user?.sub ?? null,
+      facturaId:  resultado.nd.id,
+      monto:      total,
+      detalle:    `ND ${resultado.nd.ncf} carga RD$${total.toFixed(2)} contra ${origen.noFactura} (NCF ${origen.ncf ?? '—'}). Motivo: ${motivo}`,
+      ip:         req.ip,
+      ua:         (req.headers['user-agent'] ?? '').slice(0, 200),
+    }).catch(() => {})
+
+    res.status(201).json({ ok: true, notaDebito: resultado.nd })
+  } catch (e) {
+    console.error('[ND EMITIR]', e.status ?? 500, e.message)
+    res.status(e.status ?? 500).json({ error: e.message ?? 'Error interno emitiendo Nota de Débito.' })
   }
 })
 
@@ -8652,7 +8803,10 @@ async function buildFacturaPDFBuffer(factura) {
     precioUnitario: Number(l.precioUnitario),
   }))
   const html = renderPdfDoc({
-    tipo:         factura.esCotizacion ? 'cotizacion' : (factura.esNotaCredito ? 'nota-credito' : 'factura'),
+    tipo:         factura.esCotizacion ? 'cotizacion'
+                  : factura.esNotaCredito ? 'nota-credito'
+                  : factura.esNotaDebito  ? 'nota-debito'
+                  : 'factura',
     numero:       factura.noFactura,
     ncf:          factura.ncf ?? null,
     tipoNcf:      factura.tipoNcf ?? null,
@@ -8678,11 +8832,12 @@ async function buildFacturaPDFBuffer(factura) {
     estado:       factura.estado,
     notas:        factura.notas,
     condiciones:  mergeCondiciones(empresa, factura),
-    esNotaCredito:     !!factura.esNotaCredito,
-    facturaOrigen:     factura.facturaOrigen
+    esNotaCredito:           !!factura.esNotaCredito,
+    esNotaDebito:            !!factura.esNotaDebito,
+    facturaOrigen:           factura.facturaOrigen
       ? { noFactura: factura.facturaOrigen.noFactura, ncf: factura.facturaOrigen.ncf, tipoNcf: factura.facturaOrigen.tipoNcf }
       : null,
-    motivoNotaCredito: factura.motivoNotaCredito ?? null,
+    motivoNotaModificatoria: factura.motivoNotaModificatoria ?? null,
     verify:       { hash: legacyHash, url: legacyVerifyUrl },
     verifyQrDataUri: await renderVerifyQr(legacyVerifyUrl),
   })
@@ -8899,7 +9054,10 @@ async function prerenderPdfsBatch() {
         // M8: snapshot del timestamp de invalidación ANTES de rendrir.
         const invalidatedAtBefore = f.pdfInvalidatedAt
         const data    = await buildPdfData(f)
-        const tipo    = f.esCotizacion ? 'cotizacion' : (f.esNotaCredito ? 'nota-credito' : 'factura')
+        const tipo    = f.esCotizacion ? 'cotizacion'
+                       : f.esNotaCredito ? 'nota-credito'
+                       : f.esNotaDebito  ? 'nota-debito'
+                       : 'factura'
         const html    = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
         const pdfBuf  = await generarPdfDocumento(html)
 
@@ -9277,18 +9435,22 @@ const PORT = process.env.PORT || 3000;
 
 async function seedNomenclaturas() {
   const counters = [
-    { prefijo: 'SV-',  tipoNcf: 'SV',  tipoDescripcion: 'Servicios' },
-    { prefijo: 'OT-',  tipoNcf: 'OT',  tipoDescripcion: 'Ordenes de Trabajo' },
-    { prefijo: 'COT-', tipoNcf: 'COT', tipoDescripcion: 'Cotizaciones' },
+    { prefijo: 'SV-',  tipoNcf: 'SV',  tipoDescripcion: 'Servicios',           limite: 99999 },
+    { prefijo: 'OT-',  tipoNcf: 'OT',  tipoDescripcion: 'Ordenes de Trabajo',  limite: 99999 },
+    { prefijo: 'COT-', tipoNcf: 'COT', tipoDescripcion: 'Cotizaciones',        limite: 99999 },
+    // Comprobantes modificatorios fiscales DGII. Limite 99,999,999 idéntico a
+    // B01/B02 — vienen del mismo lote de NCF asignado por DGII al RNC del taxpayer.
+    { prefijo: 'B03',  tipoNcf: 'Nota de Débito',  tipoDescripcion: 'Notas de Débito (DGII B03)',  limite: 99999999 },
+    { prefijo: 'B04',  tipoNcf: 'Nota de Crédito', tipoDescripcion: 'Notas de Crédito (DGII B04)', limite: 99999999 },
   ]
   for (const c of counters) {
     await prisma.configuracionNCF.upsert({
       where:  { tipoNcf: c.tipoNcf },
       update: {},
-      create: { ...c, secuenciaActual: 0, limite: 99999, activo: true },
+      create: { ...c, secuenciaActual: 0, activo: true },
     })
   }
-  console.log('[SEED] Nomenclature counters ready (SV/OT/COT).')
+  console.log('[SEED] Nomenclature counters ready (SV/OT/COT + B03/B04).')
 }
 
 async function warmChallengeStore(count = 3) {

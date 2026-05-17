@@ -571,6 +571,24 @@ html, body {
 .watermark.notacredito {
   color: #b91c1c; opacity: 0.065; font-size: 110px;
 }
+.watermark.notadebito {
+  color: #c2410c; opacity: 0.065; font-size: 110px;
+}
+
+/* Variante ámbar para Nota de Débito — distingue visualmente B03 (cargo extra)
+   de B04 (anulación). Mismo layout que .nc-ref-bar pero con paleta ambar. */
+.nd-ref-bar {
+  margin-top: 12px;
+  padding: 9px 14px;
+  background: #fffbeb;
+  border: 1px solid #fde68a; border-left: 4px solid #c2410c;
+  border-radius: 4px;
+  display: grid; grid-template-columns: auto 1fr; column-gap: 14px; row-gap: 3px;
+  align-items: baseline;
+}
+.nd-ref-bar .lbl { font-size: 8.5px; font-weight: 800; color: #7c2d12; text-transform: uppercase; letter-spacing: 0.12em; }
+.nd-ref-bar .val { font-size: 11px; font-weight: 700; color: #0f172a; font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; letter-spacing: 0.02em; }
+.nd-ref-bar .val.motivo { font-family: inherit; font-weight: 500; color: #334155; font-size: 10px; }
 
 /* ───── Nota de Crédito — banda informativa "Modifica al Comprobante:" ─────
    Va inmediatamente debajo del bloque cliente. Rojo tenue para señalar la
@@ -592,10 +610,10 @@ html, body {
 
 function renderDocumento(opts) {
   const {
-    tipo,            // 'cotizacion' | 'factura' | 'nota-credito'
+    tipo,            // 'cotizacion' | 'factura' | 'nota-credito' | 'nota-debito'
     numero,          // string ej. 'COT-2026-0512-001'
     ncf,             // factura NCF (opt)
-    tipoNcf,         // 'B01' / 'B02' / 'B04' (NC) ...
+    tipoNcf,         // 'B01' / 'B02' / 'B03' (ND) / 'B04' (NC) ...
     tipoComposicion, // 'Artículos' | 'Servicio' | 'Mixto' — calculado en buildPdfData
     empresa,         // EmpresaPerfil row (NO defaults: si falta algo, oculta esa sección)
     cliente,         // { razonSocial, rnc, direccion, sector, provincia, telefono, email }
@@ -610,15 +628,21 @@ function renderDocumento(opts) {
     condiciones,     // { validez, pago, entrega, garantia }
     verify,          // { hash, url } o null si PUBLIC_FRONTEND_URL no está seteado
     verifyQrDataUri, // QR pre-renderizado por el backend (data:image/png;base64,...)
-    // ── Datos exclusivos Nota de Crédito (DGII B04) ─────────────────────────
+    // ── Datos exclusivos comprobantes modificatorios DGII (NC B04 / ND B03) ──
     esNotaCredito,
-    facturaOrigen,     // { noFactura, ncf, tipoNcf } | null
-    motivoNotaCredito, // string | null
+    esNotaDebito,
+    facturaOrigen,           // { noFactura, ncf, tipoNcf } | null
+    motivoNotaModificatoria, // string | null
   } = opts
 
-  const isNotaCredito = tipo === 'nota-credito' || !!esNotaCredito
-  const isFactura     = tipo === 'factura' && !isNotaCredito
-  const tipoLabel     = isNotaCredito ? 'Nota de Crédito' : (isFactura ? 'Factura' : 'Cotización')
+  const isNotaCredito  = tipo === 'nota-credito' || !!esNotaCredito
+  const isNotaDebito   = tipo === 'nota-debito'  || !!esNotaDebito
+  const isModificatoria = isNotaCredito || isNotaDebito
+  const isFactura      = tipo === 'factura' && !isModificatoria
+  const tipoLabel      = isNotaCredito ? 'Nota de Crédito'
+                       : isNotaDebito  ? 'Nota de Débito'
+                       : isFactura     ? 'Factura'
+                       :                 'Cotización'
 
   const emp = empresa ?? {}
   const assets = emp.assets ?? {}
@@ -628,9 +652,11 @@ function renderDocumento(opts) {
 
   const watermark = isNotaCredito
     ? '<div class="watermark notacredito">Nota de Crédito</div>'
-    : estado === 'Anulada'
-      ? '<div class="watermark">Anulada</div>'
-      : (!isFactura ? '<div class="watermark cotizacion">Cotización</div>' : '')
+    : isNotaDebito
+      ? '<div class="watermark notadebito">Nota de Débito</div>'
+      : estado === 'Anulada'
+        ? '<div class="watermark">Anulada</div>'
+        : (!isFactura ? '<div class="watermark cotizacion">Cotización</div>' : '')
 
   const itemsRows = (items ?? []).map((it, idx) => {
     const importe = Number(it.cantidad) * Number(it.precioUnitario)
@@ -739,11 +765,11 @@ function renderDocumento(opts) {
       </div>
     </div>
 
-    ${isNotaCredito ? `
-    <div class="nc-ref-bar">
+    ${isModificatoria ? `
+    <div class="${isNotaCredito ? 'nc-ref-bar' : 'nd-ref-bar'}">
       <div class="lbl">Modifica al Comprobante</div>
       <div class="val">${escape(facturaOrigen?.ncf || facturaOrigen?.noFactura || '—')}${facturaOrigen?.noFactura && facturaOrigen?.ncf ? ` · ${escape(facturaOrigen.noFactura)}` : ''}</div>
-      ${motivoNotaCredito ? `<div class="lbl">Motivo</div><div class="val motivo">${escape(motivoNotaCredito)}</div>` : ''}
+      ${motivoNotaModificatoria ? `<div class="lbl">Motivo</div><div class="val motivo">${escape(motivoNotaModificatoria)}</div>` : ''}
     </div>` : ''}
 
     <div style="margin-top:16px;" class="section-label">Detalle de productos y servicios</div>

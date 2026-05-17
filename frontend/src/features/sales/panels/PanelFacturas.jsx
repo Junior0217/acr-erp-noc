@@ -4,7 +4,7 @@ import {
   Loader2, RefreshCw, DollarSign, Plus, Trash2, X,
   Search, Receipt, Printer, FileText, Download, FileArchive,
   CheckSquare, Square, Eye, User, Hash, Calendar, Edit3, Save,
-  Ban, ShieldAlert, Lock,
+  Ban, ShieldAlert, Lock, TrendingUp,
 } from 'lucide-react'
 import { apiFetch } from '@shared/utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '@shared/utils/pdf'
@@ -808,8 +808,8 @@ export default function PanelFacturas({ highlightId = null }) {
 function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, canEdit, onPreviewPDF, downloadingId, onCondicionesGuardadas, onNotaCreditoEmitida }) {
   const [full, setFull] = useState(null)
   const [loading, setLoading] = useState(true)
-  // NC modal: visible cuando el usuario presiona "Anular con Nota de Crédito"
-  const [ncOpen, setNcOpen] = useState(false)
+  // Modal modificatorio: 'nc' (B04 anula) | 'nd' (B03 cargo extra) | null.
+  const [modificatoriaMode, setModificatoriaMode] = useState(null)
   // Edición de condiciones comerciales (override del default empresa).
   // Shape interno: { k: { incluir: bool, texto: string } }. Soporta lectura legacy (string).
   const [editCond, setEditCond] = useState(false)
@@ -1032,13 +1032,21 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
               </button>
             </>
           )}
-          {/* Nota de Crédito (DGII B04): solo facturas reales Emitida/Pagada no-NC. */}
-          {canEdit && !factura.esCotizacion && !factura.esNotaCredito && (factura.estado === 'Emitida' || factura.estado === 'Pagada') && (
-            <button onClick={() => setNcOpen(true)} disabled={updating === factura.id}
-              title="Emitir Nota de Crédito DGII B04 que anula esta factura."
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all disabled:opacity-40 shadow-md shadow-red-600/30">
-              <Ban size={12} /> Anular con Nota de Crédito
-            </button>
+          {/* Comprobantes modificatorios DGII: NC B04 (anula) y ND B03 (cargo extra).
+              Solo facturas reales Emitida/Pagada que NO sean ya NC/ND. */}
+          {canEdit && !factura.esCotizacion && !factura.esNotaCredito && !factura.esNotaDebito && (factura.estado === 'Emitida' || factura.estado === 'Pagada') && (
+            <>
+              <button onClick={() => setModificatoriaMode('nc')} disabled={updating === factura.id}
+                title="Emitir Nota de Crédito DGII B04 que anula esta factura."
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all disabled:opacity-40 shadow-md shadow-red-600/30">
+                <Ban size={12} /> Anular con Nota de Crédito
+              </button>
+              <button onClick={() => setModificatoriaMode('nd')} disabled={updating === factura.id}
+                title="Emitir Nota de Débito DGII B03 que añade un cargo adicional."
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold transition-all disabled:opacity-40 shadow-md shadow-amber-600/30">
+                <TrendingUp size={12} /> Emitir Nota de Débito
+              </button>
+            </>
           )}
           <button onClick={() => onPreviewPDF(factura)} disabled={downloadingId === factura.id}
             className="ml-auto flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-colors disabled:opacity-40 shadow-md shadow-blue-600/20">
@@ -1048,14 +1056,15 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
         </div>
       </div>
 
-      {ncOpen && (
-        <ModalNotaCredito
+      {modificatoriaMode && (
+        <ModalNotaModificatoria
+          mode={modificatoriaMode}
           factura={factura}
-          onClose={() => setNcOpen(false)}
-          onSuccess={(nc) => {
-            setNcOpen(false)
+          onClose={() => setModificatoriaMode(null)}
+          onSuccess={(doc) => {
+            setModificatoriaMode(null)
             onClose()
-            onNotaCreditoEmitida?.(nc)
+            onNotaCreditoEmitida?.(doc)
           }}
         />
       )}
@@ -1063,12 +1072,28 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
   )
 }
 
-// ─── ModalNotaCredito: motivo + PIN supervisor → POST /api/facturas/:id/nota-credito ──
-function ModalNotaCredito({ factura, onClose, onSuccess }) {
+// ─── ModalNotaModificatoria: emite NC (B04 anula) o ND (B03 cargo) ───────────
+// mode='nc' → POST /api/facturas/:id/nota-credito · pide motivo + PIN.
+// mode='nd' → POST /api/facturas/:id/nota-debito  · pide motivo + monto + ITBIS + PIN.
+function ModalNotaModificatoria({ mode, factura, onClose, onSuccess }) {
+  const isNd = mode === 'nd'
+  const config = isNd
+    ? { tipo: 'B03', label: 'Emitir Nota de Débito',  endpoint: 'nota-debito',  accent: 'amber', icon: TrendingUp,
+        warn: 'Esta operación generará un comprobante B03 con un cargo adicional contra la factura origen. La factura origen NO se anula y el inventario NO se modifica.' }
+    : { tipo: 'B04', label: 'Anular con Nota de Crédito', endpoint: 'nota-credito', accent: 'red', icon: Ban,
+        warn: 'Acción irreversible: esta operación generará un comprobante B04, dejará la factura origen en estado Anulada y restaurará el stock al inventario si la factura ya estaba Pagada.' }
+
+  const ACCENT = isNd
+    ? { border: 'border-amber-700/40', shadow: 'shadow-amber-900/50', bg: 'from-amber-950/60', dot: 'bg-amber-600/15 border-amber-600/30', icon: 'text-amber-400', warn: 'bg-amber-900/20 border-amber-700/30 text-amber-200', cta: 'bg-amber-600 hover:bg-amber-500 shadow-amber-600/30', focus: 'focus:border-amber-500 focus:ring-amber-500/30' }
+    : { border: 'border-red-700/40',   shadow: 'shadow-red-900/50',   bg: 'from-red-950/60',   dot: 'bg-red-600/15 border-red-600/30',     icon: 'text-red-400',   warn: 'bg-red-900/20 border-red-700/30 text-red-300',     cta: 'bg-red-600 hover:bg-red-500 shadow-red-600/30',     focus: 'focus:border-red-500 focus:ring-red-500/30' }
+
   const [motivo, setMotivo] = useState('')
   const [pin, setPin] = useState('')
+  const [monto, setMonto] = useState('')
+  const [aplicarItbis, setAplicarItbis] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const Icon = config.icon
 
   useEffect(() => {
     const h = e => { if (e.key === 'Escape' && !busy) onClose() }
@@ -1076,36 +1101,45 @@ function ModalNotaCredito({ factura, onClose, onSuccess }) {
     return () => window.removeEventListener('keydown', h)
   }, [busy, onClose])
 
+  const montoNum   = Number(String(monto).replace(',', '.')) || 0
+  const itbisCalc  = isNd && aplicarItbis ? Math.round(montoNum * 0.18 * 100) / 100 : 0
+  const totalCalc  = Math.round((montoNum + itbisCalc) * 100) / 100
+  const montoValid = !isNd || montoNum > 0
+
   async function emitir() {
     setError('')
     if (motivo.trim().length < 10) { setError('El motivo debe tener al menos 10 caracteres.'); return }
     if (!/^\d{4,8}$/.test(pin))    { setError('PIN inválido (4-8 dígitos numéricos).'); return }
+    if (isNd && montoNum <= 0)     { setError('El monto debe ser mayor a 0.'); return }
     setBusy(true)
     try {
-      const r = await apiFetch(`/api/facturas/${factura.id}/nota-credito`, {
-        method: 'POST',
-        body:   JSON.stringify({ motivo: motivo.trim(), pinSupervisor: pin }),
-      })
+      const body = isNd
+        ? { motivo: motivo.trim(), pinSupervisor: pin, monto: montoNum, aplicarItbis }
+        : { motivo: motivo.trim(), pinSupervisor: pin }
+      const r = await apiFetch(`/api/facturas/${factura.id}/${config.endpoint}`, { method: 'POST', body: JSON.stringify(body) })
       const j = await r.json().catch(() => ({}))
-      if (!r.ok) { setError(j.error ?? 'No se pudo emitir la Nota de Crédito.'); return }
-      toast.success(`Nota de Crédito ${j.notaCredito?.ncf ?? ''} emitida. Factura origen ANULADA.`)
-      onSuccess?.(j.notaCredito)
+      if (!r.ok) { setError(j.error ?? `No se pudo emitir la ${isNd ? 'Nota de Débito' : 'Nota de Crédito'}.`); return }
+      const doc = j.notaCredito ?? j.notaDebito
+      toast.success(`${isNd ? 'Nota de Débito' : 'Nota de Crédito'} ${doc?.ncf ?? ''} emitida.${isNd ? '' : ' Factura origen ANULADA.'}`)
+      onSuccess?.(doc)
     } catch {
       setError('Error de conexión.')
     } finally { setBusy(false) }
   }
 
+  const ctaDisabled = busy || motivo.trim().length < 10 || !/^\d{4,8}$/.test(pin) || !montoValid
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
       <div className="absolute inset-0 bg-black/80 backdrop-blur-sm" onClick={() => !busy && onClose()} />
-      <div className="relative w-full max-w-md bg-slate-950 border border-red-700/40 rounded-2xl shadow-2xl shadow-red-900/50 overflow-hidden">
-        <div className="flex items-center gap-3 px-5 py-3.5 border-b border-slate-800 bg-gradient-to-r from-red-950/60 to-slate-900">
-          <div className="w-10 h-10 rounded-lg bg-red-600/15 border border-red-600/30 flex items-center justify-center flex-shrink-0">
-            <ShieldAlert size={18} className="text-red-400" />
+      <div className={`relative w-full max-w-md bg-slate-950 border ${ACCENT.border} rounded-2xl shadow-2xl ${ACCENT.shadow} overflow-hidden`}>
+        <div className={`flex items-center gap-3 px-5 py-3.5 border-b border-slate-800 bg-gradient-to-r ${ACCENT.bg} to-slate-900`}>
+          <div className={`w-10 h-10 rounded-lg ${ACCENT.dot} border flex items-center justify-center flex-shrink-0`}>
+            <ShieldAlert size={18} className={ACCENT.icon} />
           </div>
           <div className="min-w-0">
-            <p className="text-sm font-bold text-slate-100">Anular con Nota de Crédito</p>
-            <p className="text-[11px] text-slate-500 font-mono truncate">DGII B04 · {factura.noFactura}{factura.ncf ? ` · NCF ${factura.ncf}` : ''}</p>
+            <p className="text-sm font-bold text-slate-100">{config.label}</p>
+            <p className="text-[11px] text-slate-500 font-mono truncate">DGII {config.tipo} · {factura.noFactura}{factura.ncf ? ` · NCF ${factura.ncf}` : ''}</p>
           </div>
           <button onClick={onClose} disabled={busy}
             className="ml-auto p-1.5 rounded-lg text-slate-500 hover:text-slate-100 hover:bg-slate-800 transition-colors disabled:opacity-40">
@@ -1114,27 +1148,49 @@ function ModalNotaCredito({ factura, onClose, onSuccess }) {
         </div>
 
         <div className="px-5 py-4 space-y-3">
-          <div className="px-3 py-2 rounded-lg bg-red-900/20 border border-red-700/30 text-[11px] text-red-300 leading-relaxed">
-            <span className="font-bold uppercase tracking-wider">Acción irreversible:</span> esta operación generará un comprobante <strong>B04</strong>, dejará la factura origen en estado <strong>Anulada</strong> y restaurará el stock al inventario si la factura ya estaba <em>Pagada</em>.
+          <div className={`px-3 py-2 rounded-lg border text-[11px] leading-relaxed ${ACCENT.warn}`}>
+            <span className="font-bold uppercase tracking-wider">{isNd ? 'Ajuste fiscal:' : 'Acción irreversible:'}</span> {config.warn}
           </div>
 
+          {isNd && (
+            <div className="grid grid-cols-3 gap-2">
+              <div className="col-span-2">
+                <label className={LABEL}>Monto del cargo (RD$) <span className="text-amber-400">*</span></label>
+                <input type="number" min="0" step="0.01" value={monto} onChange={e => setMonto(e.target.value)} disabled={busy}
+                  placeholder="0.00"
+                  className={`w-full px-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 font-mono placeholder-slate-600 focus:outline-none ${ACCENT.focus} focus:ring-1 transition-colors`} />
+              </div>
+              <div>
+                <label className={LABEL}>ITBIS 18%</label>
+                <button type="button" onClick={() => setAplicarItbis(v => !v)} disabled={busy}
+                  className={`w-full px-3 py-2 rounded-lg text-xs font-bold border transition-colors ${aplicarItbis ? 'bg-amber-600/20 border-amber-600/40 text-amber-300' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>
+                  {aplicarItbis ? 'Aplicar' : 'Exento'}
+                </button>
+              </div>
+              <div className="col-span-3 flex justify-between items-center px-3 py-2 rounded-lg bg-slate-900 border border-slate-800 text-xs font-mono">
+                <span className="text-slate-500">Total a cobrar</span>
+                <span className="text-base font-bold text-amber-300">RD$ {totalCalc.toFixed(2)}</span>
+              </div>
+            </div>
+          )}
+
           <div>
-            <label className={LABEL}>Motivo de la Nota de Crédito <span className="text-red-400">*</span></label>
+            <label className={LABEL}>Motivo {isNd ? 'del cargo adicional' : 'de la Nota de Crédito'} <span className={isNd ? 'text-amber-400' : 'text-red-400'}>*</span></label>
             <textarea value={motivo} onChange={e => setMotivo(e.target.value)} disabled={busy}
               maxLength={500} rows={3}
-              placeholder="Ej: Devolución por equipo defectuoso, error en facturación de cantidad, etc."
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/30 transition-colors resize-none" />
+              placeholder={isNd ? 'Ej: Penalidad por mora, intereses por pago tardío, ajuste de precio al alza.' : 'Ej: Devolución por equipo defectuoso, error en facturación de cantidad, etc.'}
+              className={`w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-600 focus:outline-none ${ACCENT.focus} focus:ring-1 transition-colors resize-none`} />
             <p className="text-[10px] text-slate-600 mt-0.5 font-mono">{motivo.length}/500 — mínimo 10 caracteres</p>
           </div>
 
           <div>
-            <label className={LABEL}>PIN de Supervisor <span className="text-red-400">*</span></label>
+            <label className={LABEL}>PIN de Supervisor <span className={isNd ? 'text-amber-400' : 'text-red-400'}>*</span></label>
             <div className="relative">
               <Lock size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" />
               <input type="password" inputMode="numeric" maxLength={8}
                 value={pin} onChange={e => setPin(e.target.value.replace(/\D/g, ''))} disabled={busy}
                 placeholder="••••"
-                className="w-full pl-9 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 font-mono tracking-widest placeholder-slate-600 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500/30 transition-colors" />
+                className={`w-full pl-9 pr-3 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-slate-100 font-mono tracking-widest placeholder-slate-600 focus:outline-none ${ACCENT.focus} focus:ring-1 transition-colors`} />
             </div>
             <p className="text-[10px] text-slate-600 mt-0.5">Configurado en Configuración &gt; Empresa &gt; PIN Supervisor.</p>
           </div>
@@ -1149,10 +1205,10 @@ function ModalNotaCredito({ factura, onClose, onSuccess }) {
             className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors disabled:opacity-40">
             Cancelar
           </button>
-          <button onClick={emitir} disabled={busy || motivo.trim().length < 10 || !/^\d{4,8}$/.test(pin)}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold bg-red-600 hover:bg-red-500 text-white transition-colors disabled:opacity-40 shadow-md shadow-red-600/30">
-            {busy ? <Loader2 size={12} className="animate-spin" /> : <Ban size={12} />}
-            Emitir Nota de Crédito
+          <button onClick={emitir} disabled={ctaDisabled}
+            className={`flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white transition-colors disabled:opacity-40 shadow-md ${ACCENT.cta}`}>
+            {busy ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />}
+            {config.label}
           </button>
         </div>
       </div>
