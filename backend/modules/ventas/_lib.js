@@ -207,6 +207,10 @@ async function nextNomenclatura(tx, tipo) {
   return {
     buildFacturaPDFBuffer,
     nextNomenclatura,
+    // Helpers de carrito (consumidos por modules/ventas/carrito/Blueprint).
+    formatCarrito,
+    efectivoUnitario,
+    totalLinea,
     // generarSiguienteCodigo ya vive en server.js — accesible vía deps.
   };
 };
