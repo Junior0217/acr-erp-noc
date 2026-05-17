@@ -3219,14 +3219,30 @@ function facturaVerifyHash(f) {
   return crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
 }
 
-// H4: persiste verifyHash en columna indexada para lookup O(log n).
-// Fire-and-forget — el endpoint /verify tiene fallback scan si aún no se persistió.
+// Lifecycle-safe verifyHash persistence.
+// CRÍTICO: re-leemos la factura via findUnique para obtener los tipos canónicos
+// que Prisma persistió (Decimal con escala fija, Date desde Postgres RETURNING).
+// El objeto in-memory devuelto por `create` puede diferir sutilmente en serialización
+// (escala Decimal, precisión Date) → hash divergente entre persist y PDF gen.
+// Esta función ahora se llama SIEMPRE con `await` (no fire-and-forget) para
+// garantizar que el verifyHash esté en DB ANTES de responder al cliente o
+// permitir cualquier render PDF posterior. Invalida pdfUrl para forzar regen
+// con QR sincronizado al hash recién persistido.
 async function persistirVerifyHash(factura) {
-  if (!factura?.id || factura.verifyHash) return factura
+  if (!factura?.id) return factura
   try {
-    const vh = facturaVerifyHash(factura)
-    await prisma.factura.update({ where: { id: factura.id }, data: { verifyHash: vh } })
+    const fresh = await prisma.factura.findUnique({
+      where:  { id: factura.id },
+      select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true },
+    })
+    if (!fresh) return factura
+    const vh = facturaVerifyHash(fresh)
+    await prisma.factura.update({
+      where: { id: factura.id },
+      data:  { verifyHash: vh, pdfUrl: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
+    })
     factura.verifyHash = vh
+    factura.pdfUrl = null
   } catch (e) {
     console.warn('[verifyHash] persist failed:', e.code, e.message)
   }
@@ -6906,7 +6922,9 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
       })
     })
 
-    persistirVerifyHash(factura).catch(() => {})
+    // Hash lifecycle: persistimos verifyHash SYNCHRONOUSLY antes de responder.
+    // Cualquier PDF/QR generado después leerá un row que ya tiene el hash final.
+    await persistirVerifyHash(factura)
     auditReq('factura:emitir', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
     res.status(201).json(factura)
 
@@ -6925,8 +6943,6 @@ app.post('/api/facturas', verificarJWT, billingLimiter, requerirPermiso('factura
 })
 
 // ─── POS / Manual Invoice ─────────────────────────────────────────────────────
-
-const CONSUMIDOR_FINAL_NO = 'CF-0001'
 
 // Generate next sequential code using ConfiguracionNCF (e.g. 'SV-001', 'OT-001', 'COT-001')
 async function nextNomenclatura(tx, tipo) {
@@ -7030,7 +7046,9 @@ const lineaPOSSchema = z.object({
 })
 
 const facturaManualSchema = z.object({
-  clienteId:    z.string().uuid().optional(),
+  // Rigor Enterprise: clienteId OBLIGATORIO. Cero clientes walk-in / manuales.
+  // Toda factura/cotización debe vincularse a un cliente real de la tabla Cliente.
+  clienteId:    z.string().uuid({ message: 'clienteId es obligatorio (selecciona o crea un cliente en CRM).' }),
   itbis:        z.boolean().optional().default(true),
   diasVence:    z.number().int().min(0).max(365).optional().default(30),
   esCotizacion: z.boolean().optional().default(false),
@@ -7089,25 +7107,18 @@ async function expandirLineaAComponentes(tx, linea) {
   return []
 }
 
-async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, nombreTemporal, descuentoGlobalPct = 0, descuentoGlobalMonto = 0, puedeOverridePrecio = false, empleadoId = null, condicionesOverride = undefined, notasOverride = undefined }) {
+async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCotizacion, lineas, tipoNcfOverride, descuentoGlobalPct = 0, descuentoGlobalMonto = 0, puedeOverridePrecio = false, empleadoId = null, condicionesOverride = undefined, notasOverride = undefined }) {
+  // Rigor Enterprise: clienteId obligatorio. Sin walk-in. Esta guard se ejecuta
+  // ANTES de abrir la $transaction para evitar costos inútiles si falta el
+  // cliente. La barrera Zod en las rutas que invocan procesarFacturaPOS también
+  // valida — este check es defense-in-depth para callers internos (revivir, etc).
+  if (!inputClienteId) {
+    throw Object.assign(new Error('clienteId es obligatorio — vincula el documento a un cliente real.'), { status: 400 })
+  }
   return prisma.$transaction(async (tx) => {
-    // 1. Resolve client
-    let cliente
-    if (inputClienteId) {
-      cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
-      if (!cliente) throw Object.assign(new Error('Cliente no encontrado.'), { status: 404 })
-    } else {
-      cliente = await tx.cliente.upsert({
-        where:  { noCliente: CONSUMIDOR_FINAL_NO },
-        update: {},
-        create: {
-          noCliente: CONSUMIDOR_FINAL_NO, razonSocial: 'Consumidor Final', nombreContacto: 'Consumidor Final',
-          tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', telefonoPrincipal: '000-000-0000',
-          email: 'consumidor@acr.do', direccion: 'N/A', sector: 'N/A', provincia: 'Santo Domingo',
-          itbis: false, tipoNcf: 'Consumidor Final', activo: true,
-        },
-      })
-    }
+    // 1. Resolve client — siempre via findUnique sobre Cliente real.
+    const cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
+    if (!cliente) throw Object.assign(new Error('Cliente no encontrado en la base de datos.'), { status: 404 })
 
     // 2. Load products (only lines that have a productoId — description-only lines skip this)
     const productoIds = [...new Set(lineas.map(l => l.productoId).filter(Boolean))]
@@ -7229,13 +7240,12 @@ async function procesarFacturaPOS({ inputClienteId, applyItbis, diasVence, esCot
     // Notas: override del usuario (PIN-autorizado) > auto-generadas. Si el
     // user envió notasOverride === '' (toggle OFF), persistimos null y el
     // PDF oculta la sección Notas vía mergeCondiciones/templater.
+    // Sin variante walk-in: clienteId es siempre real.
     const notasFinales = (notasOverride !== undefined)
       ? (notasOverride === '' ? null : notasOverride)
       : (esCotizacion
           ? `Cotización POS — ${lineas.length} línea(s)`
-          : nombreTemporal
-            ? `[WALK-IN] ${nombreTemporal} | Factura manual POS — ${lineas.length} línea(s)`
-            : `Factura manual POS — ${lineas.length} línea(s)`)
+          : `Factura manual POS — ${lineas.length} línea(s)`)
     const f = await tx.factura.create({
       data: {
         noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
@@ -7288,7 +7298,7 @@ app.post('/api/facturas/manual', verificarJWT, billingLimiter, requerirPermiso('
     const _permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     const puedeOverridePrecio = _permisos.includes('sistema:owner') || _permisos.includes('pos:override_precio')
     const factura = await procesarFacturaPOS({ inputClienteId: clienteId, applyItbis, diasVence, esCotizacion, lineas, puedeOverridePrecio, empleadoId: req.user?.sub ?? null })
-    persistirVerifyHash(factura).catch(() => {})
+    await persistirVerifyHash(factura)
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:manual', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length })
     res.status(201).json(factura)
   } catch (e) {
@@ -7326,8 +7336,10 @@ const pagoMetodoSchema = z.object({
 })
 
 const posVentaSchema = z.object({
-  clienteId:           z.string().uuid().optional(),
-  nombreTemporal:      z.string().max(120).optional(),
+  // Rigor Enterprise: clienteId OBLIGATORIO en TODA venta POS (cotización o
+  // factura). Cero walk-in / nombre libre — la trazabilidad fiscal y CRM
+  // requiere relación dura con tabla Cliente. nombreTemporal eliminado.
+  clienteId:           z.string().uuid({ message: 'clienteId es obligatorio (selecciona o crea un cliente).' }),
   tipoNcf:             z.string().optional(),
   applyItbis:          z.boolean().optional().default(true),
   diasVence:           z.number().int().min(0).max(365).optional().default(30),
@@ -7387,7 +7399,7 @@ app.post('/api/pos/verificar-pin', verificarJWT, pinVerifyLimiter, async (req, r
 
 app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
   try {
-    const { clienteId: inputClienteId, nombreTemporal, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas, condicionesOverride, notasOverride } = posVentaSchema.parse(req.body)
+    const { clienteId: inputClienteId, tipoNcf: tipoNcfOverride, applyItbis, diasVence, esCotizacion, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, pagos, lineas, condicionesOverride, notasOverride } = posVentaSchema.parse(req.body)
     const permReq = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
     const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
@@ -7510,23 +7522,11 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
     }
 
     const factura = await prisma.$transaction(async (tx) => {
-      // 1. Resolve client
-      let cliente
-      if (inputClienteId) {
-        cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
-        if (!cliente) throw Object.assign(new Error('Cliente no encontrado.'), { status: 404 })
-      } else {
-        cliente = await tx.cliente.upsert({
-          where:  { noCliente: CONSUMIDOR_FINAL_NO },
-          update: {},
-          create: {
-            noCliente: CONSUMIDOR_FINAL_NO, razonSocial: 'Consumidor Final', nombreContacto: 'Consumidor Final',
-            tipoCliente: 'Residencial', tipoEmpresa: 'Residencial', telefonoPrincipal: '000-000-0000',
-            email: 'consumidor@acr.do', direccion: 'N/A', sector: 'N/A', provincia: 'Santo Domingo',
-            itbis: false, tipoNcf: 'Consumidor Final', activo: true,
-          },
-        })
-      }
+      // 1. Resolve client — DEBE ser un Cliente real de DB. Sin walk-in / sin upsert
+      // de "Consumidor Final" fantasma. Si no llega clienteId, Zod ya rechazó la
+      // petición; este findUnique es la última barrera ante un UUID inexistente.
+      const cliente = await tx.cliente.findUnique({ where: { id: inputClienteId } })
+      if (!cliente) throw Object.assign(new Error('Cliente no encontrado en la base de datos.'), { status: 404 })
 
       // 2. Carga ItemCatalogos + Productos físicos según lo que traiga cada línea.
       const itemIds = [...new Set(lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))]
@@ -7644,14 +7644,13 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
       // Notas finales: override del usuario (autorizado por PIN) > auto-generadas.
       // Si notasOverride viene null se persiste null (oculta la sección en PDF).
       // Si viene undefined (sin override), se aplica la nota auto-generada
-      // legacy de POS para mantener trazabilidad mínima.
+      // legacy de POS para mantener trazabilidad mínima. Sin variante walk-in:
+      // todo documento se emite a un Cliente real, así que la nota refleja eso.
       const notasFinales = (notasOverride !== undefined)
         ? (notasOverride === '' ? null : notasOverride)
         : (esCotizacion
             ? `Cotización POS (catálogo) — ${lineas.length} línea(s)`
-            : nombreTemporal
-              ? `[WALK-IN] ${nombreTemporal} — ${lineas.length} línea(s)`
-              : `Factura POS (catálogo) — ${lineas.length} línea(s)`)
+            : `Factura POS (catálogo) — ${lineas.length} línea(s)`)
 
       // 5. Create Factura (no productoId — catalog items don't deduct stock)
       return tx.factura.create({
@@ -7675,7 +7674,7 @@ app.post('/api/pos/venta', verificarJWT, billingLimiter, async (req, res) => {
         },
       })
     })
-    persistirVerifyHash(factura).catch(() => {})
+    await persistirVerifyHash(factura)
     auditReq(esCotizacion ? 'cotizacion:crear' : 'factura:pos_catalogo', req, { facturaId: factura.id, total: Number(factura.total) })
 
     // ── Reservas de stock al cotizar (TTL 72h) ──────────────────────────────
@@ -7882,7 +7881,6 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
   const schema = z.object({
     esCotizacion:       z.boolean().optional().default(false),
     tipoNcfOverride:    z.string().optional(),
-    nombreTemporal:     z.string().max(100).optional(),
     descuentoGlobalPct: z.number().min(0).max(100).optional().default(0),
     descuentoGlobalMonto: z.number().min(0).optional().default(0),
     pinSupervisor:      z.string().max(20).optional(),
@@ -7895,12 +7893,22 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
     notasOverride:      z.string().max(2000).nullable().optional(),
   })
   try {
-    const { esCotizacion, tipoNcfOverride, nombreTemporal, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, condicionesOverride, notasOverride } = schema.parse(req.body)
+    const { esCotizacion, tipoNcfOverride, descuentoGlobalPct, descuentoGlobalMonto, pinSupervisor, condicionesOverride, notasOverride } = schema.parse(req.body)
     const carrito = await prisma.carritoTemp.findUnique({
       where: { empleadoId: req.user.sub },
       include: { lineas: true },
     })
     if (!carrito || carrito.lineas.length === 0) return res.status(400).json({ error: 'Carrito vacío.' })
+    // Rigor Enterprise: el carrito DEBE tener clienteId. Sin walk-in / sin
+    // contacto manual. El cajero debe seleccionar (o crear via CRM) un cliente
+    // real antes de checkout. Hard-fail con código accionable para que la UI
+    // pueda guiar al cajero al selector.
+    if (!carrito.clienteId) {
+      return res.status(400).json({
+        error: 'Selecciona un cliente de la base de datos antes de emitir.',
+        code:  'CLIENTE_REQUERIDO',
+      })
+    }
     const lineas = carrito.lineas.map(l => ({
       productoId:          l.productoId,
       cantidad:            l.cantidad,
@@ -7911,13 +7919,12 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
     const _permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
     const _puedeOverride = _permisos.includes('sistema:owner') || _permisos.includes('pos:override_precio')
     const factura = await procesarFacturaPOS({
-      inputClienteId: carrito.clienteId ?? undefined,
+      inputClienteId: carrito.clienteId,
       applyItbis:     carrito.applyItbis,
       diasVence:      carrito.diasVence,
       esCotizacion,
       lineas,
       tipoNcfOverride,
-      nombreTemporal,
       descuentoGlobalPct,
       descuentoGlobalMonto,
       puedeOverridePrecio: _puedeOverride,
@@ -7925,6 +7932,7 @@ app.post('/api/carrito/checkout', verificarJWT, billingLimiter, requerirPermiso(
       condicionesOverride,
       notasOverride,
     })
+    await persistirVerifyHash(factura)
     await prisma.lineaCarrito.deleteMany({ where: { carritoId: carrito.id } })
     auditReq(esCotizacion ? 'carrito:cotizacion' : 'carrito:checkout', req, { facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total) })
     if (descuentoGlobalPct > 0 || descuentoGlobalMonto > 0) {

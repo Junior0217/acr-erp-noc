@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink,
-  Wifi, Camera, Wrench, Zap, Package, Network, Boxes, GripVertical, Lock, KeyRound, Keyboard,
+  Wifi, Camera, Wrench, Zap, Package, Network, Boxes, GripVertical, Lock, KeyRound, Keyboard, AlertCircle,
 } from 'lucide-react'
 import { apiFetch } from '@shared/utils/api'
 import { useAuth } from '@shared/contexts/AuthContext'
@@ -569,7 +569,6 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   // Carrito persistido en localStorage vía CartContext — sobrevive cambios de tab.
   const { posCart: cart, posAddItem, posUpdateLine, posRemoveLine, posClear } = useCart()
   const [cliente, setCliente]       = useState(null)
-  const [nombreWalkin, setNombreWalkin] = useState('')
   const [applyItbis, setApplyItbis] = useState(true)
   const [descGlobalPct, setDescGlobalPct] = useState(0)
   const [descGlobalMonto, setDescGlobalMonto] = useState(0)
@@ -641,13 +640,14 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         const el = document.querySelector('input[placeholder*="producto" i], input[placeholder*="catálogo" i]')
         el?.focus?.()
       }
-      else if (e.key === 'F8' && canCotizar && cart.length) { e.preventDefault(); submit(true) }
-      else if (e.key === 'F9' && canFacturar && cart.length) { e.preventDefault(); setShowCheckout(true) }
+      // F8/F9 también exigen cliente seleccionado — emisión bloqueada sin él.
+      else if (e.key === 'F8' && canCotizar && cart.length && cliente) { e.preventDefault(); submit(true) }
+      else if (e.key === 'F9' && canFacturar && cart.length && cliente) { e.preventDefault(); setShowCheckout(true) }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cart.length, descuentosUnlocked, canCotizar, canFacturar])
+  }, [cart.length, descuentosUnlocked, canCotizar, canFacturar, cliente])
 
   // Re-lock descuentos cuando se limpia el carrito (después de venta exitosa).
   useEffect(() => {
@@ -680,10 +680,10 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   async function submit(esCotizacion, opts = {}) {
     const { pagos = null, pinSupervisor = null } = opts
     if (!cart.length) { toast.error('El carrito está vacío.'); return }
-    // Validación dura: cliente o walk-in obligatorio. Antes pasaba con ambos
-    // null y dejaba la factura sin contraparte identificable.
-    if (!cliente && !nombreWalkin.trim()) {
-      toast.error('Selecciona un cliente o ingresa un nombre de contacto antes de continuar.')
+    // Rigor Enterprise: clienteId obligatorio. Cero walk-in. El cajero debe
+    // seleccionar (o crear desde CRM) un cliente real antes de emitir.
+    if (!cliente) {
+      toast.error('Selecciona un cliente de la base de datos antes de emitir.')
       return
     }
     const requiredPerm = esCotizacion ? 'pos:cotizar' : 'pos:facturar'
@@ -694,9 +694,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
     try {
       const pinFinal = pinSupervisor || pinSupervisorState || null
       const body = {
-        clienteId:            cliente?.id ?? undefined,
-        nombreTemporal:       !cliente && nombreWalkin ? nombreWalkin : undefined,
-        // tipoNcf eliminado del UI: backend deriva de cliente.tipoNCF.
+        clienteId:            cliente.id,
+        // tipoNcf eliminado del UI: backend deriva de cliente.tipoNcf.
         applyItbis,
         esCotizacion,
         descuentoGlobalPct:   descGlobalPct,
@@ -722,7 +721,6 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       if (!esCotizacion) setLastFacturaId(j.id)
       posClear()
       setCliente(null)
-      setNombreWalkin('')
       setDescGlobalPct(0)
       setDescGlobalMonto(0)
       setShowCheckout(false)
@@ -788,16 +786,14 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
           <span className="text-[9px] font-normal text-slate-600 normal-case tracking-normal">(arrastra desde el catálogo o clic)</span>
         </p>
 
-        {/* Client */}
+        {/* Client — selección obligatoria desde la base de datos. Sin walk-in. */}
         <div className="space-y-2">
           <ClienteSearch clienteId={cliente?.id} onChange={setCliente} />
           {!cliente && (
-            <input
-              value={nombreWalkin}
-              onChange={e => setNombreWalkin(e.target.value)}
-              placeholder="Walk-in (nombre opcional)…"
-              className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500"
-            />
+            <div className="flex items-start gap-1.5 px-2 py-1.5 rounded-lg bg-red-900/20 border border-red-700/40 text-[10px] text-red-300 leading-tight">
+              <AlertCircle size={11} className="text-red-400 flex-shrink-0 mt-0.5" />
+              <span>Cliente obligatorio. Usa F2 para buscar o crea uno en CRM (sin walk-in / sin nombres manuales).</span>
+            </div>
           )}
         </div>
 
@@ -851,9 +847,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                 <span className={`block w-4 h-4 rounded-full bg-white transition-transform mx-0.5 ${applyItbis ? 'translate-x-4' : 'translate-x-0'}`} />
               </button>
             </div>
-            {/* Selector "Tipo NCF" eliminado: el comprobante se infiere del
-                cliente seleccionado (cliente.tipoNCF), o del default fiscal
-                cuando es walk-in. Cero ambigüedad para el cajero. */}
+            {/* Selector "Tipo NCF" eliminado: el comprobante se infiere
+                exclusivamente del cliente seleccionado (cliente.tipoNcf). */}
             <div className="space-y-0.5 text-xs font-mono">
               <div className="flex justify-between text-slate-500"><span>Subtotal</span><span>RD$ {fmt(subtotal)}</span></div>
               {applyItbis && <div className="flex justify-between text-slate-500"><span>ITBIS</span><span>RD$ {fmt(itbisAmt)}</span></div>}
@@ -873,15 +868,17 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
             </button>
           )}
           {canCotizar && (
-            <button onClick={() => submit(true)} disabled={submitting || !cart.length}
-              className="w-full py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-100 text-sm font-semibold transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+            <button onClick={() => submit(true)} disabled={submitting || !cart.length || !cliente}
+              title={!cliente ? 'Selecciona un cliente registrado para emitir' : ''}
+              className="w-full py-2.5 rounded-xl bg-slate-700 hover:bg-slate-600 border border-slate-600 text-slate-100 text-sm font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
               Guardar Cotización
             </button>
           )}
           {canFacturar && (
-            <button onClick={() => setShowCheckout(true)} disabled={submitting || !cart.length}
-              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 border border-blue-500 text-white text-sm font-bold transition-all disabled:opacity-40 flex items-center justify-center gap-2">
+            <button onClick={() => setShowCheckout(true)} disabled={submitting || !cart.length || !cliente}
+              title={!cliente ? 'Selecciona un cliente registrado para emitir' : ''}
+              className="w-full py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 border border-blue-500 text-white text-sm font-bold transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2">
               {submitting ? <Loader2 size={14} className="animate-spin" /> : <ShoppingBag size={14} />}
               Cobrar / Facturar
             </button>

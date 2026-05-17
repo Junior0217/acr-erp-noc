@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound, Info } from 'lucide-react'
+import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound, Info, AlertCircle } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
 import { useEmpresa } from '../contexts/EmpresaContext'
 import { apiFetch } from '../utils/api'
@@ -189,7 +189,6 @@ const CONDICIONES_META = [
 export default function CarritoSlideOver() {
   const { carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout } = useCart()
   const { empresa } = useEmpresa()
-  const [nombreWalkIn, setNombreWalkIn] = useState('')
   const [descTipo, setDescTipo]         = useState('pct')
   const [descValor, setDescValor]       = useState(0)
   // Bloqueo de descuentos: por defecto LOCK. Solo se libera tras autorizar
@@ -264,12 +263,10 @@ export default function CarritoSlideOver() {
 
   async function handleCheckout(esCotizacion) {
     if (!lineas.length) { toast.warning('El carrito está vacío.'); return }
-    // Validación dura: cliente o contacto walk-in son OBLIGATORIOS para
-    // emitir un documento. Antes ambos podían ser null y la factura quedaba
-    // huérfana — ahora se exige al menos uno.
-    const nombre = !cliente && nombreWalkIn.trim() ? nombreWalkIn.trim() : undefined
-    if (!cliente && !nombre) {
-      toast.error('Vincula un cliente o ingresa un nombre de contacto antes de continuar.')
+    // Rigor Enterprise: clienteId obligatorio. Sin walk-in. El cajero debe
+    // seleccionar un cliente real (o crearlo en CRM) antes de emitir.
+    if (!cliente) {
+      toast.error('Selecciona un cliente de la base de datos antes de emitir.')
       return
     }
     // tipoNcf eliminado del UI: se infiere automáticamente del cliente
@@ -294,9 +291,8 @@ export default function CarritoSlideOver() {
       ...(Object.keys(condicionesOverride).length ? { condicionesOverride } : {}),
       notasOverride,
     }
-    const f = await checkout(esCotizacion, undefined, nombre, extra)
+    const f = await checkout(esCotizacion, undefined, extra)
     if (f) {
-      setNombreWalkIn('')
       setDescValor(0)
       setDescTipo('pct')
       setOpen(false)
@@ -305,7 +301,6 @@ export default function CarritoSlideOver() {
 
   async function handleClienteSelect(c) {
     await updateCartMeta({ clienteId: c?.id ?? null })
-    if (c) setNombreWalkIn('')
   }
 
   return (
@@ -336,7 +331,9 @@ export default function CarritoSlideOver() {
 
         <div className="px-4 py-3 border-b border-slate-800 flex-shrink-0 space-y-3">
           <div>
-            <label className="block text-xs text-slate-500 mb-1.5 font-medium">Cliente</label>
+            <label className="block text-xs text-slate-500 mb-1.5 font-medium flex items-center gap-1">
+              Cliente <span className="text-red-400">*</span>
+            </label>
             <ClienteSearch clienteActual={cliente} onSelect={handleClienteSelect} />
             {cliente && (
               <div className="flex items-center gap-1.5 mt-1.5">
@@ -346,19 +343,18 @@ export default function CarritoSlideOver() {
               </div>
             )}
             {!cliente && (
-              <input
-                className="mt-2 w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors"
-                placeholder="Nombre walk-in (opcional)..."
-                value={nombreWalkIn}
-                onChange={e => setNombreWalkIn(e.target.value)}
-                maxLength={100}
-              />
+              <div className="mt-2 flex items-start gap-2 px-2.5 py-2 rounded-lg bg-red-900/20 border border-red-700/40 text-[11px] text-red-300">
+                <AlertCircle size={13} className="text-red-400 flex-shrink-0 mt-0.5" />
+                <span>
+                  Selecciona un cliente registrado. No se permiten documentos sin vínculo a CRM
+                  (sin clientes "walk-in" ni nombres manuales).
+                </span>
+              </div>
             )}
           </div>
 
           {/* Tipo de Comprobante eliminado: el backend deriva el NCF
-              automáticamente desde el cliente seleccionado (cliente.tipoNCF
-              o el default fiscal del walk-in). Cero selector manual. */}
+              automáticamente desde el cliente seleccionado (cliente.tipoNcf). */}
 
           <div className="flex items-center justify-between">
             <label className="text-xs text-slate-400 font-medium">Aplicar ITBIS (18%)</label>
@@ -559,26 +555,28 @@ export default function CarritoSlideOver() {
             </div>
 
             {/* NCF indicador removido — se infiere del cliente automáticamente. */}
-            {!cliente && nombreWalkIn.trim() && (
+            {!cliente && (
               <div className="px-4 pb-1 flex items-center gap-1.5">
-                <UserCheck size={11} className="text-sky-400" />
-                <span className="text-xs text-sky-400">{nombreWalkIn.trim()}</span>
+                <AlertCircle size={11} className="text-red-400" />
+                <span className="text-[11px] text-red-400">Selecciona un cliente para habilitar emisión</span>
               </div>
             )}
 
             <div className="px-4 py-3 grid grid-cols-2 gap-2">
               <button
                 onClick={() => handleCheckout(true)}
-                disabled={loading}
-                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium transition-colors disabled:opacity-50"
+                disabled={loading || !cliente}
+                title={!cliente ? 'Selecciona un cliente registrado' : ''}
+                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-slate-100 text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <FileText size={14} />}
                 Cotización
               </button>
               <button
                 onClick={() => handleCheckout(false)}
-                disabled={loading}
-                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors disabled:opacity-50"
+                disabled={loading || !cliente}
+                title={!cliente ? 'Selecciona un cliente registrado' : ''}
+                className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-sm font-medium transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <CreditCard size={14} />}
                 Emitir Factura

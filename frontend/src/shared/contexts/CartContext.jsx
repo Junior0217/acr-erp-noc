@@ -132,12 +132,13 @@ export function CartProvider({ children }) {
     } catch {}
   }
 
-  async function checkout(esCotizacion = false, tipoNcfOverride, nombreTemporal, extra = {}) {
+  async function checkout(esCotizacion = false, tipoNcfOverride, extra = {}) {
     setLoading(true)
     try {
+      // Rigor Enterprise: el carrito DEBE tener cliente vinculado (DB).
+      // El backend rechaza cualquier checkout sin clienteId con CLIENTE_REQUERIDO.
       const body = { esCotizacion }
       if (tipoNcfOverride) body.tipoNcfOverride = tipoNcfOverride
-      if (nombreTemporal)  body.nombreTemporal  = nombreTemporal
       // descuentos / PIN supervisor / overrides de condiciones / notas viajan
       // todos en `extra`. El backend los expone vía posVentaSchema.
       if (extra.descuentoGlobalPct   > 0) body.descuentoGlobalPct   = extra.descuentoGlobalPct
