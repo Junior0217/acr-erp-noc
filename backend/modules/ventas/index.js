@@ -18,11 +18,22 @@ const createCatalogoRouter     = require('./catalogo/router');
 function createVentasRouter(deps) {
   const router = express.Router();
 
-  const lib = require('./_lib')(deps);
-  require('./_cron')(deps, lib);
+  // PDF module (Blueprint Fase 1.3): construido en server.js y pasado via
+  // deps.pdfModule = { router, service }. service se inyecta a cron + lib.
+  // Esto evita que pdf se instancie dos veces (server.js lo necesita para el
+  // handler legacy /facturas/:id/condiciones que sigue inline).
+  const pdfModule  = deps.pdfModule;
+  if (!pdfModule || !pdfModule.router || !pdfModule.service) {
+    throw new Error('createVentasRouter: deps.pdfModule { router, service } requerido');
+  }
+  const subDepsWithPdf = { ...deps, pdfService: pdfModule.service };
 
-  const subDeps = { ...deps, ...lib };
+  const lib = require('./_lib')(subDepsWithPdf);
+  require('./_cron')(subDepsWithPdf, lib);
 
+  const subDeps = { ...subDepsWithPdf, ...lib };
+
+  router.use('/', pdfModule.router);
   router.use('/', createCotizacionesRouter(subDeps));
   router.use('/', createFacturasRouter(subDeps));
   router.use('/', createPosRouter(subDeps));

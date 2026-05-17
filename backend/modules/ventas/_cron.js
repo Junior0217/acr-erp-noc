@@ -11,8 +11,9 @@ let _registered = false;
 module.exports = function registerVentasCron(deps, lib) {
   if (_registered) return;
   _registered = true;
-  const { prisma, auditReq, generarPdfDeFactura, subirPdfAlStorage, sendFacturaPDF, emailTransporter } = deps;
+  const { prisma, auditReq, pdfService, sendFacturaPDF, emailTransporter } = deps;
   const { buildFacturaPDFBuffer, nextNomenclatura } = lib;
+  if (!pdfService) throw new Error('ventas/_cron: deps.pdfService requerido (pasarlo desde server.js → ventas/index.js).');
 
 // ─── WISP Auto-Biller Cron ────────────────────────────────────────────────────
 
@@ -141,137 +142,11 @@ cron.schedule('10 0 * * *', billarMoras, { timezone: 'America/Santo_Domingo' })
 
 
 // ─── Pre-render asíncrono de PDFs (latencia cero) ────────────────────────────
-// Cada 5 min escanea facturas/cotizaciones de los últimos 7 días con pdfUrl IS NULL
-// y las renderiza en background. Cuando el usuario clickea "Ver PDF" después,
-// el cache hit es 100% — Puppeteer ni se invoca, redirect directo a Supabase.
-//
-// Guardrails:
-//   - Lock single-flight (_pdfCronRunning) evita overlap si el render se demora.
-//   - Cap por corrida (15 documentos máx) — evita saturar Render Free Tier.
-//   - Concurrency 2 dentro de la corrida — el page pool tiene 2 páginas idle.
-//   - Skip si SUPABASE_STORAGE no configurado (sin destino válido).
-let _pdfCronRunning = false
-const PDF_PRERENDER_BATCH    = 15
-const PDF_PRERENDER_CONCURRENCY = 2
-
-// H11: máximo 5 intentos por factura para evitar romper el batch entero por una
-// fila tóxica (data corruption, assets gigantes, infinite-loop en HTML inválido).
-const PDF_PRERENDER_MAX_ATTEMPTS = 5
-
-async function prerenderPdfsBatch() {
-  if (_pdfCronRunning) return
-  if (!supabase)       return
-  _pdfCronRunning = true
-  const t0 = Date.now()
-  let ok = 0, fail = 0, skipped = 0
-  try {
-    const desde = new Date(Date.now() - 7 * 86_400_000)
-    const candidatos = await prisma.factura.findMany({
-      where:  {
-        pdfUrl: null,
-        deletedAt: null,
-        fechaEmision: { gte: desde },
-        // H11: excluye filas que ya rebasaron el umbral de intentos.
-        pdfRenderAttempts: { lt: PDF_PRERENDER_MAX_ATTEMPTS },
-      },
-      select: { id: true, esCotizacion: true, noFactura: true, pdfRenderAttempts: true },
-      orderBy: [{ pdfRenderAttempts: 'asc' }, { fechaEmision: 'desc' }],
-      take:   PDF_PRERENDER_BATCH,
-    })
-    if (candidatos.length === 0) return
-
-    async function renderOne(c) {
-      try {
-        const f = await prisma.factura.findUnique({
-          where:   { id: c.id },
-          include: {
-            cliente:       true,
-            lineas:        { include: { producto: { select: { sku: true, nombre: true } } } },
-            facturaOrigen: { select: { noFactura: true, ncf: true, tipoNcf: true } },
-          },
-        })
-        if (!f || f.deletedAt) return
-        // M8: snapshot del timestamp de invalidación ANTES de rendrir.
-        const invalidatedAtBefore = f.pdfInvalidatedAt
-        const data    = await buildPdfData(f)
-        const tipo    = f.esCotizacion ? 'cotizacion'
-                       : f.esNotaCredito ? 'nota-credito'
-                       : f.esNotaDebito  ? 'nota-debito'
-                       : 'factura'
-        const html    = renderPdfDoc({ tipo, numero: f.noFactura, ...data })
-        const pdfBuf  = await generarPdfDocumento(html)
-
-        // M8: re-check pdfInvalidatedAt — si cambió mid-flight, otra ruta mutó
-        // la factura y nuestro PDF es OBSOLETO. Descartar sin subir/persistir.
-        const reFetch = await prisma.factura.findUnique({
-          where: { id: f.id },
-          select: { pdfInvalidatedAt: true, deletedAt: true },
-        })
-        if (reFetch?.deletedAt) return
-        if (reFetch?.pdfInvalidatedAt && (!invalidatedAtBefore || reFetch.pdfInvalidatedAt > invalidatedAtBefore)) {
-          console.warn(`[PDF CRON] ${c.noFactura} invalidated mid-render — descartando.`)
-          return
-        }
-
-        const url = await subirPdfAlStorage(pdfBuf, f)
-        if (url) {
-          // Render OK: pdfUrl set, attempts no se incrementa (queda donde estaba).
-          // updateMany con WHERE pdfInvalidatedAt sin cambio -> CAS final atómico.
-          const r = await prisma.factura.updateMany({
-            where: {
-              id: f.id,
-              OR: [
-                { pdfInvalidatedAt: null },
-                { pdfInvalidatedAt: invalidatedAtBefore ?? new Date(0) },
-              ],
-            },
-            data: { pdfUrl: url },
-          })
-          if (r.count === 0) {
-            console.warn(`[PDF CRON] ${c.noFactura} CAS rechazó update — invalidación tardía.`)
-          }
-          ok++
-        } else {
-          // Upload falló pero el render OK - cuenta como fail e incrementa attempts.
-          await prisma.factura.update({ where: { id: f.id }, data: { pdfRenderAttempts: (c.pdfRenderAttempts ?? 0) + 1 } }).catch(() => {})
-          fail++
-        }
-      } catch (e) {
-        console.error(`[PDF CRON] ${c.noFactura} (attempt ${(c.pdfRenderAttempts ?? 0) + 1}/${PDF_PRERENDER_MAX_ATTEMPTS}):`, e.message)
-        // Incrementa contador: el siguiente batch puede saltarse esta fila si supera el umbral.
-        await prisma.factura.update({
-          where: { id: c.id },
-          data:  { pdfRenderAttempts: (c.pdfRenderAttempts ?? 0) + 1 },
-        }).catch(() => {})
-        if ((c.pdfRenderAttempts ?? 0) + 1 >= PDF_PRERENDER_MAX_ATTEMPTS) {
-          console.warn(`[PDF CRON] ${c.noFactura} ALCANZÓ ${PDF_PRERENDER_MAX_ATTEMPTS} intentos. Excluida hasta reset manual.`)
-          skipped++
-        }
-        fail++
-      }
-    }
-
-    // Worker pool simple: N workers tomando del cursor.
-    let cursor = 0
-    await Promise.all(
-      Array.from({ length: Math.min(PDF_PRERENDER_CONCURRENCY, candidatos.length) }, async () => {
-        while (cursor < candidatos.length) {
-          const idx = cursor++
-          await renderOne(candidatos[idx])
-        }
-      })
-    )
-
-    console.log(`[PDF CRON] batch ${candidatos.length} docs en ${Date.now() - t0}ms · ok=${ok} fail=${fail} dead=${skipped}`)
-  } catch (e) {
-    console.error('[PDF CRON]', e.message)
-  } finally {
-    _pdfCronRunning = false
-  }
-}
-
-// */5 * * * *  →  cada 5 min en TZ de RD.
-cron.schedule('*/5 * * * *', prerenderPdfsBatch, { timezone: 'America/Santo_Domingo' })
+// La lógica vive ahora en modules/ventas/pdf/service.js (prerenderPdfsBatch).
+// Este cron solo lo dispara cada 5 min. Cron == "cuando", service == "qué".
+cron.schedule('*/5 * * * *', () => pdfService.prerenderPdfsBatch().catch(e => console.error('[PDF CRON tick]', e.message)), {
+  timezone: 'America/Santo_Domingo',
+})
 
 
 

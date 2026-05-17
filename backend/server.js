@@ -619,487 +619,32 @@ app.post(
 // Pipeline completo (validación MIME por magic bytes, anti-SSRF, sharp resize,
 // rehosting en Supabase Storage + auditoría) vive ahí; server.js solo monta.
 
-// ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
-
-// ─── Anti-tamper hash (HMAC) ──────────────────────────────────────────────────
-// _normStr/_normMoney/_normDateYMD/facturaVerifyHash/persistirVerifyHash viven
-// en shared/services/verify-hash.service.js. La normalización rígida es load-
-// bearing — ver docs ahí. Aquí solo conservamos PUBLIC_VERIFY_BASE (URL del
-// frontend para el QR) y la lógica de invalidación de cache PDF post-template.
-
-// PUBLIC_URL para verificación (frontend host). Cadena de fallbacks para que
-// el QR del PDF SIEMPRE tenga URL que apuntar. Antes: si PUBLIC_FRONTEND_URL
-// no estaba seteado en prod, verifyQrDataUri quedaba null y el QR no se
-// imprimía. Ahora derivamos en orden:
-//   1. PUBLIC_FRONTEND_URL — preferida, configurada explícitamente.
-//   2. CORS_ORIGIN — primer origen de la lista (típicamente el frontend prod).
-//   3. localhost:5173 — último recurso para no romper dev.
-function resolverVerifyBase() {
-  const explicit = (process.env.PUBLIC_FRONTEND_URL ?? '').trim().replace(/\/+$/, '')
-  if (explicit) return explicit
-  const corsList = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
-  const httpsCors = corsList.find(o => /^https:\/\//i.test(o))
-  if (httpsCors) return httpsCors.replace(/\/+$/, '')
-  if (corsList[0]) return corsList[0].replace(/\/+$/, '')
-  return 'http://localhost:5173'
-}
-const PUBLIC_VERIFY_BASE = resolverVerifyBase()
-console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${PUBLIC_VERIFY_BASE}`)
-
-// ─── Invalidación auto de PDFs cacheados por versión de template ──────────────
-// Cuando cambia la plantilla (paleta, layout, QR, etc), las copias en Supabase
-// quedan desfasadas. Persistimos la versión activa en EmpresaPerfil.secuenciasConfig
-// bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
-// vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
-// el template nuevo. Cero intervención manual, cero migración de schema.
-const PDF_TEMPLATE_VERSION = 'v11-2026-05-17-qr-url-natural-wrap'
-let _pdfCacheVersionChecked = false
-async function invalidarPdfsSiCambioTemplate() {
-  if (_pdfCacheVersionChecked) return
-  _pdfCacheVersionChecked = true
-  try {
-    const emp = await prisma.empresaPerfil.findUnique({
-      where:  { id: 1 },
-      select: { secuenciasConfig: true },
-    })
-    const cfg = (emp?.secuenciasConfig && typeof emp.secuenciasConfig === 'object') ? emp.secuenciasConfig : {}
-    if (cfg._pdfCacheVersion === PDF_TEMPLATE_VERSION) {
-      console.log(`[PDF] template ${PDF_TEMPLATE_VERSION} ya activa, sin cambios`)
-      return
-    }
-    // v8: el algoritmo de verifyHash cambió (normalización rígida). Hashes
-    // antiguos en DB son obsoletos — los limpiamos para que el endpoint
-    // /verify recalcule con la nueva función y self-heal backfillea.
-    const r = await prisma.factura.updateMany({
-      where: { OR: [{ pdfUrl: { not: null } }, { verifyHash: { not: null } }] },
-      data:  { pdfUrl: null, verifyHash: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
-    })
-    // Si el record empresa no existe (DB virgen) o el update falla, NO abortamos
-    // la invalidación masiva — la próxima cold-start lo intentará otra vez. Lo
-    // importante es que los pdfUrl quedaron null y el siguiente render
-    // regenerará con el template nuevo.
-    if (emp) {
-      try {
-        await prisma.empresaPerfil.update({
-          where: { id: 1 },
-          data:  { secuenciasConfig: { ...cfg, _pdfCacheVersion: PDF_TEMPLATE_VERSION } },
-        })
-      } catch (eUp) { console.warn('[PDF] no se pudo persistir versión activa:', eUp.message) }
-    } else {
-      console.warn('[PDF] empresa(id=1) no existe — invalidación corrió igual, marker se persistirá tras crear la empresa')
-    }
-    console.log(`[PDF] template ${PDF_TEMPLATE_VERSION} activa — invalidados ${r.count} PDFs cacheados`)
-  } catch (e) { console.warn('[PDF] cache-version check fail:', e.message) }
-}
-// Disparamos asíncrono al boot — no bloquea el listen ni la rate-limit warmup.
-invalidarPdfsSiCambioTemplate().catch(() => {})
-
-// ─── Cache PDF en Supabase Storage ────────────────────────────────────────────
-const PDF_CACHE_BUCKET = process.env.SUPABASE_PDF_BUCKET ?? 'documentos-pdf'
-
-async function subirPdfAlStorage(buf, factura) {
-  if (!supabase) return null
-  const fecha = new Date(factura.fechaEmision ?? Date.now())
-  const path = `${fecha.getFullYear()}/${String(fecha.getMonth() + 1).padStart(2, '0')}/${factura.id}.pdf`
-  const { error } = await supabase.storage.from(PDF_CACHE_BUCKET).upload(path, buf, {
-    contentType:  'application/pdf',
-    cacheControl: '604800', // 7 días en CDN
-    upsert:       true,     // regeneración sobrescribe
-  })
-  if (error) { console.error('[PDF CACHE upload]', error.message); return null }
-  const { data } = supabase.storage.from(PDF_CACHE_BUCKET).getPublicUrl(path)
-  return data?.publicUrl ?? null
-}
-
-async function invalidarPdfCache(facturaId) {
-  if (!facturaId) return
-  try {
-    const f = await prisma.factura.findUnique({ where: { id: facturaId }, select: { pdfUrl: true, fechaEmision: true } })
-    // M8: SIEMPRE actualizar pdfInvalidatedAt para que el cron sepa que hubo
-    // cambio mid-flight aunque no hubiera PDF previo (ej. factura mutada antes
-    // del primer render).
-    const ahora = new Date()
-    await prisma.factura.update({
-      where: { id: facturaId },
-      data:  { pdfUrl: null, pdfInvalidatedAt: ahora, pdfRenderAttempts: 0 },
-    })
-    if (f?.pdfUrl && supabase) {
-      const fecha = new Date(f.fechaEmision ?? Date.now())
-      const path = `${fecha.getFullYear()}/${String(fecha.getMonth() + 1).padStart(2, '0')}/${facturaId}.pdf`
-      await supabase.storage.from(PDF_CACHE_BUCKET).remove([path]).catch(() => {})
-    }
-  } catch (e) { console.error('[PDF CACHE invalidate]', e.message) }
-}
-
-// Merge per-doc condiciones sobre EmpresaPerfil defaults.
-// Cada campo del doc puede ser:
-//   string             → incluir si no vacío
-//   {incluir, texto}   → toggle explícito (UI nueva): incluir=false oculta la fila
-//   null/undefined     → fall-through al default empresa
-// Default empresa es siempre string. Si el doc dice incluir=false, NUNCA cae al default
-// (el usuario decidió ocultarla en este documento concreto).
-function mergeCondiciones(empresa, factura) {
-  const defs = empresa?.condicionesDefault ?? {}
-  const obligatorios = defs?._obligatorio ?? {}
-  const own  = factura?.condiciones ?? {}
-  const defaultText = (k) => {
-    const d = defs?.[k]
-    return typeof d === 'string' && d.trim() ? d.trim() : null
-  }
-  const pick = (k) => {
-    // Términos marcados obligatorios en MiEmpresa NO se pueden ocultar a nivel
-    // de documento. Cualquier override que diga `incluir:false` es ignorado y
-    // siempre cae al texto default de empresa. Si no hay default, retornamos
-    // null para no imprimir una fila vacía con el label suelto.
-    if (obligatorios[k]) return defaultText(k)
-    const v = own?.[k]
-    if (v !== undefined && v !== null) {
-      if (typeof v === 'string') {
-        const s = v.trim()
-        return s || null
-      }
-      if (typeof v === 'object') {
-        if (!v.incluir) return null
-        const s = String(v.texto ?? '').trim()
-        return s || null
-      }
-    }
-    // No override -> default empresa.
-    return defaultText(k)
-  }
-  return {
-    validez:  pick('validez'),
-    pago:     pick('pago'),
-    entrega:  pick('entrega'),
-    garantia: pick('garantia'),
-  }
-}
-
-// Clasifica la composición de una factura según sus líneas. Si tiene SOLO
-// productos físicos (con productoId vinculado) → 'Artículos'. Si tiene SOLO
-// servicios/líneas sin producto → 'Servicio'. Si mezcla ambos → 'Mixto'.
-function _composicionFactura(lineas) {
-  let hasArt = false, hasSrv = false
-  for (const l of lineas) {
-    const tipo = l.producto?.tipoItem
-    if (l.productoId && tipo !== 'SERVICIO') hasArt = true
-    else hasSrv = true
-    if (hasArt && hasSrv) break
-  }
-  if (hasArt && hasSrv) return 'Mixto'
-  if (hasArt) return 'Artículos'
-  return 'Servicio'
-}
-
-async function buildPdfData(facturaOrCotizacion) {
-  const f = facturaOrCotizacion
-  // Si la factura tiene snapshot fiscal (emitida con el sistema nuevo), USA esa data
-  // congelada en vez del estado vivo de EmpresaPerfil/Cliente. Garantiza que un PDF
-  // re-generado hoy muestre los datos que tenía el día que se emitió (DGII compliance).
-  const snap = f.snapshot && typeof f.snapshot === 'object' ? f.snapshot : null
-  const empresa = snap?.empresa
-    ? { ...snap.empresa, condicionesDefault: snap.empresa.condicionesDefault ?? {} }
-    : await prisma.empresaPerfil.findUnique({ where: { id: 1 } })
-  const empresaConAssets = empresa
-    ? { ...empresa, assets: await inlineAssets(empresa.assets ?? {}) }
-    : { razonSocial: '', rnc: '', assets: {} }
-  const c = snap?.cliente ?? f.cliente ?? {}
-  // M7: cotizaciones NO son documento fiscal. La cédula es PII sensible; si el
-  // PDF se filtra (compartido por WhatsApp/email), el RNC empresarial basta.
-  // Personas físicas sin RNC -> cédula enmascarada (últimos 4 dígitos).
-  const cedulaParaPDF = f.esCotizacion
-    ? (c.rnc ? null : (c.cedula ? `***-*******-${String(c.cedula).replace(/\D/g, '').slice(-4)}` : null))
-    : c.cedula
-  // Hash computado UNA sola vez sobre la lectura DB de la factura — mismo valor
-  // viaja al QR (image) y a la sección verify (texto debajo del QR). Antes se
-  // recomputaba en dos puntos y, si f mutaba mid-build (caso raro pero posible
-  // con relations lazy-loaded), las dos llamadas divergían.
-  const verifyHashFinal = facturaVerifyHash(f, 'pdf-build')
-  const verifyUrl = `${PUBLIC_VERIFY_BASE}/verify/${verifyHashFinal}`
-  return {
-    empresa: empresaConAssets,
-    cliente: {
-      razonSocial: c.razonSocial,
-      noCliente:   c.noCliente,
-      rnc:         c.rnc,
-      contacto:    c.nombreContacto ?? c.contacto ?? null,
-      cedula:      cedulaParaPDF,
-      direccion:   c.direccion,
-      sector:      c.sector,
-      provincia:   c.provincia,
-      telefono:    c.telefono ?? c.telefonoPrincipal ?? c.telefonoContacto ?? null,
-      email:       c.email,
-    },
-    // LineaFactura SOLO tiene relación con producto (no con itemCatalogo).
-    // Fallback a orden.lineas para facturas OT-based (sin LineaFactura propia).
-    // Excluye consumoInterno (materiales gastados en instalación no facturables).
-    items: ((f.lineas?.length ? f.lineas : (f.orden?.lineas ?? []))
-      .filter(l => !l.consumoInterno)
-      .map(l => ({
-        codigo:         l.producto?.sku ?? (l.producto?.id ? `ART-${String(l.producto.id).padStart(3, '0')}` : null),
-        descripcion:    l.descripcion,
-        detalle:        l.producto?.nombre && l.producto.nombre !== l.descripcion ? l.producto.nombre : null,
-        sku:            l.producto?.sku ?? null,
-        cantidad:       l.cantidad,
-        precioUnitario: Number(l.precioUnitario),
-      }))),
-    // Tipo de composición DINÁMICO: cuenta productos físicos vs servicios para
-    // mostrar al cliente si está pagando algo tangible, intangible o mixto.
-    tipoComposicion: _composicionFactura((f.lineas?.length ? f.lineas : (f.orden?.lineas ?? [])).filter(l => !l.consumoInterno)),
-    ncf:          f.ncf ?? null,
-    tipoNcf:      f.tipoNcf ?? null,
-    subtotal:     Number(f.subtotal),
-    itbis:        Number(f.itbis ?? 0),
-    total:        Number(f.total),
-    fechaEmision: f.fechaEmision,
-    fechaVence:   f.fechaVence,
-    estado:       f.estado,
-    notas:        f.notas,
-    condiciones:  mergeCondiciones(empresa, f),
-    // Datos exclusivos de comprobantes modificatorios DGII (NC B04 / ND B03).
-    // El template renderiza el título correcto y la línea "Modifica al
-    // Comprobante:" + el motivo debajo del cliente.
-    esNotaCredito:           !!f.esNotaCredito,
-    esNotaDebito:            !!f.esNotaDebito,
-    facturaOrigen:           f.facturaOrigen
-      ? { noFactura: f.facturaOrigen.noFactura, ncf: f.facturaOrigen.ncf, tipoNcf: f.facturaOrigen.tipoNcf }
-      : null,
-    motivoNotaModificatoria: f.motivoNotaModificatoria ?? null,
-    verify: { hash: verifyHashFinal, url: verifyUrl },
-    // QR pre-renderizado como data:image/png;base64 — SIEMPRE generado. El
-    // destinatario escanea con cualquier cámara y aterriza en /verify/:hash.
-    // Si edita el PDF con Photoshop, el hash en pantalla deja de matchear con
-    // el calculado por el backend y la página marca el documento como ALTERADO.
-    verifyQrDataUri: await renderVerifyQr(verifyUrl),
-  }
-}
-
-// Genera un QR PNG de tamaño fijo y bajo overhead. errorCorrectionLevel 'M'
-// tolera ~15% de daño del impreso (huellas, manchas) sin romper el escaneo.
-// Cache en memoria por URL — los PDFs masivos reutilizan el mismo QR sin
-// re-renderizar.
-const _qrCache = new Map() // url -> dataURI
-const QR_CACHE_MAX = 256
-async function renderVerifyQr(url) {
-  if (!url) return null
-  if (_qrCache.has(url)) return _qrCache.get(url)
-  try {
-    const dataUri = await QRCode.toDataURL(url, {
-      errorCorrectionLevel: 'M',
-      type: 'image/png',
-      margin: 1,
-      width: 256,
-      color: { dark: '#0f172a', light: '#ffffff' },
-    })
-    if (_qrCache.size >= QR_CACHE_MAX) _qrCache.delete(_qrCache.keys().next().value)
-    _qrCache.set(url, dataUri)
-    return dataUri
-  } catch (e) {
-    console.warn('[QR] fallo generar:', e.message)
-    return null
-  }
-}
-
-// Registrado en el path REAL (el middleware NAMESPACE_REWRITES rewrites
-// /api/ventas/cotizaciones/* → /api/cotizaciones/* antes de llegar aquí).
-app.get('/api/cotizaciones/:id/pdf', verificarJWT, requerirPermiso('venta:ver_cotizaciones'), async (req, res) => {
-  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
-  try {
-    // Fast path: si está cacheado en Supabase, redirige (latencia <50ms vs ~1500ms con Puppeteer).
-    const cached = await prisma.factura.findUnique({ where: { id: req.params.id }, select: { pdfUrl: true, esCotizacion: true, deletedAt: true, noFactura: true } })
-    if (cached?.deletedAt) return res.status(404).json({ error: 'Cotización no encontrada.' })
-    if (cached && !cached.esCotizacion) return res.status(400).json({ error: 'Este documento es una factura, usa /facturas/:id/pdf.' })
-    if (cached?.pdfUrl && req.query.fresh !== '1') {
-      auditReq('pdf:cotizacion:cache_hit', req, { id: req.params.id, noFactura: cached.noFactura })
-      // Si el cliente pide JSON (apiFetch desde SPA), devuelve la URL Supabase
-      // y el frontend hace fetch directo sin credenciales -> evita CORS por
-      // el redirect 302 cuando el browser propaga credentials: include.
-      const wantsJson = req.query.json === '1' || (req.headers.accept ?? '').includes('application/json')
-      if (wantsJson) return res.json({ url: cached.pdfUrl, cached: true })
-      return res.redirect(302, cached.pdfUrl)
-    }
-
-    const cot = await prisma.factura.findUnique({
-      where:   { id: req.params.id },
-      include: {
-        cliente: true,
-        lineas:  { include: { producto: { select: { sku: true, nombre: true } } } },
-      },
-    })
-    if (!cot) return res.status(404).json({ error: 'Cotización no encontrada.' })
-
-    const data = await buildPdfData(cot)
-    const html = renderPdfDoc({ tipo: 'cotizacion', numero: cot.noFactura, ...data })
-    const pdfBuf = await generarPdfDocumento(html)
-
-    // Fire-and-forget: sube al cache de Storage (sin bloquear respuesta al user).
-    setImmediate(async () => {
-      const url = await subirPdfAlStorage(pdfBuf, cot)
-      if (url) await prisma.factura.update({ where: { id: cot.id }, data: { pdfUrl: url } }).catch(() => {})
-    })
-
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="cotizacion-${cot.noFactura}.pdf"`)
-    res.setHeader('Content-Length', pdfBuf.length)
-    auditReq('pdf:cotizacion', req, { id: cot.id, noFactura: cot.noFactura })
-    res.end(pdfBuf)
-  } catch (e) {
-    console.error('[PDF COTIZACION]', e.code, e.message, e.stack)
-    res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
-  }
-})
-
-// Path real (rewrite alias /api/ventas/facturas/:id/pdf -> aquí)
-app.get('/api/facturas/:id/pdf', verificarJWT, requerirPermiso('factura:ver'), async (req, res) => {
-  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
-  try {
-    const cached = await prisma.factura.findUnique({ where: { id: req.params.id }, select: { pdfUrl: true, esCotizacion: true, deletedAt: true, noFactura: true, ncf: true } })
-    if (!cached || cached.deletedAt) return res.status(404).json({ error: 'Factura no encontrada.' })
-    if (cached.esCotizacion)         return res.status(400).json({ error: 'Este documento es cotización, usa /cotizaciones/:id/pdf.' })
-    if (cached.pdfUrl && req.query.fresh !== '1') {
-      auditReq('pdf:factura:cache_hit', req, { id: req.params.id, noFactura: cached.noFactura, ncf: cached.ncf })
-      const wantsJson = req.query.json === '1' || (req.headers.accept ?? '').includes('application/json')
-      if (wantsJson) return res.json({ url: cached.pdfUrl, cached: true })
-      return res.redirect(302, cached.pdfUrl)
-    }
-
-    const fact = await prisma.factura.findUnique({
-      where:   { id: req.params.id },
-      include: {
-        cliente:       true,
-        lineas:        { include: { producto: { select: { sku: true, nombre: true } } } },
-        facturaOrigen: { select: { noFactura: true, ncf: true, tipoNcf: true } },
-      },
-    })
-    if (!fact) return res.status(404).json({ error: 'Factura no encontrada.' })
-
-    const data = await buildPdfData(fact)
-    const tipoDoc = fact.esNotaCredito ? 'nota-credito'
-                  : fact.esNotaDebito  ? 'nota-debito'
-                  : 'factura'
-    const html = renderPdfDoc({ tipo: tipoDoc, numero: fact.noFactura, ...data })
-    const pdfBuf = await generarPdfDocumento(html)
-
-    setImmediate(async () => {
-      const url = await subirPdfAlStorage(pdfBuf, fact)
-      if (url) await prisma.factura.update({ where: { id: fact.id }, data: { pdfUrl: url } }).catch(() => {})
-    })
-
-    res.setHeader('Content-Type', 'application/pdf')
-    res.setHeader('Content-Disposition', `inline; filename="${tipoDoc}-${fact.noFactura}.pdf"`)
-    res.setHeader('Content-Length', pdfBuf.length)
-    auditReq('pdf:factura', req, { id: fact.id, noFactura: fact.noFactura, ncf: fact.ncf })
-    res.end(pdfBuf)
-  } catch (e) {
-    console.error('[PDF FACTURA]', e.code, e.message, e.stack)
-    res.status(500).json({ error: 'Error generando PDF.', detail: e.message })
-  }
-})
-
-// ─── Bulk PDF export (ZIP stream) ─────────────────────────────────────────────
-// Genera múltiples PDFs y los empaqueta en un archivo ZIP, escribiendo
-// directamente al stream de respuesta (sin acumular en RAM). Limita 50 docs
-// por request + concurrencia 4 Puppeteer pages -> evita OOM en Free Tier.
-const archiver = require('archiver')
-
-const BULK_PDF_MAX     = 50
-const BULK_PDF_PARALLEL = 4
-const bulkPdfLimiter   = rateLimit({ windowMs: 60_000, max: 5, standardHeaders: true, legacyHeaders: false })
-
-const bulkPdfSchema = z.object({
-  ids:  z.array(z.string().uuid()).min(1).max(BULK_PDF_MAX),
-  tipo: z.enum(['factura', 'cotizacion']),
-})
-
-async function generarPdfDeFactura(id, tipo) {
-  const f = await prisma.factura.findUnique({
-    where: { id },
-    include: {
-      cliente:       true,
-      lineas:        { include: { producto: { select: { sku: true, nombre: true } } } },
-      facturaOrigen: { select: { noFactura: true, ncf: true, tipoNcf: true } },
-    },
-  })
-  if (!f || f.deletedAt) return null
-  if (tipo === 'cotizacion' && !f.esCotizacion) return null
-  if (tipo === 'factura'    && f.esCotizacion)  return null
-  const data = await buildPdfData(f)
-  // Si la factura ES nota de crédito, fuerza la variante 'nota-credito' en el render.
-  const tipoFinal = (tipo === 'factura' && f.esNotaCredito) ? 'nota-credito'
-                  : (tipo === 'factura' && f.esNotaDebito)  ? 'nota-debito'
-                  : tipo
-  const html = renderPdfDoc({ tipo: tipoFinal, numero: f.noFactura, ...data })
-  const buf  = await generarPdfDocumento(html)
-  return { buf, noFactura: f.noFactura }
-}
-
-// Ejecuta promesas con concurrencia controlada. Devuelve resultados en orden.
-async function mapWithConcurrency(items, limit, fn) {
-  const results = new Array(items.length)
-  let cursor = 0
-  async function worker() {
-    while (cursor < items.length) {
-      const i = cursor++
-      try { results[i] = { status: 'fulfilled', value: await fn(items[i], i) } }
-      catch (err) { results[i] = { status: 'rejected', reason: err } }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
-  return results
-}
-
-// Ruta neutra (sin alias) para evitar el rewrite /api/ventas/* -> /api/*.
-// Soporta tipo=factura|cotizacion vía body. Frontend llama directo a este path.
-app.post('/api/pdf/bulk',
-  bulkPdfLimiter,
-  verificarJWT,
-  requerirPermiso('factura:ver'),
-  async (req, res) => {
-    let archive
-    try {
-      const { ids, tipo } = bulkPdfSchema.parse(req.body)
-      // Permisos finos por tipo
-      const permReq = tipo === 'cotizacion' ? 'venta:ver_cotizaciones' : 'factura:ver'
-      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
-      if (!permisos.includes('sistema:owner') && !permisos.includes(permReq))
-        return res.status(403).json({ error: `Se requiere permiso "${permReq}".` })
-
-      const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14)
-      const filename = `${tipo === 'cotizacion' ? 'cotizaciones' : 'facturas'}-${stamp}.zip`
-
-      res.setHeader('Content-Type', 'application/zip')
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
-      // No usar transfer-encoding manual; Node/archiver lo maneja en streaming
-      archive = archiver('zip', { zlib: { level: 6 } })
-      archive.on('error', err => { console.error('[BULK ZIP]', err.message); try { res.destroy(err) } catch {} })
-      archive.pipe(res)
-
-      const resultados = await mapWithConcurrency(ids, BULK_PDF_PARALLEL, id => generarPdfDeFactura(id, tipo))
-
-      let ok = 0, fail = 0
-      for (let i = 0; i < resultados.length; i++) {
-        const r = resultados[i]
-        if (r.status !== 'fulfilled' || !r.value) {
-          fail++
-          archive.append(`ID solicitado: ${ids[i]}\nMotivo: ${r.reason?.message ?? 'no encontrado o tipo incorrecto'}\n`, { name: `_fallidas/${ids[i]}.txt` })
-          continue
-        }
-        const { buf, noFactura } = r.value
-        archive.append(buf, { name: `${tipo === 'cotizacion' ? 'cotizacion' : 'factura'}-${noFactura}.pdf` })
-        ok++
-      }
-      archive.append(`Generación masiva ACR ERP\nFecha: ${new Date().toISOString()}\nSolicitadas: ${ids.length}\nGeneradas: ${ok}\nFallidas: ${fail}\n`, { name: 'RESUMEN.txt' })
-      auditReq('pdf:bulk', req, { tipo, solicitadas: ids.length, generadas: ok, fallidas: fail })
-      await archive.finalize()
-    } catch (e) {
-      if (archive) { try { archive.abort() } catch {} }
-      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? `Mínimo 1, máximo ${BULK_PDF_MAX} documentos por exportación.` })
-      console.error('[BULK PDF]', e.message)
-      if (!res.headersSent) res.status(500).json({ error: 'Error generando exportación masiva.' })
-      else try { res.end() } catch {}
-    }
-  }
-)
+// ─── PDF stack (Blueprint Fase 1.3) ──────────────────────────────────────────
+// Todo el stack vive en backend/modules/ventas/pdf/: buildPdfData,
+// subirPdfAlStorage, invalidarPdfCache, invalidarPdfsSiCambioTemplate,
+// renderVerifyQr, mergeCondiciones, _composicionFactura, renderFacturaPdf (era
+// generarPdfDeFactura), prerenderPdfsBatch, PUBLIC_VERIFY_BASE,
+// PDF_TEMPLATE_VERSION, PDF_CACHE_BUCKET, bulkPdfSchema, bulkPdfLimiter,
+// mapWithConcurrency + rutas GET /cotizaciones/:id/pdf, GET /facturas/:id/pdf,
+// POST /pdf/bulk.
+// Aquí instanciamos el módulo UNA sola vez y lo pasamos vía _routerDeps a
+// ventas/index.js (mount router + cron + lib). El handler legacy
+// /facturas/:id/condiciones (arriba) usa _pdfModule.service.invalidarPdfCache.
+const buildPdfModule = require('./modules/ventas/pdf');
+const QRCode_pdfStack = require('qrcode'); // ya está en deps; alias para claridad
+const _pdfModule = buildPdfModule({
+  prisma,
+  middlewares: _sharedMw,
+  auditReq,
+  helpers: sharedHelpers,
+  supabase,
+  inlineAssets,
+  renderPdfDoc,
+  generarPdfDocumento,
+  facturaVerifyHash,
+  QRCode: QRCode_pdfStack,
+});
+console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${_pdfModule.service.PUBLIC_VERIFY_BASE}`);
 
 // ─── Bundles cross-sell ──────────────────────────────────────────────────────
 // Lookup rápido: dado un producto, devuelve sugerencias ordenadas por score.
@@ -1270,8 +815,9 @@ app.patch('/api/facturas/:id/condiciones',
         select:{ id: true, condiciones: true },
       })
       auditReq('factura:condiciones', req, { id: factura.id, cleared: allEmpty })
-      // Cleanup del archivo viejo en Storage (fire-and-forget).
-      invalidarPdfCache(factura.id).catch(() => {})
+      // Cleanup del archivo viejo en Storage (fire-and-forget). Usa el service
+      // del módulo PDF (Blueprint Fase 1.3) ya que invalidarPdfCache migró ahí.
+      _pdfModule.service.invalidarPdfCache(factura.id).catch(() => {})
       res.json(factura)
     } catch (e) {
       if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
@@ -1691,33 +1237,30 @@ const _routerDeps = {
   helpers:     sharedHelpers,
   auditReq,
   // Limiters globales reusables. Los rate-limiters específicos de un dominio
-  // (forgot/checkout/tracking/verify/empresaPublic/catalogoPublico/pinVerify)
-  // se declaran localmente en sus respectivos modules/<dominio>/router.js
-  // para evitar acoplamiento con el monolito.
+  // (forgot/checkout/tracking/verify/empresaPublic/catalogoPublico/pinVerify/
+  // bulkPdf) se declaran localmente en sus respectivos modules/<dominio>/
+  // router.js para evitar acoplamiento con el monolito.
   limiters: {
     loginLimiter, totpLimiter, backupCodeLimiter, billingLimiter,
-    uploadLimiter, uploadMulter, portalLoginLimiter, bulkPdfLimiter,
+    uploadLimiter, uploadMulter, portalLoginLimiter,
   },
   // Helpers monolíticos pasados a routers para que handlers extraídos
   // sigan funcionando sin re-implementación. A medida que cada router migra
   // su lógica completa, estos punteros se podrán mover a shared/.
-  // completarLogin se eliminó: vive en modules/auth/service.js. Los otros
-  // routers lo destructuran pero nunca lo invocan — destructure undefined
-  // no rompe (se limpiará al migrar cada módulo).
+  // completarLogin → vive en modules/auth/service.js.
+  // generarPdfDeFactura / buildPdfData / subirPdfAlStorage / invalidarPdfCache /
+  // PUBLIC_VERIFY_BASE → viven en modules/ventas/pdf/service.js (acceso vía
+  // _routerDeps.pdfModule.service para handlers legacy que aún los necesiten).
   twoFAStore,
   challengeStore,
   warmChallengeStore,
   IDLE_TTL_MS,
   generarSiguienteCodigo,
-  generarPdfDeFactura,
-  buildPdfData,
-  subirPdfAlStorage,
-  invalidarPdfCache,
+  pdfModule:        _pdfModule,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,
   facturaVerifyHash,
-  PUBLIC_VERIFY_BASE,
   emailTransporter,
   sendFacturaPDF,
   PERMISSIONS_MAP,
