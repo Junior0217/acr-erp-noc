@@ -522,13 +522,11 @@ html, body {
 }
 .footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.4; max-width: 220px; }
 .footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; }
-/* Anti-OCR mobile: URL/HASH se imprimen en UNA SOLA linea fisica. Los visores
-   moviles (WhatsApp PDF preview, Chrome movil) hacen OCR del texto visual y,
-   si la URL salta de linea, truncan el link visible. nowrap + ellipsis
-   garantiza una linea completa: el <a> sigue funcionando como link clickable
-   correcto, y el QR se queda como fallback tactil gigante (ver qr-anchor). */
-.footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; max-width: 220px; }
-.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; max-width: 220px; }
+/* Anti-OCR mobile: la URL textual se imprime en UNA SOLA linea fisica. El
+   hash crudo NO se imprime (era ruido visual que el OCR movil truncaba). El
+   <a> envolvente garantiza link clickable correcto y el QR funciona como
+   fallback tactil gigante (ver qr-anchor). */
+.footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 8.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; max-width: 220px; font-weight: 600; }
 .footer .qr-block .qr-text .qr-url a { color: inherit; text-decoration: none; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .footer .qr-block .qr-anchor { display: inline-block; line-height: 0; text-decoration: none; }
 .footer .ctr   { text-align: center; font-weight: 700; color: #475569; letter-spacing: 0.06em; text-transform: uppercase; font-size: 7.5px; }
@@ -843,11 +841,10 @@ function renderDocumento(opts) {
         : `<img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/>`}
       <div class="qr-text">
         <div class="qr-ttl">Verificación Anti-Fraude</div>
-        <div>Escanea o visita la URL para validar.</div>
-        <div class="qr-hash" title="${escape(verify?.hash || '')}">${escape(verify?.hash || '—')}</div>
+        <div>Escanea el QR o toca la URL para validar.</div>
         ${verify?.url
           ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}">${escape(verify.url)}</a></div>`
-          : `<div class="qr-url">—</div>`}
+          : ''}
       </div>
     </div>
     <div class="ctr">
