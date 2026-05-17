@@ -771,12 +771,16 @@ function renderDocumento(opts) {
 
   <footer class="footer">
     <div class="qr-block">
-      <img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/>
+      ${verify?.url
+        ? `<a href="${escape(verify.url)}" style="text-decoration:none; line-height:0; display:inline-block;"><img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/></a>`
+        : `<img class="qr-img" src="${escape(verifyQrDataUri || '')}" alt="QR de verificación"/>`}
       <div class="qr-text">
         <div class="qr-ttl">Verificación Anti-Fraude</div>
         <div>Escanea o visita la URL para validar.</div>
         <div class="qr-hash">${escape(verify?.hash || '—')}</div>
-        <div class="qr-url">${escape(verify?.url || '—')}</div>
+        ${verify?.url
+          ? `<div class="qr-url"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit;">${escape(verify.url)}</a></div>`
+          : `<div class="qr-url">—</div>`}
       </div>
     </div>
     <div class="ctr">

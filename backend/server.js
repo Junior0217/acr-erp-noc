@@ -4235,11 +4235,22 @@ const empresaPatchSchema = z.object({
   // Umbral % de descuento global a partir del cual el POS exige PIN supervisor.
   maxDescuentoCajero:    z.coerce.number().int().min(0).max(100).optional(),
   // Condiciones comerciales por defecto — cada campo opcional, max 280 char.
+  // _obligatorio: flag por término que prohíbe ocultarlo a nivel de documento
+  // (ni con PIN supervisor). El cart muestra candado + pill "Forzado" y el
+  // backend mergeCondiciones ignora cualquier override que apague la fila.
+  // El bug previo: este objeto no incluía _obligatorio en su shape Zod, así
+  // que el .parse() lo descartaba silenciosamente y nunca llegaba a Prisma.
   condicionesDefault:    z.object({
-    validez:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
-    pago:     z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
-    entrega:  z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
-    garantia: z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    validez:      z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    pago:         z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    entrega:      z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    garantia:     z.string().max(280).optional().nullable().or(z.literal('').transform(() => null)),
+    _obligatorio: z.object({
+      validez:  z.boolean().optional(),
+      pago:     z.boolean().optional(),
+      entrega:  z.boolean().optional(),
+      garantia: z.boolean().optional(),
+    }).partial().optional(),
   }).partial().optional(),
 })
 

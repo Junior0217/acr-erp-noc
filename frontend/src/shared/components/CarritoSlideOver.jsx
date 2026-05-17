@@ -207,9 +207,9 @@ export default function CarritoSlideOver() {
   const [incluirCond, setIncluirCond] = useState({ validez: true, pago: true, entrega: true, garantia: true })
   const [incluirNotas, setIncluirNotas] = useState(false)
   const [notasTexto,   setNotasTexto]   = useState('')
-  // pendingCondToggle: { campo: 'validez'|'pago'|...|'notas', nextValue: bool }
+  // pendingCondToggle: { campo: 'validez'|'pago'|...|'notas'|'itbis', nextValue: bool }
   // Se vacía al abrir/cancelar el modal. Al confirmar el PIN, aplicamos el
-  // toggle al estado real (incluirCond/incluirNotas).
+  // toggle al estado real (incluirCond/incluirNotas/applyItbis vía updateCartMeta).
   const [pendingCondToggle, setPendingCondToggle] = useState(null)
   const [condPinModalOpen, setCondPinModalOpen] = useState(false)
 
@@ -237,6 +237,7 @@ export default function CarritoSlideOver() {
     if (!pendingCondToggle) return
     const { campo, nextValue } = pendingCondToggle
     if (campo === 'notas') setIncluirNotas(nextValue)
+    else if (campo === 'itbis') updateCartMeta({ applyItbis: nextValue })
     else setIncluirCond(prev => ({ ...prev, [campo]: nextValue }))
     setPendingCondToggle(null)
   }
@@ -356,12 +357,19 @@ export default function CarritoSlideOver() {
           {/* Tipo de Comprobante eliminado: el backend deriva el NCF
               automáticamente desde el cliente seleccionado (cliente.tipoNcf). */}
 
+          {/* ITBIS: por rigor fiscal, cualquier cambio exige PIN supervisor.
+              El cajero NUNCA decide si la factura aplica ITBIS solo. El PIN
+              valida y luego updateCartMeta persiste applyItbis vía PATCH al
+              carrito. Si el PIN falla / se cancela, el toggle no cambia. */}
           <div className="flex items-center justify-between gap-2">
-            <label className="text-xs text-slate-400 font-medium truncate">Aplicar ITBIS (18%)</label>
+            <label className="flex items-center gap-1.5 text-xs text-slate-400 font-medium truncate">
+              Aplicar ITBIS (18%) <Lock size={9} className="text-amber-400 flex-shrink-0" />
+            </label>
             <button
               type="button"
-              onClick={() => updateCartMeta({ applyItbis: !carrito?.applyItbis })}
+              onClick={() => requestToggleCondicion('itbis', !carrito?.applyItbis)}
               aria-pressed={!!carrito?.applyItbis}
+              title="Bloqueado · requiere PIN de supervisor para cambiar (control fiscal)"
               className={`relative inline-flex h-5 w-10 flex-shrink-0 rounded-full transition-colors ${carrito?.applyItbis ? 'bg-blue-600' : 'bg-slate-700'}`}
             >
               <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${carrito?.applyItbis ? 'translate-x-5' : 'translate-x-0'}`} />
@@ -522,13 +530,17 @@ export default function CarritoSlideOver() {
           onUnlock={(pin) => { setPinSupervisor(pin); setDescuentosUnlocked(true); toast.success('Descuentos habilitados para esta sesión del carrito.') }}
         />
 
-        {/* PIN gate de los switches de condiciones/notas — separado del PIN
-            de descuentos para que la UI muestre el contexto correcto. */}
+        {/* PIN gate de los switches de condiciones/notas + ITBIS — separado
+            del PIN de descuentos para que la UI muestre el contexto correcto.
+            El ITBIS también pasa por aquí (control fiscal: ningún cajero
+            decide solo si una factura lleva impuesto). */}
         <PinAuthModal
           open={condPinModalOpen}
           onClose={cancelarToggle}
-          titulo="Modificar Términos del PDF"
-          descripcion="Los términos comerciales (Validez · Pago · Entrega · Garantía · Notas) son fijos por defecto. Modificar cualquiera requiere PIN supervisor."
+          titulo={pendingCondToggle?.campo === 'itbis' ? 'Modificar Aplicación de ITBIS' : 'Modificar Términos del PDF'}
+          descripcion={pendingCondToggle?.campo === 'itbis'
+            ? 'Aplicar ITBIS afecta directamente el monto facturado y la presentación al cliente. Requiere PIN de supervisor.'
+            : 'Los términos comerciales (Validez · Pago · Entrega · Garantía · Notas) son fijos por defecto. Modificar cualquiera requiere PIN supervisor.'}
           onUnlock={(pin) => { setPinSupervisor(pin); aplicarToggleConfirmado(); toast.success('Cambio aplicado al documento.') }}
         />
 
