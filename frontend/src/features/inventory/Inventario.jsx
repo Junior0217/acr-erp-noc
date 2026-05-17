@@ -119,7 +119,7 @@ function ModalVistaProducto({ producto, onClose, onEdit }) {
 
 // ─── Tab: Catálogo (Artículos o Servicios) ────────────────────────────────────
 
-function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
+function TabCatalogo({ tipoItem, categorias, canCreate, canExport, canVerPrecio = true, canVerCosto = false }) {
   // useCart() removido: ya no se usa en el listado de inventario — el carrito
   // se llena exclusivamente desde el catálogo de Ventas, no desde Inventario.
   const [rows, setRows]       = useState([])
@@ -269,7 +269,9 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
                   <p className="text-[10px] text-slate-500 line-clamp-2">{p.descripcion.replace(/[*_`#-]/g, '').trim()}</p>
                 )}
                 <div className="flex items-center justify-between mt-auto pt-1.5">
-                  <span className="text-sm font-bold font-mono text-emerald-400">RD$ {fmt(p.precio)}</span>
+                  {canVerPrecio
+                    ? <span className="text-sm font-bold font-mono text-emerald-400">RD$ {fmt(p.precio)}</span>
+                    : <span className="text-[10px] font-mono text-slate-600 italic">Precio oculto</span>}
                   {!esServicio && (
                     <span className={`text-[10px] font-mono ${p.stockActual <= 0 ? 'text-red-400' : p.stockActual <= 5 ? 'text-amber-400' : 'text-slate-500'}`}>
                       Stk {p.stockActual}
@@ -298,17 +300,18 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
               <th className={TH}>SKU</th>
               <th className={TH}>Nombre</th>
               <th className={TH}>Categoría</th>
-              <th className={TH + ' text-right'}>Precio</th>
+              {canVerPrecio && <th className={TH + ' text-right'}>Precio</th>}
+              {canVerCosto  && <th className={TH + ' text-right'}>Costo</th>}
               {!esServicio && <th className={TH + ' text-right'}>Stock</th>}
               <th className={TH}></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800">
             {loading && rows.length === 0 && (
-              <tr><td colSpan={esServicio ? 6 : 7} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
+              <tr><td colSpan={4 + (canVerPrecio?1:0) + (canVerCosto?1:0) + (esServicio?0:1) + 1} className="px-4 py-8 text-center text-sm text-slate-500"><Loader2 size={18} className="animate-spin inline mr-2" />Cargando...</td></tr>
             )}
             {!loading && rows.length === 0 && (
-              <tr><td colSpan={esServicio ? 6 : 7}><EmptyState title={`Sin ${esServicio ? 'servicios' : 'artículos'}`} description="Agrega el primero con el botón +" /></td></tr>
+              <tr><td colSpan={4 + (canVerPrecio?1:0) + (canVerCosto?1:0) + (esServicio?0:1) + 1}><EmptyState title={`Sin ${esServicio ? 'servicios' : 'artículos'}`} description="Agrega el primero con el botón +" /></td></tr>
             )}
             {rows.map(p => (
               <tr key={p.id} onClick={() => setViewModal(p)} className="hover:bg-slate-800/40 transition-colors cursor-pointer">
@@ -322,7 +325,8 @@ function TabCatalogo({ tipoItem, categorias, canCreate, canExport }) {
                 <td className={TD}>
                   <InvCatBadge nombre={p.categoria?.nombre} />
                 </td>
-                <td className={TD + ' text-right tabular-nums'}>RD$ {fmt(p.precio)}</td>
+                {canVerPrecio && <td className={TD + ' text-right tabular-nums'}>RD$ {fmt(p.precio)}</td>}
+                {canVerCosto  && <td className={TD + ' text-right tabular-nums text-slate-400'}>RD$ {fmt(p.costo ?? 0)}</td>}
                 {!esServicio && (
                   <td className="px-4 py-3 text-right"><StockBadge stock={p.stockActual} /></td>
                 )}
@@ -823,8 +827,13 @@ export default function Inventario() {
     </div>
   )
 
-  const canCreate = tienePermiso('inventario:editar')
-  const canExport = tienePermiso('inventario:exportar')
+  const canCreate     = tienePermiso('inventario:editar')
+  const canExport     = tienePermiso('inventario:exportar')
+  // Granular: precio y costo configurables por rol. Default a TRUE para
+  // backward-compat (los roles existentes sin estos flags ven el precio).
+  // Owner los necesita marcar/desmarcar explícito en /configuracion → Roles.
+  const canVerPrecio  = tienePermiso('inventario:ver_precio')  || tienePermiso('sistema:owner')
+  const canVerCosto   = tienePermiso('inventario:ver_costos')  || tienePermiso('sistema:owner')
   const activeTab = TABS.find(t => t.key === tab)
 
   return (
@@ -863,6 +872,8 @@ export default function Inventario() {
             categorias={categorias}
             canCreate={canCreate}
             canExport={canExport}
+            canVerPrecio={canVerPrecio}
+            canVerCosto={canVerCosto}
           />
         )}
         {tab === 'categorias'   && <TabCategorias categorias={categorias} loading={catLoading} onRefresh={fetchCategorias} canCreate={canCreate} />}

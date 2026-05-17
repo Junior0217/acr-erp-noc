@@ -303,7 +303,7 @@ const TABS = [
   { id: 'servicios',  label: 'Servicios', icon: Wrench,  match: t => t === 'Servicio' },
 ]
 
-export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow }) {
+export default function PanelCatalogo({ canEdit, canSeeCosts, canSeePrecio = true, canSeeMargen = false, canPOS, onSellNow }) {
   const [items,           setItems]           = useState([])
   const [loading,         setLoading]         = useState(false)
   const [search,          setSearch]          = useState('')
@@ -433,9 +433,9 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
                 <th className={TH}>Nombre</th>
                 <th className={TH}>Tipo</th>
                 <th className={TH}>Categoría</th>
-                <th className={TH}>Precio</th>
-                {canSeeCosts && <th className={TH}>Costo</th>}
-                {canSeeCosts && <th className={TH}>Margen</th>}
+                {canSeePrecio && <th className={TH}>Precio</th>}
+                {canSeeCosts  && <th className={TH}>Costo</th>}
+                {canSeeMargen && <th className={TH}>Margen</th>}
                 <th className={TH}>Stock</th>
                 <th className={TH}>Estado</th>
                 <th className="px-4 py-3" />
@@ -443,11 +443,11 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
             </thead>
             <tbody className="divide-y divide-slate-800/80">
               {loading ? (
-                <tr><td colSpan={7 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12">
+                <tr><td colSpan={6 + (canSeePrecio?1:0) + (canSeeCosts?1:0) + (canSeeMargen?1:0) + 1} className="text-center py-12">
                   <Loader2 size={20} className="animate-spin text-blue-500 mx-auto" />
                 </td></tr>
               ) : itemsFiltrados.length === 0 ? (
-                <tr><td colSpan={7 + (canSeeCosts ? 2 : 0) + 1} className="text-center py-12 text-slate-500 text-xs font-mono">
+                <tr><td colSpan={6 + (canSeePrecio?1:0) + (canSeeCosts?1:0) + (canSeeMargen?1:0) + 1} className="text-center py-12 text-slate-500 text-xs font-mono">
                   No hay items en el catálogo.
                 </td></tr>
               ) : itemsFiltrados.map(item => {
@@ -479,9 +479,9 @@ export default function PanelCatalogo({ canEdit, canSeeCosts, canPOS, onSellNow 
                     </td>
                     <td className="px-4 py-3 whitespace-nowrap"><TipoBadge tipo={item.tipo} /></td>
                     <td className="px-4 py-3 whitespace-nowrap"><CatBadge cat={item.categoria} /></td>
-                    <td className="px-4 py-3 font-mono text-sm text-emerald-400 whitespace-nowrap">{formatCurrency(precio)}</td>
-                    {canSeeCosts && <td className="px-4 py-3 font-mono text-sm text-slate-500 whitespace-nowrap">{formatCurrency(costo)}</td>}
-                    {canSeeCosts && (
+                    {canSeePrecio && <td className="px-4 py-3 font-mono text-sm text-emerald-400 whitespace-nowrap">{formatCurrency(precio)}</td>}
+                    {canSeeCosts  && <td className="px-4 py-3 font-mono text-sm text-slate-500 whitespace-nowrap">{formatCurrency(costo)}</td>}
+                    {canSeeMargen && (
                       <td className="px-4 py-3 whitespace-nowrap">
                         <span className={`text-xs font-mono font-bold ${margen >= 30 ? 'text-emerald-400' : margen >= 10 ? 'text-amber-400' : 'text-red-400'}`}>
                           {margen}%

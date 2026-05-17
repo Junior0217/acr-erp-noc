@@ -12,7 +12,9 @@ module.exports = [
   { key: 'inventario:exportar',        module: 'Inventario',    label: 'Exportar CSV',          desc: 'Descargar inventario en CSV',                    color: 'cyan'    },
   { key: 'inventario:kardex',          module: 'Inventario',    label: 'Kardex',                desc: 'Ver movimientos de stock',                       color: 'cyan'    },
   { key: 'inventario:ajustar',         module: 'Inventario',    label: 'Ajuste de Stock',       desc: 'Ajustes manuales de inventario',                 color: 'cyan'    },
-  { key: 'inventario:ver_costos',      module: 'Inventario',    label: 'Ver Costos',            desc: 'Ver precio de costo (confidencial)',              color: 'cyan'    },
+  { key: 'inventario:ver_precio',      module: 'Inventario',    label: 'Ver Precio',            desc: 'Ver precio de venta en listados (sensible: tarifa al público)', color: 'cyan' },
+  { key: 'inventario:ver_costos',      module: 'Inventario',    label: 'Ver Costos',            desc: 'Ver precio de costo (lo que pagamos al suplidor)',  color: 'cyan'    },
+  { key: 'inventario:ver_margen',      module: 'Inventario',    label: 'Ver Margen',            desc: 'Ver % de margen (requiere ver_precio + ver_costos)', color: 'cyan'   },
   { key: 'inventario:compras',         module: 'Inventario',    label: 'Recibir Compras',       desc: 'Recepcionar POs y actualizar stock',             color: 'cyan'    },
 
   // ── Servicios ISP ─────────────────────────────────────────────────────────────
@@ -23,8 +25,10 @@ module.exports = [
   { key: 'servicios:exportar',         module: 'Servicios',     label: 'Exportar',              desc: 'Exportar listado de servicios',                  color: 'violet'  },
 
   // ── Catálogo de Items ─────────────────────────────────────────────────────────
-  { key: 'catalogo:ver',               module: 'Catálogo',      label: 'Ver',                   desc: 'Consultar items y precios del catálogo',         color: 'blue'    },
+  { key: 'catalogo:ver',               module: 'Catálogo',      label: 'Ver',                   desc: 'Consultar items y nombres del catálogo',         color: 'blue'    },
+  { key: 'catalogo:ver_precio',        module: 'Catálogo',      label: 'Ver Precio',            desc: 'Ver precio de venta en columna del catálogo',    color: 'blue'    },
   { key: 'catalogo:ver_costos',        module: 'Catálogo',      label: 'Ver Costos',            desc: 'Ver columna Costo y Margen (confidencial)',      color: 'blue'    },
+  { key: 'catalogo:ver_margen',        module: 'Catálogo',      label: 'Ver Margen',            desc: 'Ver % de margen en columna del catálogo',        color: 'blue'    },
   { key: 'catalogo:editar',            module: 'Catálogo',      label: 'Editar',                desc: 'Crear y modificar items del catálogo',           color: 'blue'    },
   { key: 'catalogo:editar_precios',    module: 'Catálogo',      label: 'Editar Precios',        desc: 'Modificar precios de venta (solo gerencia)',     color: 'blue'    },
 

@@ -81,12 +81,25 @@ export default defineConfig({
       workbox: {
         maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
         cleanupOutdatedCaches: true,
-        // Bump del cacheId en cada release con cambios estructurales (paleta
-        // PDF, SW strategy, rutas, etc) — fuerza al browser a tirar la caché
-        // previa entera en lugar de hidratar parcialmente. `cleanupOutdatedCaches`
-        // remueve los buckets viejos cuando la versión nueva activa.
-        cacheId: 'acr-noc-v4',
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,woff2}'],
+        // Bump del cacheId al cambiar estrategia de precache.
+        cacheId: 'acr-noc-v5-lean-precache',
+        // PRECACHE SLIM: solo HTML, CSS, íconos y el chunk de entrada +
+        // vendor-react (siempre necesario). Los chunks lazy de panels y
+        // librerías pesadas (leaflet, pdf, dnd) se cargan on-demand vía
+        // runtimeCaching → primera visita más rápida, MB iniciales reducidos.
+        globPatterns: [
+          'index.html',
+          'manifest.webmanifest',
+          'registerSW.js',
+          'assets/index-*.css',
+          'assets/index-*.js',
+          'assets/vendor-react-*.js',
+          'assets/AuthContext-*.js',
+          'assets/api-*.js',
+          'assets/EmpresaContext-*.js',
+          'assets/rolldown-runtime-*.js',
+          '*.{ico,png,svg,woff2}',
+        ],
         skipWaiting: true,
         clientsClaim: true,
         navigateFallbackDenylist: [/^\/api\//, /^\/verify\//, /^\/portal\//, /^\/track\//],
@@ -109,6 +122,18 @@ export default defineConfig({
             options: {
               cacheName: 'api-lists',
               expiration: { maxEntries: 20, maxAgeSeconds: 300 },
+            },
+          },
+          {
+            // Lazy chunks de panels y vendors pesados: StaleWhileRevalidate
+            // sirve la caché instantáneo y refresca en background. La primera
+            // visita pega red (~150-200kB c/u), la segunda es instantánea.
+            urlPattern: /\/assets\/(vendor-(?!react)|Ventas|Inventario|CRM|Configuracion|Servicios|Reportes|Taller|Tienda|MiEmpresa|MapaNOC|Dashboard|CustomerPortal|PortalTracking|TrackTicket|CotizacionDGII|RRHH|VerifyDocument|EditorDescripcion|_shared|Compras|Contabilidad)-.*\.(js|css)$/,
+            handler: 'StaleWhileRevalidate',
+            options: {
+              cacheName: 'lazy-chunks',
+              expiration: { maxEntries: 50, maxAgeSeconds: 30 * 24 * 60 * 60 },
+              cacheableResponse: { statuses: [0, 200] },
             },
           },
         ],

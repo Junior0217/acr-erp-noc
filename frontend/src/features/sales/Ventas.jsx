@@ -13,10 +13,16 @@ import PanelAuditCaja     from './panels/PanelAuditCaja'
 export default function Ventas() {
   const [searchParams] = useSearchParams()
   const { tienePermiso } = useAuth()
-  const canEdit     = tienePermiso('catalogo:editar')
-  const canSeeCosts = tienePermiso('catalogo:ver_costos')
-  const canPOS      = tienePermiso('pos:ver') || tienePermiso('sistema:owner')
-  const isOwner     = tienePermiso('sistema:owner')
+  const canEdit       = tienePermiso('catalogo:editar')
+  // Granular: precio, costo y margen visibles según permiso por rol. Por
+  // default los flags nuevos son TRUE para owner; para otros roles requieren
+  // que el owner los marque en /configuracion → Roles. Si el rol no los
+  // tiene, las columnas se ocultan en el listado.
+  const canSeeCosts   = tienePermiso('catalogo:ver_costos') || tienePermiso('sistema:owner')
+  const canSeePrecio  = tienePermiso('catalogo:ver_precio') || tienePermiso('sistema:owner')
+  const canSeeMargen  = tienePermiso('catalogo:ver_margen') || tienePermiso('sistema:owner')
+  const canPOS        = tienePermiso('pos:ver') || tienePermiso('sistema:owner')
+  const isOwner       = tienePermiso('sistema:owner')
 
   const clienteIdInit     = searchParams.get('cliente') ?? ''
   const clienteNombreInit = searchParams.get('nombre')  ?? ''
@@ -71,7 +77,7 @@ export default function Ventas() {
       </div>
 
       <div>
-        {tab === 'catalogo'     && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} canPOS={canPOS} onSellNow={sellNow} />}
+        {tab === 'catalogo'     && <PanelCatalogo canEdit={canEdit} canSeeCosts={canSeeCosts} canSeePrecio={canSeePrecio} canSeeMargen={canSeeMargen} canPOS={canPOS} onSellNow={sellNow} />}
         {tab === 'ordenes'      && <PanelOrdenes  canEdit={canEdit} clienteIdInit={clienteIdInit} clienteNombreInit={clienteNombreInit} />}
         {tab === 'facturas'     && <PanelFacturas highlightId={facturaHighlight} />}
         {tab === 'cotizaciones' && <PanelCotizaciones onIrPOS={() => setTab('pos')} canPOS={canPOS} />}

@@ -86,6 +86,10 @@ function AppRoutes() {
         <Route path="/track" element={<TrackTicket />} />
         <Route path="/track/:pin" element={<TrackTicket />} />
         <Route path="/cotizacion-dgii" element={<CotizacionDGII />} />
+        {/* /verify/:hash es PÚBLICO — debe abrir igual estando logueado.
+            Antes el fallback "*" lo capturaba y redirigía a "/" cuando el
+            usuario hacía click en el QR de un PDF con sesión activa. */}
+        <Route path="/verify/:hash" element={<Suspense fallback={<PageLoader />}><VerifyDocument /></Suspense>} />
         <Route path="/" element={<AdminLayout />}>
           <Route index            element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
           <Route path="ventas"    element={<Suspense fallback={<PageLoader />}><Ventas /></Suspense>} />
