@@ -10,61 +10,61 @@ const { z } = require('zod');
 
 function createInventarioRouter(deps) {
   const router = express.Router();
+  const jwt    = require('jsonwebtoken');
+  const bcrypt = require('bcryptjs');
+  const crypto = require('crypto');
+  const QRCode = require('qrcode');
+  const util   = require('util');
+  const { authenticator } = require('otplib');
+  const { wrapJWT, unwrapJWT, encryptTOTP, decryptTOTP, PORTAL_JWT_SECRET } = require('../shared/jwt-crypto');
+  let archiver = null; try { archiver = require('archiver'); } catch {}
+
   const {
-    prisma, middlewares, auditReq, generarSiguienteCodigo,
+    prisma, auditReq, middlewares = {}, schemas = {}, helpers = {}, limiters = {},
+    completarLogin, twoFAStore, challengeStore, warmChallengeStore, IDLE_TTL_MS,
+    generarSiguienteCodigo, generarPdfDeFactura, buildPdfData, subirPdfAlStorage,
+    invalidarPdfCache, renderPdfDoc, generarPdfDocumento, persistirVerifyHash,
+    facturaVerifyHash, PUBLIC_VERIFY_BASE, emailTransporter, sendFacturaPDF,
+    PERMISSIONS_MAP, VAULT_KEY, vaultEncrypt, vaultDecrypt,
+    supabase, SUPABASE_BUCKET, INVENTORY_BUCKET, OT_FOTOS_BUCKET,
+    KINDS_VALIDOS, KINDS_INVENTARIO, MIME_EXT,
+    detectMimeFromBuffer, svgSeguro, comprimirImagen,
+    esAssetUrlSegura, esUrlPublicaSegura, pathFromSupabaseUrl,
+    generarPin, storeResetToken, consumeResetToken,
+    signPortalToken, setPortalCookie, getOrCreatePortalSettings,
+    NIVEL_PROPIETARIO_ABSOLUTO, requerirTOTP, protegerPropietario,
+    SECUENCIA_DEFAULTS,
   } = deps;
-  const { verificarJWT, requerirPermiso } = middlewares;
 
-  const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
+  const {
+    verificarJWT, verificarPortalJWT, requerirPermiso, requerirNivel,
+    esPropietarioAbsoluto, requerirTOTPEstricto, vaultCooldownGuard,
+  } = middlewares;
 
-  const descripcionEstructuradaSchema = z.object({
-    v:         z.literal(1),
-    titulo:    z.string().min(1).max(200),
-    bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-    imagenUrl: z.string().max(500).nullable().optional(),
-  });
-  const descripcionFlexSchema = z.union([
-    z.string().max(2000),
-    descripcionEstructuradaSchema,
-  ]).nullable().optional();
+  const {
+    passwordSchema, empleadoSchema, empleadoUpdateSchema, asistenciaSchema,
+    clienteSchema, clienteUpdateSchema, suplidorSchema, suplidorUpdateSchema,
+    prospectoSchema, prospectoUpdateSchema, portalRegisterSchema, portalLoginSchema,
+    credencialSchema, activoSchema, ticketTallerSchema,
+    ticketEstadoSchema, ordenFotoSchema, timelineEventoSchema, checkoutSchema,
+    azulWebhookSchema,
+  } = schemas;
 
-  function descripcionToRaw(value) {
-    if (value == null) return null;
-    if (typeof value === 'string') return value;
-    if (typeof value === 'object') {
-      if (value.v === 1) {
-        const limpio = {
-          v: 1,
-          titulo:    String(value.titulo ?? '').slice(0, 200),
-          bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-          imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-        };
-        return JSON.stringify(limpio);
-      }
-    }
-    return null;
-  }
+  const {
+    validUUID, rejectBadId, sendErr, sendOk, validarCedulaRD,
+    formatCliente, formatSuplidor, formatProspecto,
+    fmtPhone, fmtCedula, fmtRNC, getClientIp,
+    reqFingerprint, computeDeviceHash, labelFromUA, bodyLimit,
+  } = helpers;
 
-  const categoriaSchema = z.object({
-    nombre: z.string().min(2).max(100).transform(stripTags),
-  });
+  const {
+    loginLimiter, totpLimiter, backupCodeLimiter, billingLimiter,
+    uploadLimiter, uploadMulter, portalLoginLimiter, forgotLimiter,
+    checkoutLimiter, catalogoPublicoLimiter, trackingLimiter,
+    verifyLimiter, empresaPublicLimiter, bulkPdfLimiter, pinVerifyLimiter,
+  } = limiters;
 
-  const productoSchema = z.object({
-    sku:            z.string().min(1).max(50).transform(stripTags).optional(),
-    nombre:         z.string().min(2).max(200).transform(stripTags),
-    precio:         z.coerce.number().nonnegative(),
-    categoriaId:    z.number().int().positive(),
-    tipoItem:       z.enum(['ARTICULO', 'SERVICIO']).optional(),
-    esCanibalizado: z.boolean().optional(),
-    descripcion:    descripcionFlexSchema,
-    imagenUrl:      z.string().max(500).url().optional().nullable().or(z.literal('').transform(() => null)),
-  });
-
-  const productoUpdateSchema = productoSchema.omit({ sku: true }).partial();
-
-  function formatProducto(p) { return { ...p, precio: Number(p.precio) }; }
-
-  // ─── Categorías ───────────────────────────────────────────────────────────
+  // ─── Existing handlers ───────────────────────────────────────────
   router.get('/categorias', async (req, res) => {
     try {
       const { search } = req.query;
@@ -225,6 +225,88 @@ function createInventarioRouter(deps) {
       res.status(500).json({ error: 'Error al obtener movimientos.' });
     }
   });
+
+  // ─── Migrated from monolith ──────────────────────────────────────
+// ─── MSP: Préstamos de Equipos ────────────────────────────────────────────────
+
+const prestamoSchema = z.object({
+  clienteId:  z.string().uuid(),
+  productoId: z.number().int().positive(),
+  cantidad:   z.number().int().min(1).default(1),
+  diasLimite: z.number().int().min(1).max(180).default(15),
+  notas:      z.string().max(500).optional().nullable(),
+})
+
+router.get('/prestamos', verificarJWT, requerirPermiso('ot:ver'), async (req, res) => {
+  try {
+    const { activos } = req.query
+    const where = {}
+    if (activos === 'true') where.fechaDevolucion = null
+    const data = await prisma.equipoPrestamo.findMany({
+      where,
+      include: {
+        cliente:  { select: { id: true, noCliente: true, razonSocial: true } },
+        producto: { select: { id: true, sku: true, nombre: true } },
+      },
+      orderBy: { fechaPrestamo: 'desc' },
+    })
+    const ahora = Date.now()
+    const enriched = data.map(p => ({ ...p, vencido: !p.fechaDevolucion && new Date(p.fechaLimite).getTime() < ahora }))
+    res.json({ data: enriched })
+  } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+router.post('/prestamos', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  try {
+    const data = prestamoSchema.parse(req.body)
+    const fechaLimite = new Date(Date.now() + data.diasLimite * 86_400_000)
+    const prestamo = await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoInventario.create({
+        data: { productoId: data.productoId, tipo: 'Salida', cantidad: data.cantidad },
+      })
+      await tx.producto.update({ where: { id: data.productoId }, data: { stockActual: { decrement: data.cantidad } } })
+      return tx.equipoPrestamo.create({
+        data: {
+          clienteId: data.clienteId, productoId: data.productoId, cantidad: data.cantidad,
+          fechaLimite, notas: data.notas ?? null, movimientoSalidaId: mov.id,
+        },
+      })
+    })
+    auditReq('prestamo:crear', req, { prestamoId: prestamo.id, clienteId: data.clienteId, productoId: data.productoId })
+    res.status(201).json(prestamo)
+  } catch (e) {
+    if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+    if (e.code === 'P2003')      return res.status(400).json({ error: 'Cliente o producto inválido.' })
+    console.error('[PRESTAMO CREATE]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+router.patch('/prestamos/:id/devolver', verificarJWT, requerirPermiso('ot:editar'), async (req, res) => {
+  if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+  try {
+    const prestamo = await prisma.equipoPrestamo.findUnique({ where: { id: req.params.id } })
+    if (!prestamo) return res.status(404).json({ error: 'Préstamo no encontrado.' })
+    if (prestamo.fechaDevolucion) return res.status(409).json({ error: 'Préstamo ya devuelto.' })
+    const result = await prisma.$transaction(async (tx) => {
+      const mov = await tx.movimientoInventario.create({
+        data: { productoId: prestamo.productoId, tipo: 'Entrada', cantidad: prestamo.cantidad },
+      })
+      await tx.producto.update({ where: { id: prestamo.productoId }, data: { stockActual: { increment: prestamo.cantidad } } })
+      return tx.equipoPrestamo.update({
+        where: { id: req.params.id },
+        data:  { fechaDevolucion: new Date(), movimientoEntradaId: mov.id },
+      })
+    })
+    auditReq('prestamo:devolver', req, { prestamoId: req.params.id })
+    res.json(result)
+  } catch (e) {
+    console.error('[PRESTAMO DEVOLVER]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+
 
   return router;
 }
