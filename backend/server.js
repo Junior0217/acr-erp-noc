@@ -36,6 +36,29 @@ const { syncMikrotik } = require('./services/mikrotik');
 const createMiddlewares      = require('./shared/middlewares');
 const sharedSchemas          = require('./shared/schemas');
 const sharedHelpers          = require('./shared/helpers');
+const { wrapJWT, unwrapJWT, encryptTOTP, decryptTOTP, PORTAL_JWT_SECRET }
+  = require('./shared/jwt-crypto');
+const createAuditService      = require('./shared/services/audit.service');
+const createSequencesService  = require('./shared/services/sequences.service');
+const createVerifyHashService = require('./shared/services/verify-hash.service');
+// Helpers + Schemas destructurados al scope global para que los handlers legacy
+// inline que aún viven en server.js sigan funcionando sin tocarlos uno por uno.
+// A medida que cada handler migre a routes/*.js, esta lista se irá vaciando.
+const {
+  UUID_RE, validUUID, rejectBadId, sendErr, sendOk, validarCedulaRD,
+  emptyStr, nullStr, optIdent, optCedulaRD, fmtPhone, fmtCedula, fmtRNC,
+  formatCliente, formatSuplidor, formatProspecto, reqFingerprint,
+  computeDeviceHash, labelFromUA, _stripPollutionKeys, bodyLimit, getClientIp,
+} = sharedHelpers;
+const {
+  passwordSchema, empleadoSchema, empleadoUpdateSchema, asistenciaSchema,
+  clienteBaseShape, clienteSchema, clienteUpdateSchema,
+  suplidorBaseShape, suplidorSchema, suplidorUpdateSchema,
+  prospectoSchema, prospectoUpdateSchema,
+  portalRegisterSchema, portalLoginSchema, credencialSchema, activoSchema,
+  prestamoSchema, ticketTallerSchema, ticketEstadoSchema, ordenFotoSchema,
+  timelineEventoSchema, checkoutSchema, azulWebhookSchema,
+} = sharedSchemas;
 // Infra extraida — Supabase storage helpers + CRON jobs nocturnos.
 const SUPA_INFRA = require('./shared/infra/supabase');
 const {
@@ -104,41 +127,7 @@ async function sendFacturaPDF(factura, pdfBuffer) {
   }
 }
 
-// ─── JWE-equivalent: AES-256-GCM wrapper (opaque cookie, RFC 7516 semantics) ──
-const jweKey  = crypto.createHash('sha256').update(process.env.JWT_SECRET || '').digest()
-const totpKey = crypto.createHash('sha256').update((process.env.JWT_SECRET || '') + ':totp').digest()
-
-function wrapJWT(jwtStr) {
-  const iv  = crypto.randomBytes(12)
-  const cip = crypto.createCipheriv('aes-256-gcm', jweKey, iv)
-  const enc = Buffer.concat([cip.update(jwtStr, 'utf8'), cip.final()])
-  const tag = cip.getAuthTag()
-  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${enc.toString('base64url')}`
-}
-
-function unwrapJWT(token) {
-  const parts = token.split('.')
-  if (parts.length !== 3) throw new Error('bad token')
-  const dec = crypto.createDecipheriv('aes-256-gcm', jweKey, Buffer.from(parts[0], 'base64url'))
-  dec.setAuthTag(Buffer.from(parts[1], 'base64url'))
-  return Buffer.concat([dec.update(Buffer.from(parts[2], 'base64url')), dec.final()]).toString('utf8')
-}
-
-function encryptTOTP(secret) {
-  const iv  = crypto.randomBytes(12)
-  const cip = crypto.createCipheriv('aes-256-gcm', totpKey, iv)
-  const enc = Buffer.concat([cip.update(secret, 'utf8'), cip.final()])
-  const tag = cip.getAuthTag()
-  return `${iv.toString('base64url')}.${tag.toString('base64url')}.${enc.toString('base64url')}`
-}
-
-function decryptTOTP(stored) {
-  const p = stored.split('.')
-  if (p.length !== 3) throw new Error('invalid totp')
-  const dec = crypto.createDecipheriv('aes-256-gcm', totpKey, Buffer.from(p[0], 'base64url'))
-  dec.setAuthTag(Buffer.from(p[1], 'base64url'))
-  return Buffer.concat([dec.update(Buffer.from(p[2], 'base64url')), dec.final()]).toString('utf8')
-}
+// ─── JWE-equivalent: AES-256-GCM wrappers viven en shared/jwt-crypto.js ───────
 
 // ─── 2FA temp token store (TTL 5 min, one-time use) ──────────────────────────
 const twoFAStore = new Map()
@@ -172,51 +161,25 @@ const prisma = prismaBase.$extends({
   },
 });
 
-// ─── AuditLog helpers ─────────────────────────────────────────────────────────
-// AuditLog usa hash chain inmutable como AuditCaja: prevHash + hash HMAC-SHA256
-// firmado con AUDIT_SECRET. Cualquier mutación post-facto rompe la cadena y
-// queda visible en /api/auditoria/log/verify.
+// ─── Core services (audit / sequences / verify-hash) ─────────────────────────
+// Factories que cierran sobre el prisma extendido. AuditLog ORM-immutable via
+// $extends arriba: solo prisma.auditLog.create + $executeRaw (retención) escriben.
+const { _canonicalizarLog, appendAuditLog, auditReq } = createAuditService({ prisma });
+const { SECUENCIA_DEFAULTS, generarSiguienteCodigo }  = createSequencesService({ prisma });
+const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
+  = createVerifyHashService({ prisma });
 
-function _canonicalizarLog(row) {
-  const meta = row.meta ?? null
-  const safe = {
-    evento:    row.evento ?? '',
-    usuarioId: row.usuarioId ?? null,
-    userName:  row.userName ?? '',
-    ip:        row.ip ?? null,
-    ua:        row.ua ?? null,
-    meta:      meta == null ? null : (typeof meta === 'string' ? meta : JSON.stringify(meta, Object.keys(meta).sort())),
-    creadoEn:  row.creadoEn ? new Date(row.creadoEn).toISOString() : new Date().toISOString(),
-  }
-  return JSON.stringify(safe, Object.keys(safe).sort())
-}
-
-async function appendAuditLog(data) {
-  // AUDIT_SECRET vive más abajo (junto a AuditCaja), pero como appendAuditLog
-  // se ejecuta en setImmediate post-respuesta, el módulo ya está totalmente
-  // inicializado. Resolución dinámica vía globalThis evita TDZ.
-  const SECRET = process.env.AUDIT_SECRET ?? process.env.JWT_SECRET ?? 'change-me-audit-secret'
-  const last = await prisma.auditLog.findFirst({
-    where:   { hash: { not: null } },
-    orderBy: { id: 'desc' },
-    select:  { hash: true },
-  })
-  const prevHash = last?.hash ?? 'GENESIS'
-  const creadoEn = data.creadoEn ?? new Date()
-  const payload  = _canonicalizarLog({ ...data, creadoEn })
-  const hash     = crypto.createHmac('sha256', SECRET).update(payload + '|' + prevHash).digest('hex')
-  return prisma.auditLog.create({ data: { ...data, prevHash, hash } })
-}
-
-function auditReq(evento, req, meta, overrides) {
-  const ip       = req?.headers?.['x-forwarded-for']?.split(',')[0]?.trim() || req?.socket?.remoteAddress || null
-  const ua       = req?.headers?.['user-agent'] || null
-  const userId   = overrides?.userId   ?? req?.user?.sub    ?? null
-  const userName = overrides?.userName ?? req?.user?.nombre ?? null
-  setImmediate(async () => {
-    try { await appendAuditLog({ evento, usuarioId: userId, userName, ip, ua, meta: meta ?? undefined }) } catch {}
-  })
-}
+// ─── Middlewares (shared/middlewares.js factory) ──────────────────────────────
+// auditReq se inyecta para que verificarJWT/protegerPropietario puedan loguear
+// eventos sin acoplarse a la implementación. Destructuramos al scope global
+// para que los handlers legacy inline sigan refiriéndose a `verificarJWT` etc.
+const _sharedMw = createMiddlewares({ prisma, auditReq });
+const {
+  NIVEL_PROPIETARIO_ABSOLUTO,
+  verificarJWT, verificarPortalJWT, requerirPermiso, requerirNivel,
+  esPropietarioAbsoluto, protegerPropietario, requerirTOTP,
+  requerirTOTPEstricto, vaultCooldownGuard,
+} = _sharedMw;
 
 // Rolling 12-month retention cleanup (raw SQL bypasses the ORM immutability guard intentionally)
 setInterval(async () => {
@@ -320,15 +283,10 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options(/.*/, cors(corsOptions));
 
-// Fingerprint = SHA-256(IP + User-Agent) — prevents shared-NAT users (same office IP)
-// from counting against each other's rate limit buckets.
-function reqFingerprint(req) {
-  const ip = req.headers['x-forwarded-for']?.split(',')[0]?.trim() ?? req.socket?.remoteAddress ?? ''
-  const ua = req.headers['user-agent'] ?? ''
-  return crypto.createHash('sha256').update(`${ip}|${ua}`).digest('hex')
-}
-
-// /api/health DEBE ir antes del limiter global — Render lo golpea cada 30s
+// reqFingerprint vive en shared/helpers.js — SHA-256(IP + UA) mitiga NAT-collision
+// en buckets de rate-limit. /api/health DEBE ir antes del limiter global — Render
+// lo golpea cada 30s y con 200 req/15min se agotaba la cuota en pruebas de carga
+// ligera → 429. Sin rate-limit aquí; queda como liveness probe puro.
 // y con 200 req/15min se agotaba la cuota en pruebas de carga ligera -> 429.
 // Sin rate-limit aquí; queda como liveness probe puro.
 // Versión de la app: se computa al boot y se sirve en /api/health + header
@@ -473,40 +431,9 @@ app.use((req, res, next) => {
   next()
 })
 
-// ─── Security: prototype pollution guard sobre req.body antes del body parser
-// Bloquea claves __proto__, prototype, constructor que un atacante podría usar
-// para envenenar Object.prototype. Express.json no protege contra esto por default.
-function _stripPollutionKeys(obj, depth = 0) {
-  if (depth > 6 || obj == null || typeof obj !== 'object') return obj
-  if (Array.isArray(obj)) { obj.forEach(v => _stripPollutionKeys(v, depth + 1)); return obj }
-  for (const k of Object.keys(obj)) {
-    if (k === '__proto__' || k === 'prototype' || k === 'constructor') {
-      delete obj[k]
-    } else {
-      _stripPollutionKeys(obj[k], depth + 1)
-    }
-  }
-  return obj
-}
-
-// ─── Helpers: body limit por ruta + envelope estándar de error/respuesta ──────
-function bodyLimit(maxKb) {
-  // Reviver filtra TODAS las claves peligrosas. Antes faltaba 'prototype' —
-  // un atacante podía mandar { "prototype": {...} } y el JSON.parse colaba
-  // el objeto crudo al body. _stripPollutionKeys lo capturaba después, pero
-  // el bloqueo en la capa de parse es defensa en profundidad.
-  return express.json({
-    limit: `${maxKb}kb`,
-    reviver: (k, v) => (k === '__proto__' || k === 'prototype' || k === 'constructor') ? undefined : v,
-  })
-}
-function sendErr(res, status, code, message, detail) {
-  return res.status(status).json({ ok: false, error: message, code, ...(detail ? { detail } : {}) })
-}
-function sendOk(res, data, status = 200) {
-  return res.status(status).json({ ok: true, data })
-}
-
+// Helpers de body/seguridad (_stripPollutionKeys, bodyLimit, sendErr, sendOk)
+// viven en shared/helpers.js. Reviver inline para el parser global mantiene la
+// defensa-en-profundidad contra prototype pollution sin importar el helper.
 app.use(express.json({
   limit: '50kb',
   reviver: (k, v) => (k === '__proto__' || k === 'prototype' || k === 'constructor') ? undefined : v,
@@ -547,391 +474,14 @@ function csrfMiddleware(req, res, next) {
 }
 app.use(csrfMiddleware);
 
-// ─── Zod Helpers ─────────────────────────────────────────────────────────────
-
-const emptyStr  = z.literal('');
-const nullStr   = (max = 20) => z.string().max(max).or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v);
-const optIdent  = (max = 20) => z.string().min(1).max(max).or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v);
-
-/**
- * Validador de Cédula Dominicana (Mod-10 / Luhn variant DGII).
- * Cédula: 11 dígitos. Los primeros 10 generan el dígito verificador
- * con pesos alternados [1,2] y reducción a un solo dígito (mod 10 +1 si >9).
- *
- * Devuelve true si la cédula es estructuralmente válida.
- * NO verifica que exista en DGII (eso requiere su API).
- */
-function validarCedulaRD(cedulaRaw) {
-  if (typeof cedulaRaw !== 'string') return false
-  const d = cedulaRaw.replace(/\D/g, '')
-  if (d.length !== 11) return false
-  if (/^(\d)\1{10}$/.test(d)) return false  // todos iguales (00000000000) = inválida
-  const weights = [1, 2, 1, 2, 1, 2, 1, 2, 1, 2]
-  let sum = 0
-  for (let i = 0; i < 10; i++) {
-    let p = parseInt(d[i], 10) * weights[i]
-    if (p > 9) p = (p % 10) + Math.floor(p / 10)
-    sum += p
-  }
-  const check = (10 - (sum % 10)) % 10
-  return check === parseInt(d[10], 10)
-}
-
-/** Zod refinement reusable: cédula RD válida o null/empty (opcional). */
-const optCedulaRD = z.string().max(20).optional().nullable().transform(v => {
-  if (v === '' || v == null) return null
-  return v
-}).superRefine((v, ctx) => {
-  if (v == null) return
-  const digits = v.replace(/\D/g, '')
-  if (digits.length !== 11) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cédula debe tener 11 dígitos.' })
-    return
-  }
-  if (!validarCedulaRD(v)) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'Cédula RD inválida (dígito verificador no coincide).' })
-  }
-})
-
-// ─── Zod Schemas ─────────────────────────────────────────────────────────────
-
-const passwordSchema = z.string()
-  .min(8, 'Mínimo 8 caracteres.')
-  .regex(/[^a-zA-Z0-9\s]/, 'Requiere al menos un símbolo especial (ej. ! @ # $ % & *).');
-
-const empleadoSchema = z.object({
-  nombre:   z.string().min(2).max(100),
-  email:    z.string().email().trim(),
-  roleIds:  z.array(z.number().int().positive()).optional().default([]),
-  password: passwordSchema,
-});
-
-const empleadoUpdateSchema = z.object({
-  nombre:   z.string().min(2).max(100).optional(),
-  email:    z.string().email().trim().optional(),
-  roleIds:  z.array(z.number().int().positive()).optional(),
-  // Accept strong password OR empty string (= no change). Transform '' → undefined.
-  password: z.union([passwordSchema, z.literal('')])
-              .optional()
-              .transform(v => (v === '' || v == null) ? undefined : v),
-});
-
-const asistenciaSchema = z.object({
-  empleadoId: z.number().int().positive(),
-  tipo:       z.enum(['Entrada', 'Salida']),
-  latitud:    z.string().max(30).optional().nullable(),
-  longitud:   z.string().max(30).optional().nullable(),
-});
-
-const clienteBaseShape = z.object({
-  // noCliente ahora es OPCIONAL en POST — el backend autogenera vía generarSiguienteCodigo
-  // si el cliente no lo envía. Para PUT sigue siendo aceptado tal cual está en DB.
-  noCliente:           z.string().min(1).max(20).optional(),
-  razonSocial:         z.string().min(2).max(200),
-  nombreComercial:     nullStr(100),
-  rnc:                 optIdent(20),
-  registroMercantil:   nullStr(30),
-  tipoEmpresa:         z.string().min(1).max(30),
-  fechaInicio:         z.coerce.date().optional(),
-  nombreContacto:      z.string().min(2).max(100),
-  apellidoContacto:    nullStr(100),
-  cedula:              optCedulaRD,
-  cargo:               nullStr(80),
-  direccion:           z.string().min(2).max(300),
-  sector:              z.string().min(1).max(100),
-  provincia:           z.string().min(1).max(100),
-  // telefonoPrincipal AHORA opcional: el usuario pidió que el teléfono del
-  // contacto no sea obligatorio. Acepta string corto, vacío o ausencia.
-  telefonoPrincipal:   z.string().max(20).optional().nullable().transform(v => (v == null || v === '') ? null : v),
-  telefonoAlternativo: nullStr(20),
-  email:               z.string().email().trim(),
-  website:             nullStr(100),
-  tipoCliente:         z.string().min(1).max(50),
-  itbis:               z.boolean().default(true),
-  promHorasMes:        z.number().int().min(0).max(744).optional(),
-  latitud:             nullStr(20),
-  longitud:            nullStr(20),
-  activo:              z.boolean().default(true),
-  fechaInactivo:       z.coerce.date().optional(),
-  limiteCredito:       z.coerce.number().nonnegative().default(0),
-  diasCredito:         z.coerce.number().int().min(0).default(0),
-  tipoNcf:             z.string().default('Consumidor Final'),
-});
-
-const clienteSchema = clienteBaseShape.superRefine((data, ctx) => {
-  if (!data.rnc && !data.cedula) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'RNC o Cédula es obligatorio.', path: ['rnc'] });
-  }
-});
-
-const clienteUpdateSchema = clienteBaseShape.omit({ noCliente: true }).partial();
-
-const suplidorBaseShape = z.object({
-  noSuplidor:        z.string().min(1).max(20),
-  razonSocial:       z.string().min(2).max(200),
-  nombreComercial:   nullStr(100),
-  rnc:               optIdent(20),
-  direccion:         z.string().min(2).max(300),
-  sector:            z.string().min(1).max(100),
-  provincia:         z.string().min(1).max(100),
-  latitud:           nullStr(20),
-  longitud:          nullStr(20),
-  nombreContacto:    z.string().min(2).max(100),
-  cedula:            optCedulaRD,
-  cargo:             nullStr(80),
-  telefonoPrincipal: z.string().min(7).max(20),
-  telefonoAlt:       nullStr(20),
-  email:             z.string().email().trim().or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v),
-  contactoAlt:       nullStr(150),
-  actividad:         z.string().min(1).max(100),
-  camposUsuario:     nullStr(500),
-  fechaInicio:       z.coerce.date().optional(),
-  activo:            z.boolean().default(true),
-  fechaInactivo:     z.coerce.date().optional(),
-  limiteCredito:     z.coerce.number().nonnegative().default(0),
-  diasCredito:       z.coerce.number().int().min(0).default(0),
-});
-
-const suplidorSchema = suplidorBaseShape.superRefine((data, ctx) => {
-  if (!data.rnc && !data.cedula) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'RNC o Cédula es obligatorio.', path: ['rnc'] });
-  }
-});
-
-const suplidorUpdateSchema = suplidorBaseShape.omit({ noSuplidor: true }).partial();
-
-const prospectoSchema = z.object({
-  nombre:             z.string().min(2).max(150),
-  telefono:           z.string().min(7).max(20),
-  servicioInteresado: z.string().min(1).max(100),
-  origen:             z.enum(['WhatsApp', 'Llamada', 'Referido', 'Web', 'Presencial', 'Otro']).default('WhatsApp'),
-  notas:              nullStr(1000),
-  latitud:            nullStr(20),
-  longitud:           nullStr(20),
-  estado:             z.enum(['Nuevo', 'Contactado', 'Interesado', 'Negociación', 'Perdido', 'Convertido']).default('Nuevo'),
-});
-
-const prospectoUpdateSchema = prospectoSchema.partial();
-
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-function validUUID(id) { return UUID_RE.test(id); }
-function rejectBadId(req, res) {
-  if (!validUUID(req.params.id)) { res.status(400).json({ error: 'ID inválido.' }); return true; }
-  return false;
-}
-
-// ─── Formateadores ────────────────────────────────────────────────────────────
-
-function fmtPhone(v) {
-  if (!v) return v;
-  const d = String(v).replace(/\D/g, '').slice(0, 10);
-  if (d.length <= 3) return d;
-  if (d.length <= 6) return `${d.slice(0, 3)}-${d.slice(3)}`;
-  return `${d.slice(0, 3)}-${d.slice(3, 6)}-${d.slice(6)}`;
-}
-function fmtCedula(v) {
-  if (!v) return v;
-  const d = String(v).replace(/\D/g, '').slice(0, 11);
-  if (d.length <= 3) return d;
-  if (d.length <= 10) return `${d.slice(0, 3)}-${d.slice(3)}`;
-  return `${d.slice(0, 3)}-${d.slice(3, 10)}-${d.slice(10)}`;
-}
-function fmtRNC(v) {
-  if (!v) return v;
-  const d = String(v).replace(/\D/g, '').slice(0, 11);
-  if (d.length <= 3) return d;
-  if (d.length <= 8) return `${d.slice(0, 3)}-${d.slice(3)}`;
-  if (d.length === 9) return `${d.slice(0, 3)}-${d.slice(3, 8)}-${d.slice(8)}`;
-  if (d.length === 10) return `${d.slice(0, 3)}-${d.slice(3)}`;
-  return `${d.slice(0, 3)}-${d.slice(3, 10)}-${d.slice(10)}`;
-}
-
-function formatCliente(c) {
-  return { ...c, rnc: fmtRNC(c.rnc), telefonoPrincipal: fmtPhone(c.telefonoPrincipal), telefonoAlternativo: fmtPhone(c.telefonoAlternativo), cedula: fmtCedula(c.cedula), limiteCredito: Number(c.limiteCredito) };
-}
-function formatSuplidor(s) {
-  return { ...s, rnc: fmtRNC(s.rnc), telefonoPrincipal: fmtPhone(s.telefonoPrincipal), telefonoAlt: fmtPhone(s.telefonoAlt), cedula: fmtCedula(s.cedula), limiteCredito: Number(s.limiteCredito) };
-}
-function formatProspecto(p) {
-  return { ...p, telefono: fmtPhone(p.telefono) };
-}
-
-// ─── Auth Middleware ──────────────────────────────────────────────────────────
-
-async function verificarJWT(req, res, next) {
-  const wrapped = req.signedCookies?.token;
-  if (!wrapped) return res.status(401).json({ error: 'No autenticado.' });
-  try {
-    const jwtStr  = unwrapJWT(wrapped);
-    const payload = jwt.verify(jwtStr, process.env.JWT_SECRET);
-    const ua      = req.headers['user-agent'] || '';
-    if (payload.ua != null && payload.ua !== ua) {
-      auditReq('session:ua_mismatch', req, { jti: payload.jti }, { userId: payload.sub });
-      await prisma.sessionToken.deleteMany({ where: { jti: payload.jti } });
-      res.clearCookie('token');
-      return res.status(401).json({ error: 'Sesión inválida.' });
-    }
-    const session = await prisma.sessionToken.findUnique({ where: { jti: payload.jti } });
-    if (!session || session.expiresAt < new Date()) {
-      // Limpia AMBAS cookies para que el browser quede 100% deslogueado.
-      // Sin esto, la cookie csrf vivía huérfana y el siguiente mutating request
-      // pasaba CSRF pero volvía a fallar en verificarJWT -> bucle de 401.
-      res.clearCookie('token')
-      res.clearCookie('csrf')
-      return res.status(401).json({ error: 'Sesión expirada.', code: 'SESSION_EXPIRED' });
-    }
-    req.user = payload;
-
-    // Sliding refresh: if JWT has < 15min left, re-sign and extend session.
-    // H5: actualización atómica con WHERE condicional — dos requests paralelas
-    // no pueden ambas extender la sesión (la segunda hace 0 rows updated y noop).
-    const nowSec    = Math.floor(Date.now() / 1000);
-    const remaining = (payload.exp ?? 0) - nowSec;
-    if (remaining > 0 && remaining < 900) {
-      const newExpAt = new Date(Date.now() + 30 * 60 * 1000)
-      const result = await prisma.sessionToken.updateMany({
-        where: { jti: payload.jti, expiresAt: { lt: newExpAt } },
-        data:  { expiresAt: newExpAt },
-      });
-      // Solo emitimos cookie nueva si NOSOTROS ganamos el CAS (otra request ya extendió).
-      if (result.count > 0) {
-        const newJwt = jwt.sign(
-          { sub: payload.sub, nombre: payload.nombre, permisos: payload.permisos, jti: payload.jti, ua: payload.ua, ...(payload.needs2FASetup ? { needs2FASetup: true } : {}) },
-          process.env.JWT_SECRET,
-          { expiresIn: '30m' }
-        );
-        const newToken = wrapJWT(newJwt);
-        const isProd   = process.env.NODE_ENV === 'production';
-        const cookieOpts = {
-          httpOnly: true, signed: true,
-          secure:   isProd,
-          sameSite: isProd ? 'none' : 'lax',
-          maxAge:   30 * 60 * 1000,
-          ...(isProd ? { partitioned: true } : {}),
-        };
-        res.cookie('token', newToken, cookieOpts);
-
-        // FIX bug "CSRF expirado": antes solo extendíamos 'token', dejando 'csrf'
-        // con su maxAge original. Si el user quedaba idle 30min, csrf moría aunque
-        // el JWT viviera 19min más por sliding -> 403 al primer click + logout
-        // forzado. Ahora re-emitimos 'csrf' con la misma maxAge para que JWT y
-        // CSRF siempre expiren a la par. Si la cookie csrf se perdió (browser
-        // crash, etc), regeneramos una nueva.
-        const csrfActual = req.cookies?.csrf || crypto.randomBytes(32).toString('hex')
-        res.cookie('csrf', csrfActual, { ...cookieOpts, httpOnly: false, signed: false })
-      }
-    }
-
-    next();
-  } catch {
-    // Limpiamos AMBAS cookies. Antes solo 'token' — dejaba 'csrf' huérfana y
-    // el siguiente request mutating fallaba CSRF en lugar de auth, lo que
-    // confundía al user con un mensaje incorrecto.
-    res.clearCookie('token');
-    res.clearCookie('csrf');
-    res.status(401).json({ error: 'Token inválido.' });
-  }
-}
-
-function requerirPermiso(permiso) {
-  return (req, res, next) => {
-    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : [];
-    if (permisos.includes('sistema:owner')) return next();
-    if (!permisos.includes(permiso)) return res.status(403).json({ error: 'Sin permiso para esta acción.' });
-    next();
-  };
-}
-
-/**
- * REGLA DE ORO: NO hardcodear 'sistema:owner'. Para acciones críticas
- * que exigen "Propietario Absoluto", validar nivel del rol del DB.
- * Default umbral = 100 (Propietario Absoluto). Subible a 110/120 sin tocar código.
- */
-const NIVEL_PROPIETARIO_ABSOLUTO = 100
-
-async function esPropietarioAbsoluto(userId) {
-  if (!userId) return false
-  try {
-    const roles = await prisma.rol.findMany({
-      where:  { activo: true, empleados: { some: { id: userId } } },
-      select: { nivel: true },
-    })
-    const max = roles.reduce((m, r) => Math.max(m, r.nivel ?? 0), 0)
-    return max >= NIVEL_PROPIETARIO_ABSOLUTO
-  } catch { return false }
-}
-
-function requerirNivel(min = NIVEL_PROPIETARIO_ABSOLUTO) {
-  return async (req, res, next) => {
-    const ok = await esPropietarioAbsoluto(req.user?.sub)
-    if (!ok) return res.status(403).json({ error: `Acción reservada a rol nivel ${min}+ (Propietario Absoluto).` })
-    next()
-  }
-}
-
-async function protegerPropietario(req, res, next) {
-  const targetId = parseInt(req.params.id ?? req.params.empleadoId);
-  if (!targetId) return next();
-  if (req.user?.permisos?.includes('sistema:owner')) return next();
-  try {
-    const [callerRoles, targetEmp] = await Promise.all([
-      prisma.rol.findMany({
-        where: { empleados: { some: { id: req.user.sub } }, activo: true },
-        select: { nivel: true },
-      }),
-      prisma.empleado.findUnique({
-        where: { id: targetId },
-        include: { roles: { where: { activo: true }, select: { nivel: true } } },
-      }),
-    ]);
-    if (!targetEmp) return next();
-    const callerNivel = callerRoles.length ? Math.max(...callerRoles.map(r => r.nivel ?? 0)) : 0;
-    const targetNivel = targetEmp.roles.length ? Math.max(...targetEmp.roles.map(r => r.nivel ?? 0)) : 0;
-    if (callerNivel <= targetNivel) {
-      return res.status(403).json({ error: `Sin autorización: tu nivel (${callerNivel}) no supera el nivel del objetivo (${targetNivel}).` });
-    }
-    next();
-  } catch { next(); }
-}
-
-// ─── Auth Helpers ─────────────────────────────────────────────────────────────
+// Zod helpers + schemas + UUID validator + formateadores RD + middlewares de
+// auth/permisos/nivel + device fingerprint helpers viven en shared/helpers.js,
+// shared/schemas.js y shared/middlewares.js. Aquí solo dejamos constantes que
+// completarLogin sigue necesitando inline.
 
 // Idle timeout: 30 min sliding session. JWT TTL = 30 min; renewed on activity
 // via sliding refresh in verificarJWT. RememberMe extends to 30d but keeps idle.
 const IDLE_TTL_MS = 30 * 60 * 1000
-
-// M5: device fingerprint endurecido — IP COMPLETA + Accept-Language + Sec-CH-UA hints.
-// Trade-off: si ISP rota IP del usuario, se dispara alerta device_nuevo (falso positivo
-// aceptable). Antes el /24 perdonaba IP-spoofers en la misma LAN/router público.
-function computeDeviceHash(ua, ip, acceptLanguage = '', secChUa = '') {
-  // Tomamos solo el primer idioma preferido (sin q-values) — más estable que toda la lista.
-  const lang = String(acceptLanguage).split(',')[0]?.trim().toLowerCase() ?? ''
-  // Sec-CH-UA viene como '"Chromium";v="130", "Google Chrome";v="130"' — basta el hash crudo.
-  const raw  = `${ua}|${ip ?? ''}|${lang}|${secChUa}`
-  return crypto.createHash('sha256').update(raw).digest('hex').slice(0, 32)
-}
-
-function labelFromUA(ua) {
-  if (!ua) return 'Desconocido'
-  const lower = ua.toLowerCase()
-  let device = 'Computadora'
-  if (/iphone|android|mobile/.test(lower)) device = 'Móvil'
-  else if (/ipad|tablet/.test(lower))      device = 'Tablet'
-  let browser = 'Navegador'
-  if (/edg\//.test(lower))      browser = 'Edge'
-  else if (/chrome/.test(lower))browser = 'Chrome'
-  else if (/firefox/.test(lower)) browser = 'Firefox'
-  else if (/safari/.test(lower))browser = 'Safari'
-  let os = 'OS'
-  if (/windows nt 11/.test(lower)) os = 'Windows 11'
-  else if (/windows nt 10/.test(lower)) os = 'Windows 10'
-  else if (/windows/.test(lower)) os = 'Windows'
-  else if (/mac os x/.test(lower)) os = 'macOS'
-  else if (/android/.test(lower)) os = 'Android'
-  else if (/iphone|ipad|ios/.test(lower)) os = 'iOS'
-  else if (/linux/.test(lower)) os = 'Linux'
-  return `${browser} en ${os} · ${device}`
-}
 
 function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = false) {
   const jti        = crypto.randomUUID()
@@ -1003,8 +553,9 @@ function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = 
 }
 
 // ─── Portal JWT ───────────────────────────────────────────────────────────────
-
-const PORTAL_JWT_SECRET = (process.env.JWT_SECRET || '') + ':portal'
+// PORTAL_JWT_SECRET + verificarPortalJWT viven en shared/jwt-crypto.js y
+// shared/middlewares.js. signPortalToken se queda aquí porque es trivial y solo
+// se usa desde el flow de portal-b2c.
 
 function signPortalToken(usuario) {
   return jwt.sign(
@@ -1012,20 +563,6 @@ function signPortalToken(usuario) {
     PORTAL_JWT_SECRET,
     { expiresIn: '30d' }
   )
-}
-
-async function verificarPortalJWT(req, res, next) {
-  const raw = req.cookies?.pct
-  if (!raw) return res.status(401).json({ error: 'No autenticado.' })
-  try {
-    const payload = jwt.verify(raw, PORTAL_JWT_SECRET)
-    if (payload.type !== 'portal') throw new Error('wrong type')
-    req.portalUser = payload
-    next()
-  } catch {
-    res.clearCookie('pct')
-    res.status(401).json({ error: 'Sesión expirada.' })
-  }
 }
 
 const portalLoginLimiter = rateLimit({
@@ -1272,115 +809,10 @@ app.post('/api/inventario/upload-url',
 // ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
 
 // ─── Anti-tamper hash (HMAC) ──────────────────────────────────────────────────
-// Hash determinístico sobre campos vitales del documento. Validación pública
-// via /api/publico/verify/:hash — quien recibe el PDF puede confirmar que el
-// monto/cliente/NCF coincide con lo emitido (defensa anti-Photoshop).
-//
-// CRÍTICO: la normalización abajo es load-bearing. Prisma devuelve Decimal
-// como objeto que stringifica distinto ("150" vs "150.00") según versión y
-// path (raw query vs ORM). DateTime puede llegar como Date o ISO string. Si
-// los inputs no se castean rígidamente, el hash difiere entre la generación
-// del PDF y la verificación pública → "Documento no válido" falsos.
-const VERIFY_SECRET =
-  process.env.VERIFY_SECRET ??
-  process.env.JWT_SECRET ??
-  process.env.SESSION_SECRET ??
-  'acr-noc-verify-secret-fallback-v1'
-
-// Normalización rígida — TODO valor que entra al HMAC pasa por aquí.
-// Cualquier ambigüedad (null vs '', Decimal vs number, Date vs ISO) se aplana
-// a una representación canónica única para que persist y verify siempre
-// produzcan el mismo payload byte-a-byte.
-function _normStr(v) {
-  // null, undefined, NaN, número 0 → tratamos solo como string. `0` es válido.
-  if (v == null) return ''
-  // String(NaN) === 'NaN' — bloquéamos también.
-  const s = String(v).trim()
-  return s === 'NaN' || s === 'undefined' || s === 'null' ? '' : s
-}
-function _normMoney(v) {
-  if (v == null || v === '') return '0.00'
-  // Decimal.js (Prisma) → preferimos toString() que respeta la escala almacenada,
-  // luego Number → toFixed(2) para colapsar variaciones de trailing zeros.
-  const s = typeof v === 'object' && typeof v.toString === 'function' ? v.toString() : String(v)
-  const n = Number(s)
-  return Number.isFinite(n) ? n.toFixed(2) : '0.00'
-}
-function _normDateYMD(v) {
-  if (!v) return ''
-  const d = v instanceof Date ? v : new Date(v)
-  if (Number.isNaN(d.getTime())) return ''
-  // UTC YYYY-MM-DD: ignora horas/zona → el mismo doc emitido ayer 23:59 local
-  // y leído hoy 00:01 UTC produce la misma clave.
-  const y = d.getUTCFullYear()
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
-  const day = String(d.getUTCDate()).padStart(2, '0')
-  return `${y}-${m}-${day}`
-}
-
-// Trazas opt-in para diagnóstico del hash. Activa con VERIFY_HASH_DEBUG=1 en el
-// entorno (no se loguea por default — los IDs/totales son sensibles). Permite
-// comparar el payload exacto que entra al HMAC en persist vs en /verify.
-const VERIFY_HASH_DEBUG = process.env.VERIFY_HASH_DEBUG === '1'
-function _hashDbg(tag, f, payload, hash) {
-  if (!VERIFY_HASH_DEBUG) return
-  console.log(`[HASH ${tag}]`, {
-    id:           f?.id,
-    noFactura:    f?.noFactura,
-    ncfRaw:       f?.ncf,
-    ncfNorm:      _normStr(f?.ncf),
-    totalRaw:     f?.total?.toString?.() ?? f?.total,
-    totalNorm:    _normMoney(f?.total),
-    fechaRaw:     f?.fechaEmision,
-    fechaNorm:    _normDateYMD(f?.fechaEmision),
-    payload,
-    hash,
-  })
-}
-
-function facturaVerifyHash(f, dbgTag) {
-  if (!f) return ''
-  const payload = [
-    _normStr(f.id),
-    _normStr(f.noFactura),
-    _normStr(f.ncf),
-    _normMoney(f.total),
-    _normDateYMD(f.fechaEmision),
-  ].join('|')
-  const hash = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
-  if (dbgTag) _hashDbg(dbgTag, f, payload, hash)
-  return hash
-}
-
-// Lifecycle-safe verifyHash persistence.
-// CRÍTICO: re-leemos la factura via findUnique para obtener los tipos canónicos
-// que Prisma persistió (Decimal con escala fija, Date desde Postgres RETURNING).
-// El objeto in-memory devuelto por `create` puede diferir sutilmente en serialización
-// (escala Decimal, precisión Date) → hash divergente entre persist y PDF gen.
-// Esta función ahora se llama SIEMPRE con `await` (no fire-and-forget) para
-// garantizar que el verifyHash esté en DB ANTES de responder al cliente o
-// permitir cualquier render PDF posterior. Invalida pdfUrl para forzar regen
-// con QR sincronizado al hash recién persistido.
-async function persistirVerifyHash(factura) {
-  if (!factura?.id) return factura
-  try {
-    const fresh = await prisma.factura.findUnique({
-      where:  { id: factura.id },
-      select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true },
-    })
-    if (!fresh) return factura
-    const vh = facturaVerifyHash(fresh, 'persist')
-    await prisma.factura.update({
-      where: { id: factura.id },
-      data:  { verifyHash: vh, pdfUrl: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
-    })
-    factura.verifyHash = vh
-    factura.pdfUrl = null
-  } catch (e) {
-    console.warn('[verifyHash] persist failed:', e.code, e.message)
-  }
-  return factura
-}
+// _normStr/_normMoney/_normDateYMD/facturaVerifyHash/persistirVerifyHash viven
+// en shared/services/verify-hash.service.js. La normalización rígida es load-
+// bearing — ver docs ahí. Aquí solo conservamos PUBLIC_VERIFY_BASE (URL del
+// frontend para el QR) y la lógica de invalidación de cache PDF post-template.
 
 // PUBLIC_URL para verificación (frontend host). Cadena de fallbacks para que
 // el QR del PDF SIEMPRE tenga URL que apuntar. Antes: si PUBLIC_FRONTEND_URL
@@ -2492,76 +1924,21 @@ async function ensureRowLevelSecurity() {
 // Se montan AL FINAL para que Express resuelva primero los handlers legacy
 // inline; cuando un handler migre a routes/*.js se elimina de server.js y el
 // router toma control sin más cambios.
-// Helpers re-establecidos para que múltiples routers (crm, inventario, admin,
-// ventas) puedan resolver auto-secuencias. Originalmente vivían dentro del
-// bloque de Cotizaciones; quedaron ahí migradas pero los demás routers también
-// las necesitan, así que las dejamos accesibles vía _routerDeps.
-const SECUENCIA_DEFAULTS = {
-  factura:     { prefijo: 'FAC', actual: 0, padding: 6 },
-  cotizacion:  { prefijo: 'COT', actual: 0, padding: 6 },
-  producto:    { prefijo: 'ART', actual: 0, padding: 6 },
-  servicio:    { prefijo: 'SVC', actual: 0, padding: 6 },
-  cliente:     { prefijo: 'CLI', actual: 0, padding: 6 },
-  rma:         { prefijo: 'RMA', actual: 0, padding: 5 },
-  plan:        { prefijo: 'PLN', actual: 0, padding: 6 },
-  notaCredito: { prefijo: 'NC',  actual: 0, padding: 6 },
-  notaDebito:  { prefijo: 'ND',  actual: 0, padding: 6 },
-};
-
-async function generarSiguienteCodigo(entidad, tx) {
-  const def = SECUENCIA_DEFAULTS[entidad];
-  if (!def) throw new Error(`Entidad de secuencia desconocida: "${entidad}".`);
-  const db = tx ?? prisma;
-  const seedPath   = `{${entidad}}`;
-  const actualPath = `{${entidad},actual}`;
-  const rows = await db.$queryRawUnsafe(`
-    UPDATE "EmpresaPerfil"
-    SET    "secuenciasConfig" =
-      jsonb_set(
-        jsonb_set(
-          COALESCE("secuenciasConfig", '{}'::jsonb),
-          '${seedPath}',
-          COALESCE("secuenciasConfig"->'${entidad}', $1::jsonb),
-          true
-        ),
-        '${actualPath}',
-        to_jsonb(
-          COALESCE(("secuenciasConfig"->'${entidad}'->>'actual')::int, $2::int) + 1
-        ),
-        true
-      )
-    WHERE id = 1
-    RETURNING ("secuenciasConfig"->'${entidad}'->>'prefijo') AS prefijo,
-              ("secuenciasConfig"->'${entidad}'->>'actual')::int AS actual,
-              ("secuenciasConfig"->'${entidad}'->>'padding')::int AS padding
-  `, JSON.stringify(def), def.actual);
-  if (!rows || rows.length === 0) {
-    await prisma.empresaPerfil.upsert({
-      where:  { id: 1 },
-      update: {},
-      create: { id: 1, rnc: '', razonSocial: 'Empresa', secuenciasConfig: { [entidad]: def } },
-    });
-    return generarSiguienteCodigo(entidad, tx);
-  }
-  const r = rows[0];
-  return `${r.prefijo}-${String(r.actual).padStart(r.padding ?? def.padding, '0')}`;
-}
-
-const _sharedMw = createMiddlewares({
-  prisma,
-  auditReq,
-});
+// SECUENCIA_DEFAULTS + generarSiguienteCodigo viven ahora en
+// shared/services/sequences.service.js (ver bloque de instanciación arriba).
 const _routerDeps = {
   prisma,
   middlewares: _sharedMw,
   schemas:     sharedSchemas,
   helpers:     sharedHelpers,
   auditReq,
+  // Limiters globales reusables. Los rate-limiters específicos de un dominio
+  // (forgot/checkout/tracking/verify/empresaPublic/catalogoPublico/pinVerify)
+  // se declaran localmente en sus respectivos modules/<dominio>/router.js
+  // para evitar acoplamiento con el monolito.
   limiters: {
     loginLimiter, totpLimiter, backupCodeLimiter, billingLimiter,
-    uploadLimiter, uploadMulter, portalLoginLimiter, forgotLimiter,
-    checkoutLimiter, catalogoPublicoLimiter, trackingLimiter,
-    verifyLimiter, empresaPublicLimiter, bulkPdfLimiter, pinVerifyLimiter,
+    uploadLimiter, uploadMulter, portalLoginLimiter, bulkPdfLimiter,
   },
   // Helpers monolíticos pasados a routers para que handlers extraídos
   // sigan funcionando sin re-implementación. A medida que cada router migra
@@ -2602,9 +1979,8 @@ const _routerDeps = {
   esAssetUrlSegura,
   esUrlPublicaSegura,
   pathFromSupabaseUrl,
-  // Portal helpers
+  // Portal helpers (setPortalCookie es local a modules/crm/portal-b2c/router.js)
   signPortalToken,
-  setPortalCookie,
   // Misc constants
   NIVEL_PROPIETARIO_ABSOLUTO,
   protegerPropietario,
@@ -2645,15 +2021,10 @@ async function startServer() {
   // Warm-up Puppeteer/Chromium + page pool en background. Sin await: el servidor
   // empieza a aceptar requests mientras el browser y 2 páginas idle se inicializan.
   // Cold-start primer PDF baja de ~3s a ~50ms si el warmup termina antes.
+  // prerenderPdfsBatch vive ahora en modules/ventas/_cron.js y arranca solo via
+  // startCronJobs() — sin necesidad de disparo manual desde aquí.
   const { warmupPages } = require('./services/pdf-generator')
-  warmupPages()
-    .then(() => {
-      // Lanza el primer batch de pre-render 30s después del warmup. Sin esperar
-      // al primer tick del cron de 5min — cubre el caso "deploy reciente y el
-      // user crea facturas inmediatamente que esperan PDF".
-      setTimeout(() => prerenderPdfsBatch().catch(() => {}), 30_000)
-    })
-    .catch(err => console.error('[PDF WARMUP]', err.message))
+  warmupPages().catch(err => console.error('[PDF WARMUP]', err.message))
 
   // Pre-generate RSA challenges so first login after cold start never fails
   await warmChallengeStore(3)

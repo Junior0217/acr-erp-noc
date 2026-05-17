@@ -1,5 +1,8 @@
 # ACR Networks & Solutions - ERP NOC (React+Tailwind+Prisma)
 
+## Arquitectura Backend
+Organización por Dominio (Layered LITE). Flujo estricto: router.js (solo HTTP y validación Zod) -> controller.js (orquestación) -> service.js (lógica de negocio pura, transacciones, auditoría) -> repo.js (queries de Prisma encapsuladas). No usar DAOs extras. Zod es el único DTO. Errores lanzan excepciones capturadas por un middleware central.
+
 ## CONTEXTO DE LA EMPRESA
 - **Rubro:** Proveedor WISP, Infraestructura de Redes y Seguridad Electrónica.
 - **Operación:** Dirigida por sus 2 socios fundadores.
@@ -82,6 +85,11 @@ scripts/
 2. **CÓDIGO COMPLETO:** Prohibido usar comentarios como "// resto del código". Escribe el archivo final listo para copiar, pegar y producción.
 3. **CERO CONFIRMACIONES:** Si pido un cambio, dame el bloque de código corregido, no me expliques qué cambiaste.
 4. **NO INVENTAR LIBRERÍAS:** Usa solo lo que ya está en el proyecto (lucide-react, react-leaflet, etc.).
+
+## REGLAS ESTRICTAS DE COMMITS (GIT)
+1. **NUNCA AGREGAR `Co-Authored-By: Claude`** ni ninguna otra referencia a IA, Anthropic, asistentes o herramientas generativas en el mensaje de commit (ni en el subject, ni en el body, ni en el trailer). Cero firmas tipo `Co-Authored-By: Claude …`, `Generated with Claude Code`, emojis tipo 🤖, ni atajos similares.
+2. **FORMATO ESTÁNDAR DE COMMIT CONVENCIONAL ÚNICAMENTE:** `<tipo>(<scope opcional>): <descripción imperativa breve>` (ej. `feat(pos): …`, `fix(crypto): …`, `chore(deps): …`, `refactor(api): …`, `docs(readme): …`). El cuerpo opcional describe el QUÉ y el POR QUÉ en bullets concisos, sin trailers de coautoría.
+3. Aplica a TODOS los commits (locales, squash, merge messages, amends) y a TODOS los PRs creados desde esta carpeta.
 
 ## Agent skills
 
