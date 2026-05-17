@@ -151,6 +151,18 @@ function createInventarioService({ repo, generarSiguienteCodigo, auditReq }) {
     }
   }
 
+  /**
+   * Lista series "Disponible" para un producto. Si el id no es entero válido,
+   * devuelve array vacío sin tirar 400 — el frontend usa este endpoint en
+   * autocompletes y un click prematuro no debe loguear error.
+   */
+  async function listSeriesDisponibles(productoIdRaw) {
+    const pid = parseInt(productoIdRaw, 10);
+    if (!pid || pid < 1) return { status: 200, body: { data: [] } };
+    const data = await repo.listSeriesDisponiblesForProducto(pid);
+    return { status: 200, body: { data } };
+  }
+
   // ─── Movimientos (Kardex) ─────────────────────────────────────────────────
   function _buildMovimientoWhere(query) {
     const where = {};
@@ -234,6 +246,7 @@ function createInventarioService({ repo, generarSiguienteCodigo, auditReq }) {
     createProducto,
     updateProducto,
     deleteProducto,
+    listSeriesDisponibles,
     listMovimientos,
     listPrestamos,
     createPrestamo,

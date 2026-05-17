@@ -18,32 +18,12 @@ const cron      = require('node-cron');
 const { wrapJWT, unwrapJWT, encryptTOTP, decryptTOTP, PORTAL_JWT_SECRET } = require('../../../shared/jwt-crypto');
 let archiver = null; try { archiver = require('archiver'); } catch {}
 
+// descripcionFlexSchema vive en modules/inventario/schema.js (Blueprint Fase 1.2).
+// Catalogo lo importa porque comparte schema para item con descripción flex.
+const { descripcionFlexSchema } = require('../../inventario/schema');
+
 function makeRateLimitStore() { return undefined; }
 
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-});
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional();
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 function createCatalogoRouter(deps) {
   const router = express.Router();
@@ -76,6 +56,7 @@ function createCatalogoRouter(deps) {
     formatCliente, formatSuplidor, formatProspecto,
     fmtPhone, fmtCedula, fmtRNC, getClientIp, reqFingerprint, computeDeviceHash, labelFromUA, bodyLimit,
     nullStr, optIdent, emptyStr, optCedulaRD,
+    stripTags, descripcionToRaw,
   } = helpers;
   const {
     loginLimiter, totpLimiter, backupCodeLimiter, billingLimiter,
@@ -479,6 +460,49 @@ router.get('/portal/catalogo', verificarPortalJWT, async (req, res) => {
     })
     res.json({ data: items.map(i => ({ ...i, precio: Number(i.precio) })) })
   } catch { res.status(500).json({ error: 'Error interno.' }) }
+})
+
+// ─── Bundles cross-sell (Fase 1.4) ───────────────────────────────────────────
+// Lookup rápido: dado un producto, devuelve sugerencias ordenadas por score.
+// Producto inválido → array vacío (NO 400) para que clicks prematuros del
+// frontend no logueen error innecesario.
+router.get('/productos/:id/bundles', verificarJWT, async (req, res) => {
+  try {
+    const pid = parseInt(req.params.id, 10)
+    if (!pid) return res.json({ data: [] })
+    const bundles = await prisma.productoBundle.findMany({
+      where:   { padreId: pid },
+      orderBy: { score: 'desc' },
+      include: { hijo: { select: { id: true, sku: true, nombre: true, precio: true, stockActual: true, imagenUrl: true } } },
+      take:    8,
+    })
+    res.json({ data: bundles.map(b => ({ ...b.hijo, score: b.score, motivo: b.motivo })) })
+  } catch (e) {
+    console.error('[GET bundles]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+// Variante para item de catálogo: si está vinculado a un producto físico,
+// retorna los bundles de ese producto. Sino vacío.
+router.get('/catalogo/:id/bundles', verificarJWT, async (req, res) => {
+  try {
+    if (!validUUID(req.params.id)) return res.json({ data: [] })
+    const item = await prisma.itemCatalogo.findUnique({
+      where: { id: req.params.id }, select: { productoId: true },
+    })
+    if (!item?.productoId) return res.json({ data: [] })
+    const bundles = await prisma.productoBundle.findMany({
+      where:   { padreId: item.productoId },
+      orderBy: { score: 'desc' },
+      include: { hijo: { select: { id: true, sku: true, nombre: true, precio: true, stockActual: true, imagenUrl: true } } },
+      take:    8,
+    })
+    res.json({ data: bundles.map(b => ({ ...b.hijo, score: b.score, motivo: b.motivo })) })
+  } catch (e) {
+    console.error('[GET catalogo bundles]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
 })
 
   return router;

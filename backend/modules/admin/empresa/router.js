@@ -20,30 +20,6 @@ let archiver = null; try { archiver = require('archiver'); } catch {}
 
 function makeRateLimitStore() { return undefined; }
 
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-});
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional();
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 function createEmpresaRouter(deps) {
   const router = express.Router();
@@ -395,8 +371,71 @@ router.patch('/configuracion/empresa', verificarJWT, requerirPermiso('empresa:ed
   }
 })
 
-
-
+// ─── Upload de assets de empresa (logo, watermark, etc.) — Fase 1.4 ──────────
+// Pipeline: multer 2MB → validación MIME por magic bytes → SVG safety check →
+// sharp compression → rehosting en Supabase bucket SUPABASE_BUCKET en path
+// acr/<kind>-<ts>-<rand>.<ext>. URL devuelta pasa por esAssetUrlSegura para
+// evitar SSRF/tracking-pixel disfrazado.
+router.post('/configuracion/empresa/upload',
+  uploadLimiter,
+  verificarJWT,
+  requerirPermiso('empresa:editar'),
+  uploadMulter.single('file'),
+  async (req, res) => {
+    try {
+      if (!supabase) return res.status(503).json({ error: 'Storage no configurado. Falta SUPABASE_SERVICE_ROLE_KEY.', code: 'STORAGE_DISABLED' })
+      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
+      const kind = String(req.body.kind || req.query.kind || '')
+      if (!KINDS_VALIDOS.includes(kind)) {
+        return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_VALIDOS.join(', ')}.` })
+      }
+      const inputMime = detectMimeFromBuffer(req.file.buffer)
+      if (!inputMime) return res.status(415).json({ error: 'Tipo de archivo no reconocido o corrupto.', code: 'INVALID_MIME' })
+      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
+      if (inputMime === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
+        auditReq('empresa:upload_svg_malicioso', req, { kind, size: req.file.size })
+        return res.status(422).json({ error: 'SVG contiene contenido peligroso.', code: 'SVG_UNSAFE' })
+      }
+      let buffer, finalMime, ext
+      try {
+        const compressed = await comprimirImagen(req.file.buffer, inputMime)
+        buffer = compressed.buffer; finalMime = compressed.mime; ext = compressed.ext
+      } catch (e) {
+        console.error('[SHARP COMPRESS]', e.message)
+        return res.status(422).json({ error: 'Imagen corrupta o formato no procesable.', code: 'COMPRESS_FAIL' })
+      }
+      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
+      const path     = `acr/${filename}`
+      const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, buffer, {
+        contentType: finalMime, cacheControl: '3600', upsert: false,
+      })
+      if (upErr) {
+        console.error('[UPLOAD ERROR]', upErr.message)
+        return res.status(502).json({ error: `Error al subir: ${upErr.message}`, code: 'STORAGE_UPLOAD_FAIL' })
+      }
+      const { data: pub } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path)
+      const publicUrl = pub?.publicUrl
+      if (!publicUrl || !esAssetUrlSegura(publicUrl)) {
+        return res.status(500).json({ error: 'URL pública generada inválida.', code: 'URL_INVALID' })
+      }
+      const ahorroPct = ((req.file.size - buffer.length) / req.file.size * 100)
+      auditReq('empresa:upload', req, {
+        kind, inputMime, finalMime,
+        sizeOriginal: req.file.size, sizeComprimido: buffer.length,
+        ahorroPct: Number(ahorroPct.toFixed(1)), url: publicUrl,
+      })
+      res.status(201).json({
+        kind, url: publicUrl, mime: finalMime,
+        size: buffer.length, sizeOriginal: req.file.size,
+        ahorroPct: Number(ahorroPct.toFixed(1)),
+      })
+    } catch (e) {
+      if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
+      console.error('[EMPRESA UPLOAD]', e.message)
+      res.status(500).json({ error: 'Error interno al procesar el archivo.' })
+    }
+  }
+)
 
   return router;
 }

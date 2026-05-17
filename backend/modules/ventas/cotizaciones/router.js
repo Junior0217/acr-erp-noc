@@ -20,30 +20,6 @@ let archiver = null; try { archiver = require('archiver'); } catch {}
 
 function makeRateLimitStore() { return undefined; }
 
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-});
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional();
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 function createCotizacionesRouter(deps) {
   const router = express.Router();
@@ -359,8 +335,55 @@ router.patch('/facturas/:id/estado', verificarJWT, billingLimiter, requerirPermi
   } catch { res.status(500).json({ error: 'Error interno.' }) }
 })
 
+// ─── Cotización: mover entre etapas del pipeline Kanban (Fase 1.4) ──────────
+// Si la etapa nueva es 'Perdida'/'Aceptada'/'Convertida' → libera reservas de
+// stock asociadas (en lugar de esperar las 72h del TTL). Stock vuelve a estar
+// disponible en el POS al instante.
+// RBAC fino: cajeros normales solo mueven sus propias cotizaciones. Owners y
+// managers con 'venta:gestionar_todas' pasan cualquier etapa.
+router.patch('/cotizaciones/:id/etapa',
+  verificarJWT,
+  requerirPermiso('venta:editar_cotizaciones'),
+  async (req, res) => {
+    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+    const etapas = ['Borrador', 'Enviada', 'Negociacion', 'Aceptada', 'Convertida', 'Perdida']
+    const { etapa } = req.body ?? {}
+    if (!etapas.includes(etapa)) return res.status(400).json({ error: `Etapa inválida. Permitidas: ${etapas.join(', ')}.` })
+    try {
+      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
+      const puedeGestionarTodas = permisos.includes('sistema:owner') || permisos.includes('venta:gestionar_todas')
+      const factura = await prisma.factura.findUnique({
+        where:  { id: req.params.id },
+        select: { id: true, esCotizacion: true, etapaPipeline: true, empleadoId: true },
+      })
+      if (!factura) return res.status(404).json({ error: 'Cotización no encontrada.' })
+      if (!factura.esCotizacion) return res.status(400).json({ error: 'Solo cotizaciones tienen etapa pipeline.' })
+      if (!puedeGestionarTodas && factura.empleadoId && factura.empleadoId !== req.user.sub) {
+        auditReq('cotizacion:etapa_denied', req, { id: factura.id, owner: factura.empleadoId, etapaIntento: etapa })
+        return res.status(403).json({ error: 'No puedes mover cotizaciones de otros vendedores.' })
+      }
 
-
+      const f = await prisma.factura.update({
+        where: { id: req.params.id },
+        data:  { etapaPipeline: etapa },
+        select:{ id: true, etapaPipeline: true, noFactura: true },
+      })
+      let reservasLiberadas = 0
+      if (etapa === 'Perdida' || etapa === 'Aceptada' || etapa === 'Convertida') {
+        const r = await prisma.reservaInventario.deleteMany({ where: { facturaId: f.id } })
+        reservasLiberadas = r.count
+        if (reservasLiberadas > 0) {
+          auditReq('cotizacion:reservas_liberadas', req, { id: f.id, etapa, count: reservasLiberadas })
+        }
+      }
+      auditReq('cotizacion:etapa', req, { id: f.id, etapa, reservasLiberadas })
+      res.json({ ...f, reservasLiberadas })
+    } catch (e) {
+      console.error('[PATCH ETAPA]', e.code, e.message)
+      res.status(500).json({ error: 'Error interno.' })
+    }
+  }
+)
 
   return router;
 }

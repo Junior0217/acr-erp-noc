@@ -20,30 +20,6 @@ let archiver = null; try { archiver = require('archiver'); } catch {}
 
 function makeRateLimitStore() { return undefined; }
 
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-});
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional();
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 function createNcfRouter(deps) {
   const router = express.Router();

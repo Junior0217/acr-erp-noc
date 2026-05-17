@@ -49,6 +49,7 @@ const {
   emptyStr, nullStr, optIdent, optCedulaRD, fmtPhone, fmtCedula, fmtRNC,
   formatCliente, formatSuplidor, formatProspecto, reqFingerprint,
   computeDeviceHash, labelFromUA, _stripPollutionKeys, bodyLimit, getClientIp,
+  stripTags, descripcionToRaw,
 } = sharedHelpers;
 const {
   passwordSchema, empleadoSchema, empleadoUpdateSchema, asistenciaSchema,
@@ -512,18 +513,8 @@ const portalLoginLimiter = rateLimit({
   skipSuccessfulRequests: true,
 })
 
-// ─── Health Check (movido arriba del rate-limiter para que Render no se 429) ──
-// Stub: legacy block. Mantengo para no romper rutas que esperan headers extras.
-app.get('/api/health/legacy', async (req, res) => {
-  let dbConnected = false
-  try { await prisma.$queryRaw`SELECT 1`; dbConnected = true } catch (_) {}
-  res.json({
-    status:    'ok',
-    version:   '3.0.0-HARD-RESET',
-    timestamp: Date.now(),
-    dbConnected,
-  });
-});
+// /api/health/legacy ELIMINADO (Fase 1.4): dup de /api/health sin uso real.
+// El liveness probe oficial es /api/health (sin auth, exento del limiter).
 
 // ─── MSP: Vault PAM (AES-256-GCM) ─────────────────────────────────────────────
 
@@ -551,73 +542,9 @@ function vaultDecrypt(passwordEnc, passwordIv) {
   return Buffer.concat([dec.update(enc), dec.final()]).toString('utf8')
 }
 
-// ─── Supabase Storage + Validación URL whitelist (anti tracking-pixel) ──────
-
-app.post(
-  '/api/configuracion/empresa/upload',
-  uploadLimiter,
-  verificarJWT,
-  requerirPermiso('empresa:editar'),
-  uploadMulter.single('file'),
-  async (req, res) => {
-    try {
-      if (!supabase) return res.status(503).json({ error: 'Storage no configurado. Falta SUPABASE_SERVICE_ROLE_KEY.', code: 'STORAGE_DISABLED' })
-      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
-      const kind = String(req.body.kind || req.query.kind || '')
-      if (!KINDS_VALIDOS.includes(kind)) {
-        return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_VALIDOS.join(', ')}.` })
-      }
-      const inputMime = detectMimeFromBuffer(req.file.buffer)
-      if (!inputMime) return res.status(415).json({ error: 'Tipo de archivo no reconocido o corrupto.', code: 'INVALID_MIME' })
-      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
-      if (inputMime === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
-        auditReq('empresa:upload_svg_malicioso', req, { kind, size: req.file.size })
-        return res.status(422).json({ error: 'SVG contiene contenido peligroso.', code: 'SVG_UNSAFE' })
-      }
-      let buffer, finalMime, ext
-      try {
-        const compressed = await comprimirImagen(req.file.buffer, inputMime)
-        buffer = compressed.buffer; finalMime = compressed.mime; ext = compressed.ext
-      } catch (e) {
-        console.error('[SHARP COMPRESS]', e.message)
-        return res.status(422).json({ error: 'Imagen corrupta o formato no procesable.', code: 'COMPRESS_FAIL' })
-      }
-      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
-      const path     = `acr/${filename}`
-      const { error: upErr } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, buffer, {
-        contentType: finalMime, cacheControl: '3600', upsert: false,
-      })
-      if (upErr) {
-        console.error('[UPLOAD ERROR]', upErr.message)
-        return res.status(502).json({ error: `Error al subir: ${upErr.message}`, code: 'STORAGE_UPLOAD_FAIL' })
-      }
-      const { data: pub } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path)
-      const publicUrl = pub?.publicUrl
-      if (!publicUrl || !esAssetUrlSegura(publicUrl)) {
-        return res.status(500).json({ error: 'URL pública generada inválida.', code: 'URL_INVALID' })
-      }
-      const ahorroPct = ((req.file.size - buffer.length) / req.file.size * 100)
-      auditReq('empresa:upload', req, {
-        kind, inputMime, finalMime,
-        sizeOriginal: req.file.size, sizeComprimido: buffer.length,
-        ahorroPct: Number(ahorroPct.toFixed(1)), url: publicUrl,
-      })
-      res.status(201).json({
-        kind, url: publicUrl, mime: finalMime,
-        size: buffer.length, sizeOriginal: req.file.size,
-        ahorroPct: Number(ahorroPct.toFixed(1)),
-      })
-    } catch (e) {
-      if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
-      console.error('[EMPRESA UPLOAD]', e.message)
-      res.status(500).json({ error: 'Error interno al procesar el archivo.' })
-    }
-  }
-)
-
-// Inventario uploads (image + url) migraron a modules/inventario/uploads/.
-// Pipeline completo (validación MIME por magic bytes, anti-SSRF, sharp resize,
-// rehosting en Supabase Storage + auditoría) vive ahí; server.js solo monta.
+// Inventario uploads + empresa upload migraron a modules/inventario/uploads/
+// y modules/admin/empresa/ respectivamente (Fase 1.2 + 1.4). server.js solo
+// orquesta el wiring.
 
 // ─── PDF stack (Blueprint Fase 1.3) ──────────────────────────────────────────
 // Todo el stack vive en backend/modules/ventas/pdf/: buildPdfData,
@@ -646,194 +573,16 @@ const _pdfModule = buildPdfModule({
 });
 console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${_pdfModule.service.PUBLIC_VERIFY_BASE}`);
 
-// ─── Bundles cross-sell ──────────────────────────────────────────────────────
-// Lookup rápido: dado un producto, devuelve sugerencias ordenadas por score.
-app.get('/api/productos/:id/bundles', verificarJWT, async (req, res) => {
-  try {
-    const pid = parseInt(req.params.id, 10)
-    if (!pid) return res.json({ data: [] })
-    const bundles = await prisma.productoBundle.findMany({
-      where:   { padreId: pid },
-      orderBy: { score: 'desc' },
-      include: { hijo: { select: { id: true, sku: true, nombre: true, precio: true, stockActual: true, imagenUrl: true } } },
-      take:    8,
-    })
-    res.json({ data: bundles.map(b => ({ ...b.hijo, score: b.score, motivo: b.motivo })) })
-  } catch (e) {
-    console.error('[GET bundles]', e.code, e.message)
-    res.status(500).json({ error: 'Error interno.' })
-  }
-})
-
-// Variante para item de catálogo: si está vinculado a un producto físico,
-// retorna los bundles de ese producto. Sino vacío.
-app.get('/api/catalogo/:id/bundles', verificarJWT, async (req, res) => {
-  try {
-    if (!validUUID(req.params.id)) return res.json({ data: [] })
-    const item = await prisma.itemCatalogo.findUnique({
-      where: { id: req.params.id }, select: { productoId: true },
-    })
-    if (!item?.productoId) return res.json({ data: [] })
-    const bundles = await prisma.productoBundle.findMany({
-      where:   { padreId: item.productoId },
-      orderBy: { score: 'desc' },
-      include: { hijo: { select: { id: true, sku: true, nombre: true, precio: true, stockActual: true, imagenUrl: true } } },
-      take:    8,
-    })
-    res.json({ data: bundles.map(b => ({ ...b.hijo, score: b.score, motivo: b.motivo })) })
-  } catch (e) {
-    console.error('[GET catalogo bundles]', e.code, e.message)
-    res.status(500).json({ error: 'Error interno.' })
-  }
-})
-
-// ─── Series disponibles para un producto (captura en POS) ────────────────────
-app.get('/api/productos/:id/series', verificarJWT, async (req, res) => {
-  try {
-    const pid = parseInt(req.params.id, 10)
-    if (!pid) return res.json({ data: [] })
-    const series = await prisma.productoSerial.findMany({
-      where:   { productoId: pid, estado: 'Disponible' },
-      orderBy: { createdAt: 'asc' },
-      select:  { id: true, serie: true, ubicacion: true, garantiaHasta: true },
-    })
-    res.json({ data: series })
-  } catch (e) {
-    console.error('[GET series]', e.code, e.message)
-    res.status(500).json({ error: 'Error interno.' })
-  }
-})
-
-// Mover cotización entre etapas del pipeline (Kanban).
-// Si la etapa nueva es 'Perdida' -> libera inmediatamente las reservas de stock
-// asociadas (en lugar de esperar las 72h del TTL). Stock vuelve a estar
-// disponible en el POS al instante para evitar bloqueo de inventario activo.
-app.patch('/api/cotizaciones/:id/etapa',
-  verificarJWT,
-  requerirPermiso('venta:editar_cotizaciones'),
-  async (req, res) => {
-    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
-    const etapas = ['Borrador', 'Enviada', 'Negociacion', 'Aceptada', 'Convertida', 'Perdida']
-    const { etapa } = req.body ?? {}
-    if (!etapas.includes(etapa)) return res.status(400).json({ error: `Etapa inválida. Permitidas: ${etapas.join(', ')}.` })
-    try {
-      // RBAC adicional: cajeros normales solo mueven cotizaciones propias.
-      // Owners/managers (permiso global venta:gestionar_todas) pasan a cualquier etapa.
-      const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : []
-      const puedeGestionarTodas = permisos.includes('sistema:owner') || permisos.includes('venta:gestionar_todas')
-      const factura = await prisma.factura.findUnique({
-        where:  { id: req.params.id },
-        select: { id: true, esCotizacion: true, etapaPipeline: true, empleadoId: true },
-      })
-      if (!factura) return res.status(404).json({ error: 'Cotización no encontrada.' })
-      if (!factura.esCotizacion) return res.status(400).json({ error: 'Solo cotizaciones tienen etapa pipeline.' })
-      if (!puedeGestionarTodas && factura.empleadoId && factura.empleadoId !== req.user.sub) {
-        auditReq('cotizacion:etapa_denied', req, { id: factura.id, owner: factura.empleadoId, etapaIntento: etapa })
-        return res.status(403).json({ error: 'No puedes mover cotizaciones de otros vendedores.' })
-      }
-
-      const f = await prisma.factura.update({
-        where: { id: req.params.id },
-        data:  { etapaPipeline: etapa },
-        select:{ id: true, etapaPipeline: true, noFactura: true },
-      })
-      let reservasLiberadas = 0
-      // Libera reservas en etapas terminales: Perdida (rechazo), Aceptada (conversión inminente),
-      // Convertida (ya facturada -> stock se descuenta vía Factura, reservar duplica).
-      if (etapa === 'Perdida' || etapa === 'Aceptada' || etapa === 'Convertida') {
-        const r = await prisma.reservaInventario.deleteMany({ where: { facturaId: f.id } })
-        reservasLiberadas = r.count
-        if (reservasLiberadas > 0) {
-          auditReq('cotizacion:reservas_liberadas', req, { id: f.id, etapa, count: reservasLiberadas })
-        }
-      }
-      auditReq('cotizacion:etapa', req, { id: f.id, etapa, reservasLiberadas })
-      res.json({ ...f, reservasLiberadas })
-    } catch (e) {
-      console.error('[PATCH ETAPA]', e.code, e.message)
-      res.status(500).json({ error: 'Error interno.' })
-    }
-  }
-)
-
-// AuditCaja: visible solo a sistema:owner
-app.get('/api/auditoria/caja', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
-  try {
-    const { tipo, limit = '100' } = req.query
-    const where = {}
-    if (tipo) where.tipo = tipo
-    const rows = await prisma.auditCaja.findMany({
-      where, orderBy: { createdAt: 'desc' }, take: Math.min(parseInt(limit) || 100, 500),
-    })
-    res.json({ data: rows })
-  } catch (e) {
-    console.error('[GET /api/auditoria/caja]', e.code, e.message)
-    res.status(500).json({ error: 'Error interno.' })
-  }
-})
-
-// Edición rápida de condiciones comerciales por documento.
-// Cada campo acepta:
-//   - string (legacy)         → incluir si no vacío
-//   - { incluir, texto }      → incluir solo si incluir === true Y texto no vacío
-//   - null                    → no override, usa default empresa
-const condFieldSchema = z.union([
-  z.string().max(280).nullable(),
-  z.object({
-    incluir: z.boolean().default(true),
-    texto:   z.string().max(280).optional().nullable().transform(v => v ?? ''),
-  }),
-]).optional().nullable()
-
-const condicionesSchema = z.object({
-  validez:  condFieldSchema,
-  pago:     condFieldSchema,
-  entrega:  condFieldSchema,
-  garantia: condFieldSchema,
-}).partial()
-
-function condFieldIsEmpty(v) {
-  if (v == null) return true
-  if (typeof v === 'string') return v.trim() === ''
-  if (typeof v === 'object') return !v.incluir || !String(v.texto ?? '').trim()
-  return true
-}
-
-app.patch('/api/facturas/:id/condiciones',
-  verificarJWT,
-  requerirPermiso('factura:editar'),
-  async (req, res) => {
-    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
-    try {
-      const data = condicionesSchema.parse(req.body)
-      // Si todos los campos son null/vacíos/incluir=false, limpia override (cae al default).
-      const allEmpty = Object.values(data).every(condFieldIsEmpty)
-      const factura = await prisma.factura.update({
-        where: { id: req.params.id },
-        // Invalida pdfUrl al editar condiciones — fuerza regeneración con datos nuevos.
-        data:  { condiciones: allEmpty ? null : data, pdfUrl: null },
-        select:{ id: true, condiciones: true },
-      })
-      auditReq('factura:condiciones', req, { id: factura.id, cleared: allEmpty })
-      // Cleanup del archivo viejo en Storage (fire-and-forget). Usa el service
-      // del módulo PDF (Blueprint Fase 1.3) ya que invalidarPdfCache migró ahí.
-      _pdfModule.service.invalidarPdfCache(factura.id).catch(() => {})
-      res.json(factura)
-    } catch (e) {
-      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
-      console.error('[PATCH CONDICIONES]', e.message)
-      res.status(500).json({ error: 'Error interno.' })
-    }
-  }
-)
-
-// ─── Inventario: Schemas + helpers ───────────────────────────────────────────
-// Migrados a backend/modules/inventario/schema.js (Blueprint Fase 1.2).
-// stripTags, descripcionEstructuradaSchema, descripcionFlexSchema,
-// descripcionToRaw, categoriaSchema, productoSchema, productoUpdateSchema
-// y formatProducto viven ahora dentro del módulo. Otros routers que aún
-// declaran copias locales de descripcionToRaw/stripTags se limpiarán cuando
-// migren al Blueprint.
+// Handlers inline restantes migrados (Fase 1.4):
+//   /api/productos/:id/bundles     → modules/ventas/catalogo
+//   /api/catalogo/:id/bundles      → modules/ventas/catalogo
+//   /api/productos/:id/series      → modules/inventario
+//   /api/cotizaciones/:id/etapa    → modules/ventas/cotizaciones
+//   /api/auditoria/caja            → modules/admin/ops
+//   /api/auditoria/caja/verify     → modules/admin/ops
+//   /api/auditoria/log/verify      → modules/admin/ops
+//   /api/facturas/:id/condiciones  → modules/ventas/facturas (usa pdfService inyectado)
+// stripTags + descripcionToRaw centralizados en shared/helpers.js (Fase 1.4).
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 
@@ -843,101 +592,9 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Error interno del servidor.' });
 });
 
-// ─── Dev Seed ─────────────────────────────────────────────────────────────────
-
-app.post('/api/dev/seed-portal', async (req, res) => {
-  const secret = req.headers['x-seed-secret']
-  if (process.env.NODE_ENV === 'production') {
-    if (!process.env.SEED_SECRET || secret !== process.env.SEED_SECRET) {
-      return res.status(403).json({ error: 'Forbidden.' })
-    }
-  }
-  try {
-    const catalogItems = await prisma.$transaction(async tx => {
-      const cats = await Promise.all([
-        tx.itemCatalogo.upsert({ where: { id: 'seed-cam-hd' },    update: {}, create: { id: 'seed-cam-hd',    nombre: 'Cámara IP HD 1080p Exterior', tipo: 'VentaUnica', categoria: 'CCTV',  precio: 8500,  costo: 4800, tipoItem: 'ARTICULO', activo: true } }),
-        tx.itemCatalogo.upsert({ where: { id: 'seed-cam-4k' },    update: {}, create: { id: 'seed-cam-4k',    nombre: 'Cámara IP 4K Analíticas IA',   tipo: 'VentaUnica', categoria: 'CCTV',  precio: 18000, costo: 9500, tipoItem: 'ARTICULO', activo: true } }),
-        tx.itemCatalogo.upsert({ where: { id: 'seed-router-ent'}, update: {}, create: { id: 'seed-router-ent',nombre: 'Router Mikrotik RB4011',        tipo: 'VentaUnica', categoria: 'Redes', precio: 22000, costo: 13000,tipoItem: 'ARTICULO', activo: true } }),
-        tx.itemCatalogo.upsert({ where: { id: 'seed-ap-unifi' },  update: {}, create: { id: 'seed-ap-unifi',  nombre: 'AP UniFi U6 Pro WiFi 6',        tipo: 'VentaUnica', categoria: 'Redes', precio: 14500, costo: 8200, tipoItem: 'ARTICULO', activo: true } }),
-        tx.itemCatalogo.upsert({ where: { id: 'seed-audit-red' }, update: {}, create: { id: 'seed-audit-red', nombre: 'Auditoría de Red Corporativa',   tipo: 'Servicio',   categoria: 'Redes', precio: 35000, costo: 8000, tipoItem: 'SERVICIO', activo: true } }),
-        tx.itemCatalogo.upsert({ where: { id: 'seed-mant-mens' }, update: {}, create: { id: 'seed-mant-mens', nombre: 'Mantenimiento Mensual Preventivo',tipo: 'Recurrente', categoria: 'Redes', precio: 5500,  costo: 1500, tipoItem: 'SERVICIO', activo: true } }),
-      ])
-      return cats
-    })
-
-    const planFibra = await prisma.plan.upsert({
-      where:  { id: 'seed-plan-fibra' },
-      update: {},
-      create: { id: 'seed-plan-fibra', nombre: 'Fibra Empresarial 200 Mbps', tipo: 'WISP', precioMensualBase: 9500, precioInstalBase: 5000, activo: true },
-    })
-    const planCCTV = await prisma.plan.upsert({
-      where:  { id: 'seed-plan-cctv' },
-      update: {},
-      create: { id: 'seed-plan-cctv',  nombre: 'Videovigilancia Corporativa 8 Cámaras', tipo: 'CCTV', precioMensualBase: 3500, precioInstalBase: 42000, activo: true },
-    })
-
-    const count   = await prisma.cliente.count()
-    const noCliente = `EMP-${String(count + 1).padStart(4, '0')}`
-    const hash    = await bcrypt.hash('Demo2026!', 12)
-    const cliente = await prisma.cliente.upsert({
-      where:  { email: 'demo.empresa@acrtest.do' },
-      update: { passwordHash: hash },
-      create: {
-        noCliente,
-        razonSocial:       'Corporación Demo S.R.L.',
-        email:             'demo.empresa@acrtest.do',
-        passwordHash:      hash,
-        tipoEmpresa:       'Sociedad de Responsabilidad Limitada',
-        tipoCliente:       'Corporativo',
-        nombreContacto:    'Carlos Empresario',
-        apellidoContacto:  'Demo',
-        cargo:             'Gerente de TI',
-        telefono:          '809-555-1234',
-        telefonoPrincipal: '809-555-1234',
-        direccion:         'Av. Winston Churchill #55, Torre Empresarial, Piso 8',
-        sector:            'Piantini',
-        provincia:         'Distrito Nacional',
-        limiteCredito:     100000,
-        diasCredito:       30,
-        itbis:             true,
-      },
-    })
-
-    const [svc1, svc2] = await Promise.all([
-      prisma.servicio.upsert({
-        where:  { id: 'seed-svc-fibra' },
-        update: {},
-        create: { id: 'seed-svc-fibra', clienteId: cliente.id, planId: planFibra.id, estado: 'Activo',     precioMensual: 9500,  precioInstalacion: 5000,  notasTecnicas: 'Fibra óptica FTTH instalada el 2026-01-15', direccionInstalacion: 'Torre Empresarial Piso 8' },
-      }),
-      prisma.servicio.upsert({
-        where:  { id: 'seed-svc-cctv' },
-        update: {},
-        create: { id: 'seed-svc-cctv',  clienteId: cliente.id, planId: planCCTV.id,  estado: 'Activo',     precioMensual: 3500,  precioInstalacion: 42000, notasTecnicas: '8 cámaras IP 4K instaladas, NVR configurado con retención 30 días', direccionInstalacion: 'Torre Empresarial — todas las plantas' },
-      }),
-    ])
-
-    const factBase = { clienteId: cliente.id, subtotal: 9500, itbis: 1235, total: 10735, tipoNcf: 'Crédito Fiscal', esCotizacion: false }
-    const now = new Date()
-    const d = (daysAgo) => { const d = new Date(now); d.setDate(d.getDate() - daysAgo); return d }
-    await Promise.all([
-      prisma.factura.upsert({ where: { noFactura: 'B01-SEED-001' }, update: {}, create: { ...factBase, noFactura: 'B01-SEED-001', estado: 'Vencida', ncf: 'B0100000001', fechaEmision: d(45), fechaVence: d(15) } }),
-      prisma.factura.upsert({ where: { noFactura: 'B01-SEED-002' }, update: {}, create: { ...factBase, noFactura: 'B01-SEED-002', estado: 'Pagada',  ncf: 'B0100000002', fechaEmision: d(75), fechaVence: d(45), fechaPago: d(40) } }),
-      prisma.factura.upsert({ where: { noFactura: 'B01-SEED-003' }, update: {}, create: { ...factBase, noFactura: 'B01-SEED-003', estado: 'Emitida', ncf: 'B0100000003', fechaEmision: d(10), fechaVence: d(-20) } }),
-    ])
-
-    res.json({
-      ok:       true,
-      cliente:  { id: cliente.id, email: 'demo.empresa@acrtest.do', password: 'Demo2026!' },
-      servicios: 2,
-      facturas:  3,
-      catalogo:  catalogItems.length,
-      msg: 'Login en el portal con demo.empresa@acrtest.do / Demo2026!',
-    })
-  } catch (e) {
-    console.error('[SEED]', e.message)
-    res.status(500).json({ error: e.message })
-  }
-})
+// /api/dev/seed-portal ELIMINADO (Fase 1.4) — endpoint HTTP dev movido a script
+// standalone: `node backend/scripts/seeds/portal.js`. Cero superficie pública,
+// audit trail via shell history, idempotente vía upsert.
 
 // ─── Startup checks ───────────────────────────────────────────────────────────
 const REQUIRED_ENV = ['JWT_SECRET', 'COOKIE_SECRET', 'DATABASE_URL'];

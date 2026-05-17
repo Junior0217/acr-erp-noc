@@ -48,6 +48,7 @@ function createInventarioRouter(deps) {
   router.post('/productos',         verificarJWT, requerirPermiso('catalogo:editar'), controller.createProducto);
   router.put('/productos/:id',      verificarJWT, requerirPermiso('catalogo:editar'), controller.updateProducto);
   router.delete('/productos/:id',   verificarJWT, requerirPermiso('catalogo:editar'), controller.deleteProducto);
+  router.get('/productos/:id/series', verificarJWT, controller.listSeries);
 
   // ─── Movimientos (Kardex) ─────────────────────────────────────────────────
   router.get('/movimientos',        controller.listMovimientos);

@@ -20,30 +20,6 @@ let archiver = null; try { archiver = require('archiver'); } catch {}
 
 function makeRateLimitStore() { return undefined; }
 
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-});
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional();
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 function createOpsRouter(deps) {
   const router = express.Router();
@@ -481,8 +457,88 @@ router.get('/portal/facturas/:id/pdf-v2', verificarPortalJWT, async (req, res) =
   }
 })
 
+// ─── AuditCaja: vista para owner (Fase 1.4) ──────────────────────────────────
+// Lista ordenada DESC por createdAt; filtro opcional ?tipo=<event>; cap 500.
+router.get('/auditoria/caja', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const { tipo, limit = '100' } = req.query
+    const where = {}
+    if (tipo) where.tipo = tipo
+    const rows = await prisma.auditCaja.findMany({
+      where, orderBy: { createdAt: 'desc' }, take: Math.min(parseInt(limit) || 100, 500),
+    })
+    res.json({ data: rows })
+  } catch (e) {
+    console.error('[GET /api/auditoria/caja]', e.code, e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
 
+// ─── Verificadores de integridad de hash chain (Fase 1.4) ────────────────────
+// AuditCaja + AuditLog usan hash-chain HMAC-SHA256. Estas rutas recorren las
+// últimas N filas, recalculan hash localmente y reportan inconsistencias —
+// detecta cualquier reescritura post-facto de tablas append-only. Coste O(N).
+const AUDIT_SECRET_OPS = process.env.AUDIT_SECRET ?? process.env.JWT_SECRET ?? 'change-me-audit-secret'
 
+function _canonicalizarCaja(row) {
+  const safe = {
+    tipo:        row.tipo ?? '',
+    empleadoId:  row.empleadoId ?? null,
+    facturaId:   row.facturaId ?? null,
+    monto:       row.monto != null ? String(row.monto) : null,
+    descPct:     row.descPct != null ? String(row.descPct) : null,
+    detalle:     row.detalle ?? '',
+    ip:          row.ip ?? null,
+    createdAt:   row.createdAt ? new Date(row.createdAt).toISOString() : new Date().toISOString(),
+  }
+  return JSON.stringify(safe, Object.keys(safe).sort())
+}
+
+const { _canonicalizarLog } = require('../../../shared/services/audit.service')
+
+router.get('/auditoria/caja/verify', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit ?? '500', 10), 5000)
+    const rows = await prisma.auditCaja.findMany({ orderBy: { id: 'asc' }, take: limit })
+    let prev = 'GENESIS'
+    let roto = null
+    for (const r of rows) {
+      if (!r.hash) continue
+      const expected = crypto.createHmac('sha256', AUDIT_SECRET_OPS).update(_canonicalizarCaja(r) + '|' + (r.prevHash ?? 'GENESIS')).digest('hex')
+      if (expected !== r.hash) { roto = { id: r.id, esperado: expected, almacenado: r.hash }; break }
+      if (r.prevHash && r.prevHash !== 'GENESIS' && r.prevHash !== prev) {
+        roto = { id: r.id, motivo: 'prevHash no coincide con la fila anterior', prev, prevHashAlmacenado: r.prevHash }; break
+      }
+      prev = r.hash
+    }
+    res.json({ ok: !roto, verificadas: rows.length, integridad: roto ? 'ROTA' : 'OK', roto })
+  } catch (e) {
+    console.error('[AUDIT VERIFY caja]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
+
+router.get('/auditoria/log/verify', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit ?? '500', 10), 5000)
+    const rows = await prisma.auditLog.findMany({ orderBy: { id: 'asc' }, take: limit })
+    let prev = 'GENESIS'
+    let roto = null
+    for (const r of rows) {
+      if (!r.hash) continue
+      const expected = crypto.createHmac('sha256', AUDIT_SECRET_OPS).update(_canonicalizarLog(r) + '|' + (r.prevHash ?? 'GENESIS')).digest('hex')
+      if (expected !== r.hash) { roto = { id: r.id, esperado: expected, almacenado: r.hash }; break }
+      if (r.prevHash && r.prevHash !== 'GENESIS' && r.prevHash !== prev) {
+        roto = { id: r.id, motivo: 'prevHash no coincide con la fila anterior', prev, prevHashAlmacenado: r.prevHash }; break
+      }
+      prev = r.hash
+    }
+    res.json({ ok: !roto, verificadas: rows.length, integridad: roto ? 'ROTA' : 'OK', roto })
+  } catch (e) {
+    console.error('[AUDIT VERIFY log]', e.message)
+    res.status(500).json({ error: 'Error interno.' })
+  }
+})
 
   return router;
 }

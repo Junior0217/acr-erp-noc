@@ -20,30 +20,6 @@ let archiver = null; try { archiver = require('archiver'); } catch {}
 
 function makeRateLimitStore() { return undefined; }
 
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-});
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional();
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 function createFacturasRouter(deps) {
   const router = express.Router();
@@ -62,6 +38,7 @@ function createFacturasRouter(deps) {
     signPortalToken, NIVEL_PROPIETARIO_ABSOLUTO, protegerPropietario,
     SECUENCIA_DEFAULTS,
     nextNomenclatura, buildFacturaPDFBuffer,
+    pdfService,
   } = deps;
   const {
     verificarJWT, verificarPortalJWT, requerirPermiso, requerirNivel,
@@ -491,61 +468,11 @@ async function appendAuditCaja(data) {
   return prisma.auditCaja.create({ data: { ...data, prevHash, hash } })
 }
 
-// Endpoint verificación integridad: recorre las últimas N filas, recalcula hash
-// y reporta cualquier inconsistencia. Solo owner. Coste O(N) — usa take limitado.
-router.get('/auditoria/caja/verify', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit ?? '500', 10), 5000)
-    const rows = await prisma.auditCaja.findMany({
-      orderBy: { id: 'asc' },
-      take:    limit,
-    })
-    let prev = 'GENESIS'
-    let roto = null
-    for (const r of rows) {
-      if (!r.hash) continue   // filas legacy pre-chain
-      const expected = crypto.createHmac('sha256', AUDIT_SECRET).update(_canonicalizar(r) + '|' + (r.prevHash ?? 'GENESIS')).digest('hex')
-      if (expected !== r.hash) { roto = { id: r.id, esperado: expected, almacenado: r.hash }; break }
-      if (r.prevHash && r.prevHash !== 'GENESIS' && r.prevHash !== prev) {
-        roto = { id: r.id, motivo: 'prevHash no coincide con la fila anterior', prev, prevHashAlmacenado: r.prevHash }
-        break
-      }
-      prev = r.hash
-    }
-    res.json({ ok: !roto, verificadas: rows.length, integridad: roto ? 'ROTA' : 'OK', roto })
-  } catch (e) {
-    console.error('[AUDIT VERIFY]', e.message)
-    res.status(500).json({ error: 'Error interno.' })
-  }
-})
-
-// Verifica integridad de AuditLog (mismo principio que AuditCaja). Filas legacy
-// pre-chain (hash=null) se omiten. Coste O(N) — se acota con limit.
-router.get('/auditoria/log/verify', verificarJWT, requerirPermiso('sistema:owner'), async (req, res) => {
-  try {
-    const limit = Math.min(parseInt(req.query.limit ?? '500', 10), 5000)
-    const rows = await prisma.auditLog.findMany({
-      orderBy: { id: 'asc' },
-      take:    limit,
-    })
-    let prev = 'GENESIS'
-    let roto = null
-    for (const r of rows) {
-      if (!r.hash) continue
-      const expected = crypto.createHmac('sha256', AUDIT_SECRET).update(_canonicalizarLog(r) + '|' + (r.prevHash ?? 'GENESIS')).digest('hex')
-      if (expected !== r.hash) { roto = { id: r.id, esperado: expected, almacenado: r.hash }; break }
-      if (r.prevHash && r.prevHash !== 'GENESIS' && r.prevHash !== prev) {
-        roto = { id: r.id, motivo: 'prevHash no coincide con la fila anterior', prev, prevHashAlmacenado: r.prevHash }
-        break
-      }
-      prev = r.hash
-    }
-    res.json({ ok: !roto, verificadas: rows.length, integridad: roto ? 'ROTA' : 'OK', roto })
-  } catch (e) {
-    console.error('[AUDIT LOG VERIFY]', e.message)
-    res.status(500).json({ error: 'Error interno.' })
-  }
-})
+// ─── Audit verify endpoints migrados ──────────────────────────────────────
+// /auditoria/caja/verify y /auditoria/log/verify viven ahora en
+// modules/admin/ops/router.js (Fase 1.4). appendAuditCaja + _canonicalizar
+// se quedan acá porque los handlers de revertir/nota-credito/nota-debito
+// los invocan inline al registrar cambios de caja.
 
 
 // ─── Facturas ────────────────────────────────────────────────────────────────
@@ -682,8 +609,61 @@ router.post('/facturas', verificarJWT, billingLimiter, requerirPermiso('factura:
   }
 })
 
+// ─── Facturas: edición rápida de condiciones (Fase 1.4) ──────────────────────
+// Cada campo acepta:
+//   - string (legacy)        → incluir si no vacío
+//   - { incluir, texto }     → incluir solo si incluir===true && texto vivo
+//   - null                   → no override, usa default empresa
+// Invalida pdfUrl al editar — fuerza regeneración con datos nuevos via cron o
+// próximo GET. Cleanup del archivo viejo en Storage es fire-and-forget.
+const condFieldSchema = z.union([
+  z.string().max(280).nullable(),
+  z.object({
+    incluir: z.boolean().default(true),
+    texto:   z.string().max(280).optional().nullable().transform(v => v ?? ''),
+  }),
+]).optional().nullable()
 
+const condicionesSchema = z.object({
+  validez:  condFieldSchema,
+  pago:     condFieldSchema,
+  entrega:  condFieldSchema,
+  garantia: condFieldSchema,
+}).partial()
 
+function _condFieldIsEmpty(v) {
+  if (v == null) return true
+  if (typeof v === 'string') return v.trim() === ''
+  if (typeof v === 'object') return !v.incluir || !String(v.texto ?? '').trim()
+  return true
+}
+
+router.patch('/facturas/:id/condiciones',
+  verificarJWT,
+  requerirPermiso('factura:editar'),
+  async (req, res) => {
+    if (!validUUID(req.params.id)) return res.status(400).json({ error: 'ID inválido.' })
+    try {
+      const data = condicionesSchema.parse(req.body)
+      const allEmpty = Object.values(data).every(_condFieldIsEmpty)
+      const factura = await prisma.factura.update({
+        where: { id: req.params.id },
+        data:  { condiciones: allEmpty ? null : data, pdfUrl: null },
+        select:{ id: true, condiciones: true },
+      })
+      auditReq('factura:condiciones', req, { id: factura.id, cleared: allEmpty })
+      // pdfService viene inyectado desde subDeps (ventas/index.js) → no hay
+      // dependencia inversa a server.js. Si por alguna razón no está, el
+      // optional chaining evita ReferenceError.
+      pdfService?.invalidarPdfCache?.(factura.id).catch(() => {})
+      res.json(factura)
+    } catch (e) {
+      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'Datos inválidos.' })
+      console.error('[PATCH CONDICIONES]', e.message)
+      res.status(500).json({ error: 'Error interno.' })
+    }
+  }
+)
 
   return router;
 }

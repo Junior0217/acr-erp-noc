@@ -101,6 +101,8 @@ function createInventarioController({ service, schemas }) {
     return service.deleteProducto(id);
   });
 
+  const listSeries = _wrap(async (req) => service.listSeriesDisponibles(req.params.id));
+
   // ─── Movimientos ──────────────────────────────────────────────────────────
   const listMovimientos = _wrap(async (req) => {
     const q = movimientoListQuerySchema.parse(req.query);
@@ -136,6 +138,7 @@ function createInventarioController({ service, schemas }) {
     createProducto,
     updateProducto,
     deleteProducto,
+    listSeries,
     listMovimientos,
     listPrestamos,
     createPrestamo,

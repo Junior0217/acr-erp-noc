@@ -193,6 +193,42 @@ function getClientIp(req) {
        || 'unknown').replace(/^::ffff:/, '');
 }
 
+/**
+ * stripTags — remueve cualquier marcador HTML/XML y trim. Defensa en
+ * profundidad contra XSS y prototype pollution via campos string. Aplicado en
+ * Zod transforms de inputs que llegan a campos de DB legibles por humanos
+ * (nombre, descripción corta, SKU).
+ */
+function stripTags(v) {
+  return typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
+}
+
+/**
+ * Normaliza el campo "descripcion" flex (producto/itemCatalogo/línea):
+ *   - null/undefined → null
+ *   - string legacy → mismo string
+ *   - { v:1, titulo, bullets[], imagenUrl? } → JSON serializado con caps
+ *     conservadores (200 chars titulo, 200 por bullet, 30 bullets máx, 500
+ *     chars en imagenUrl).
+ *
+ * Centralizado acá porque ~22 routers necesitan la misma normalización antes
+ * de persistir. Si llega un objeto sin v=1, fall back a null para evitar
+ * insertar shapes desconocidos en la DB.
+ */
+function descripcionToRaw(value) {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && value.v === 1) {
+    return JSON.stringify({
+      v: 1,
+      titulo:    String(value.titulo ?? '').slice(0, 200),
+      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
+      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
+    });
+  }
+  return null;
+}
+
 module.exports = {
   UUID_RE,
   validUUID,
@@ -216,4 +252,6 @@ module.exports = {
   _stripPollutionKeys,
   bodyLimit,
   getClientIp,
+  stripTags,
+  descripcionToRaw,
 };

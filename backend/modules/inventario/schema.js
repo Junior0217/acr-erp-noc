@@ -10,8 +10,7 @@
  */
 
 const { z } = require('zod');
-
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
+const { stripTags, descripcionToRaw } = require('../../shared/helpers');
 
 const descripcionEstructuradaSchema = z.object({
   v:         z.literal(1),
@@ -24,24 +23,6 @@ const descripcionFlexSchema = z.union([
   z.string().max(2000),
   descripcionEstructuradaSchema,
 ]).nullable().optional();
-
-/**
- * Normaliza el campo descripcion a string (legacy) o JSON serializado del
- * objeto estructurado. Aplica límites consistentes con el schema.
- */
-function descripcionToRaw(value) {
-  if (value == null) return null;
-  if (typeof value === 'string') return value;
-  if (typeof value === 'object' && value.v === 1) {
-    return JSON.stringify({
-      v: 1,
-      titulo:    String(value.titulo ?? '').slice(0, 200),
-      bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-      imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-    });
-  }
-  return null;
-}
 
 const categoriaSchema = z.object({
   nombre: z.string().min(2).max(100).transform(stripTags),

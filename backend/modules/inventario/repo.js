@@ -87,6 +87,18 @@ function createInventarioRepo(prisma) {
     return prisma.producto.delete({ where: { id } });
   }
 
+  /**
+   * Lista series disponibles para captura en POS (sin reservar).
+   * estado='Disponible' filtra fuera vendidas, reservadas, devueltas.
+   */
+  async function listSeriesDisponiblesForProducto(productoId) {
+    return prisma.productoSerial.findMany({
+      where:   { productoId, estado: 'Disponible' },
+      orderBy: { createdAt: 'asc' },
+      select:  { id: true, serie: true, ubicacion: true, garantiaHasta: true },
+    });
+  }
+
   // ─── Movimientos (Kardex) ─────────────────────────────────────────────────
   async function listMovimientos({ where, skip, take }) {
     const [movimientos, total] = await Promise.all([
@@ -178,6 +190,7 @@ function createInventarioRepo(prisma) {
     createProductoTx,
     updateProducto,
     deleteProducto,
+    listSeriesDisponiblesForProducto,
     listMovimientos,
     listPrestamos,
     findPrestamo,
