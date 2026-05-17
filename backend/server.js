@@ -70,7 +70,7 @@ const {
 const startCronJobs = require('./jobs/cron');
 const createAuthRouter       = require('./modules/auth/router');
 const createCrmRouter        = require('./routes/crm');
-const createInventarioRouter = require('./routes/inventario');
+const createInventarioRouter = require('./modules/inventario');
 const createVentasRouter     = require('./routes/ventas');
 const createAdminRouter      = require('./routes/admin');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
@@ -615,128 +615,9 @@ app.post(
   }
 )
 
-app.post('/api/inventario/upload-image',
-  uploadLimiter,
-  verificarJWT,
-  requerirPermiso('catalogo:editar'),
-  uploadMulter.single('file'),
-  async (req, res) => {
-    try {
-      if (!supabase) return res.status(503).json({ error: 'Storage no configurado.', code: 'STORAGE_DISABLED' })
-      if (!req.file) return res.status(400).json({ error: 'Archivo requerido (campo "file").' })
-      const kind = String(req.body.kind || req.query.kind || 'producto')
-      if (!KINDS_INVENTARIO.includes(kind)) {
-        return res.status(400).json({ error: `Parámetro "kind" debe ser uno de: ${KINDS_INVENTARIO.join(', ')}.` })
-      }
-      const inputMime = detectMimeFromBuffer(req.file.buffer)
-      if (!inputMime) return res.status(415).json({ error: 'Tipo no reconocido.', code: 'INVALID_MIME' })
-      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
-      if (inputMime === 'image/svg+xml' && !svgSeguro(req.file.buffer)) {
-        return res.status(422).json({ error: 'SVG con contenido peligroso.', code: 'SVG_UNSAFE' })
-      }
-      let buffer, finalMime, ext
-      try {
-        const c = await comprimirImagen(req.file.buffer, inputMime)
-        buffer = c.buffer; finalMime = c.mime; ext = c.ext
-      } catch {
-        return res.status(422).json({ error: 'Imagen corrupta.', code: 'COMPRESS_FAIL' })
-      }
-      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
-      const path = `${kind}/${filename}`
-      const { error: upErr } = await supabase.storage.from(INVENTORY_BUCKET).upload(path, buffer, {
-        contentType: finalMime, cacheControl: '3600', upsert: false,
-      })
-      if (upErr) {
-        console.error('[INV UPLOAD]', upErr.message)
-        return res.status(502).json({ error: `Error al subir: ${upErr.message}` })
-      }
-      const { data: pub } = supabase.storage.from(INVENTORY_BUCKET).getPublicUrl(path)
-      auditReq('inventario:upload_imagen', req, { kind, mime: finalMime, size: buffer.length })
-      res.status(201).json({ kind, url: pub?.publicUrl ?? null, mime: finalMime, size: buffer.length })
-    } catch (e) {
-      if (e.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'Archivo excede 2MB.', code: 'TOO_LARGE' })
-      console.error('[INV UPLOAD]', e.message)
-      res.status(500).json({ error: 'Error interno.' })
-    }
-  }
-)
-
-// ─── Upload por URL externa (mismo pipeline) ─────────────────────────────────
-// El usuario pega URL de Google/proveedor, backend descarga + valida MIME real
-// (magic bytes) + comprime con sharp + sube a Supabase. NUNCA se guarda la URL
-// externa directamente — siempre se rehospeda para evitar:
-//   - Hotlinking que rompe cuando el server externo borra la imagen
-//   - SSRF: backend rechaza esquemas no-http(s), IPs privadas, localhost
-//   - Tracking pixels disfrazados de imagen
-const urlUploadSchema = z.object({
-  url:  z.string().url().max(2048),
-  kind: z.enum(KINDS_INVENTARIO).default('producto'),
-})
-
-app.post('/api/inventario/upload-url',
-  uploadLimiter,
-  verificarJWT,
-  requerirPermiso('catalogo:editar'),
-  async (req, res) => {
-    try {
-      if (!supabase) return res.status(503).json({ error: 'Storage no configurado.', code: 'STORAGE_DISABLED' })
-      const { url, kind } = urlUploadSchema.parse(req.body)
-      if (!esUrlPublicaSegura(url)) return res.status(400).json({ error: 'URL no válida o bloqueada por seguridad.', code: 'URL_BLOCKED' })
-
-      // Descarga con timeout 8s + cap de tamaño 5MB (más generoso que upload local
-      // porque las imágenes externas suelen venir sin optimizar; sharp las recorta).
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 8000)
-      let buf
-      try {
-        // H1: redirect:'error' bloquea SSRF chains tipo bit.ly -> 169.254.169.254/metadata
-        const r = await fetch(url, { signal: controller.signal, redirect: 'error' })
-        if (!r.ok) return res.status(422).json({ error: `Servidor remoto devolvió ${r.status}.`, code: 'REMOTE_FAIL' })
-        const len = Number(r.headers.get('content-length') ?? 0)
-        if (len > 5 * 1024 * 1024) return res.status(413).json({ error: 'Imagen remota excede 5MB.', code: 'TOO_LARGE' })
-        const ab = await r.arrayBuffer()
-        if (ab.byteLength > 5 * 1024 * 1024) return res.status(413).json({ error: 'Imagen remota excede 5MB.', code: 'TOO_LARGE' })
-        buf = Buffer.from(ab)
-      } catch (e) {
-        if (e.name === 'AbortError') return res.status(504).json({ error: 'Descarga remota timeout (8s).', code: 'TIMEOUT' })
-        return res.status(502).json({ error: `No se pudo descargar: ${e.message}`, code: 'FETCH_FAIL' })
-      } finally { clearTimeout(timer) }
-
-      // Validación MIME por magic bytes (no por header Content-Type, que puede mentir).
-      const inputMime = detectMimeFromBuffer(buf)
-      if (!inputMime) return res.status(415).json({ error: 'Contenido no es una imagen válida.', code: 'INVALID_MIME' })
-      if (!MIME_EXT[inputMime]) return res.status(415).json({ error: `Mime ${inputMime} no permitido.` })
-      if (inputMime === 'image/svg+xml' && !svgSeguro(buf)) {
-        return res.status(422).json({ error: 'SVG remoto con contenido peligroso.', code: 'SVG_UNSAFE' })
-      }
-
-      // Pipeline idéntico al upload local (resize 800x800 + PNG).
-      let buffer, finalMime, ext
-      try {
-        const c = await comprimirImagen(buf, inputMime)
-        buffer = c.buffer; finalMime = c.mime; ext = c.ext
-      } catch {
-        return res.status(422).json({ error: 'Imagen remota corrupta o ilegible.', code: 'COMPRESS_FAIL' })
-      }
-      const filename = `${kind}-${Date.now()}-${crypto.randomBytes(6).toString('hex')}.${ext}`
-      const path = `${kind}/${filename}`
-      const { error: upErr } = await supabase.storage.from(INVENTORY_BUCKET).upload(path, buffer, {
-        contentType: finalMime, cacheControl: '3600', upsert: false,
-      })
-      if (upErr) {
-        console.error('[INV UPLOAD URL]', upErr.message)
-        return res.status(502).json({ error: `Error al subir: ${upErr.message}` })
-      }
-      const { data: pub } = supabase.storage.from(INVENTORY_BUCKET).getPublicUrl(path)
-      auditReq('inventario:upload_imagen_url', req, { kind, sourceUrl: url, mime: finalMime, size: buffer.length })
-      res.status(201).json({ kind, url: pub?.publicUrl ?? null, mime: finalMime, size: buffer.length, sourceUrl: url })
-    } catch (e) {
-      if (e instanceof z.ZodError) return res.status(400).json({ error: e.issues[0]?.message ?? 'URL inválida.' })
-      console.error('[INV UPLOAD URL]', e.message)
-      res.status(500).json({ error: 'Error interno.' })
-    }
-  }
-)
+// Inventario uploads (image + url) migraron a modules/inventario/uploads/.
+// Pipeline completo (validación MIME por magic bytes, anti-SSRF, sharp resize,
+// rehosting en Supabase Storage + auditoría) vive ahí; server.js solo monta.
 
 // ─── Generación de PDF server-side (Cotización + Factura) ────────────────────
 
@@ -1400,68 +1281,13 @@ app.patch('/api/facturas/:id/condiciones',
   }
 )
 
-// ─── Inventario: Schemas ─────────────────────────────────────────────────────
-
-const stripTags = v => typeof v === 'string' ? v.replace(/<[^>]*>/g, '').trim() : v;
-
-// ─── Descripción estructurada (compartida por productos/servicios/items) ─────
-// Definida AQUÍ (antes que cualquier schema que la use) para evitar TDZ —
-// las const declarations no se hoistan, y zod las evalúa al construir el schema.
-const descripcionEstructuradaSchema = z.object({
-  v:         z.literal(1),
-  titulo:    z.string().min(1).max(200),
-  bullets:   z.array(z.string().min(1).max(200)).max(30).default([]),
-  imagenUrl: z.string().max(500).nullable().optional(),
-})
-const descripcionFlexSchema = z.union([
-  z.string().max(2000),
-  descripcionEstructuradaSchema,
-]).nullable().optional()
-
-// Normaliza descripcion: string legacy se pasa tal cual, objeto {v:1, ...} se
-// serializa como JSON dentro de la columna TEXT — el renderer PDF detecta v=1.
-function descripcionToRaw(value) {
-  if (value == null) return null
-  if (typeof value === 'string') return value
-  if (typeof value === 'object') {
-    if (value.v === 1) {
-      const limpio = {
-        v: 1,
-        titulo:    String(value.titulo ?? '').slice(0, 200),
-        bullets:   Array.isArray(value.bullets) ? value.bullets.map(b => String(b).slice(0, 200)).filter(Boolean).slice(0, 30) : [],
-        imagenUrl: value.imagenUrl ? String(value.imagenUrl).slice(0, 500) : null,
-      }
-      return JSON.stringify(limpio)
-    }
-  }
-  return null
-}
-
-const categoriaSchema = z.object({
-  nombre: z.string().min(2).max(100).transform(stripTags),
-});
-
-const productoSchema = z.object({
-  // sku ahora es OPCIONAL — backend autogenera si no viene (recomendado).
-  // Si viene, se respeta para permitir importación con SKUs externos legacy.
-  sku:            z.string().min(1).max(50).transform(stripTags).optional(),
-  nombre:         z.string().min(2).max(200).transform(stripTags),
-  precio:         z.coerce.number().nonnegative(),
-  categoriaId:    z.number().int().positive(),
-  tipoItem:       z.enum(['ARTICULO', 'SERVICIO']).optional(),
-  esCanibalizado: z.boolean().optional(),
-  // M1-2: acepta string legacy O objeto estructurado {v:1, titulo, bullets[], imagenUrl?}.
-  descripcion:    descripcionFlexSchema,
-  imagenUrl:      z.string().max(500).url().optional().nullable().or(z.literal('').transform(() => null)),
-});
-
-const productoUpdateSchema = productoSchema.omit({ sku: true }).partial();
-
-function formatProducto(p) { return { ...p, precio: Number(p.precio) }; }
-
-// ─── Reconciliación nocturna stock vs movimientos (sugerencia #2) ────────────
-// 03:00 AM RD: detecta drift entre Producto.stockActual y la suma neta de
-
+// ─── Inventario: Schemas + helpers ───────────────────────────────────────────
+// Migrados a backend/modules/inventario/schema.js (Blueprint Fase 1.2).
+// stripTags, descripcionEstructuradaSchema, descripcionFlexSchema,
+// descripcionToRaw, categoriaSchema, productoSchema, productoUpdateSchema
+// y formatProducto viven ahora dentro del módulo. Otros routers que aún
+// declaran copias locales de descripcionToRaw/stripTags se limpiarán cuando
+// migren al Blueprint.
 
 // ─── Server ───────────────────────────────────────────────────────────────────
 

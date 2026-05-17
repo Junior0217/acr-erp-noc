@@ -50,7 +50,7 @@ function createSuplidoresRouter(deps) {
 
   const {
     prisma, auditReq, middlewares = {}, schemas = {}, helpers = {}, limiters = {},
-    completarLogin, twoFAStore, challengeStore, warmChallengeStore, IDLE_TTL_MS,
+    twoFAStore, challengeStore, warmChallengeStore, IDLE_TTL_MS,
     generarSiguienteCodigo, generarPdfDeFactura, buildPdfData, subirPdfAlStorage,
     invalidarPdfCache, renderPdfDoc, generarPdfDocumento, persistirVerifyHash,
     facturaVerifyHash, PUBLIC_VERIFY_BASE, emailTransporter, sendFacturaPDF,
