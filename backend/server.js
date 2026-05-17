@@ -178,7 +178,13 @@ const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHa
 // auditReq se inyecta para que verificarJWT/protegerPropietario puedan loguear
 // eventos sin acoplarse a la implementación. Destructuramos al scope global
 // para que los handlers legacy inline sigan refiriéndose a `verificarJWT` etc.
-const _sharedMw = createMiddlewares({ prisma, auditReq });
+//
+// vaultLastReveal: Map COMPARTIDO entre el middleware vaultCooldownGuard
+// (shared/middlewares.js) y el modules/crm/credenciales/service.js. Sin
+// inyección explícita, ambos crearían Maps separados → bypass del cooldown
+// posible. Fix Cyber Neo silent.
+const _vaultLastReveal = new Map();
+const _sharedMw = createMiddlewares({ prisma, auditReq, vaultLastReveal: _vaultLastReveal });
 const {
   NIVEL_PROPIETARIO_ABSOLUTO,
   verificarJWT, verificarPortalJWT, requerirPermiso, requerirNivel,
@@ -520,30 +526,14 @@ const portalLoginLimiter = rateLimit({
 // /api/health/legacy ELIMINADO (Fase 1.4): dup de /api/health sin uso real.
 // El liveness probe oficial es /api/health (sin auth, exento del limiter).
 
-// ─── MSP: Vault PAM (AES-256-GCM) ─────────────────────────────────────────────
-
-const VAULT_KEY_B64 = process.env.VAULT_KEY || ''
-if (!VAULT_KEY_B64) console.warn('[VAULT] WARNING: VAULT_KEY not set — credential vault disabled.')
-const VAULT_KEY = VAULT_KEY_B64 ? Buffer.from(VAULT_KEY_B64, 'base64') : null
-
-function vaultEncrypt(plaintext) {
-  if (!VAULT_KEY) throw new Error('VAULT_KEY missing.')
-  const iv     = crypto.randomBytes(12)
-  const cipher = crypto.createCipheriv('aes-256-gcm', VAULT_KEY, iv)
-  const enc    = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()])
-  const tag    = cipher.getAuthTag()
-  return { passwordEnc: Buffer.concat([enc, tag]).toString('base64'), passwordIv: iv.toString('base64') }
-}
-
-function vaultDecrypt(passwordEnc, passwordIv) {
-  if (!VAULT_KEY) throw new Error('VAULT_KEY missing.')
-  const data = Buffer.from(passwordEnc, 'base64')
-  const tag  = data.subarray(data.length - 16)
-  const enc  = data.subarray(0, data.length - 16)
-  const iv   = Buffer.from(passwordIv, 'base64')
-  const dec  = crypto.createDecipheriv('aes-256-gcm', VAULT_KEY, iv)
-  dec.setAuthTag(tag)
-  return Buffer.concat([dec.update(enc), dec.final()]).toString('utf8')
+// ─── Vault PAM (AES-256-GCM) ──────────────────────────────────────────────────
+// Crypto helpers + VAULT_KEY validation viven AHORA en
+// backend/modules/crm/credenciales/service.js (Fase 2.6). Aquí se conserva
+// solo el warning de boot — la lógica de cifrado es scope-local del módulo
+// para que el plaintext NUNCA viaje fuera del service. Cualquier consumidor
+// futuro debe pasar por ese service, no por server.js helpers.
+if (!process.env.VAULT_KEY) {
+  console.warn('[VAULT] WARNING: VAULT_KEY not set — credential vault disabled.')
 }
 
 // Inventario uploads + empresa upload migraron a modules/inventario/uploads/
@@ -931,11 +921,10 @@ const _routerDeps = {
   emailTransporter,
   sendFacturaPDF,
   PERMISSIONS_MAP,
-  // Vault PAM (helpers de cifrado siguen en server.js; routers definen sus
-  // propios stores y guardas localmente al cargar los handlers migrados).
-  VAULT_KEY,
-  vaultEncrypt,
-  vaultDecrypt,
+  // Vault PAM: helpers de cifrado migraron a modules/crm/credenciales/service.js
+  // (Fase 2.6). Aquí pasamos el Map COMPARTIDO con vaultCooldownGuard del
+  // shared/middlewares para que el cooldown 30s no pueda bypassearse.
+  vaultLastReveal: _vaultLastReveal,
   // Storage
   supabase,
   SUPABASE_BUCKET,
