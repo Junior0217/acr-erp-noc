@@ -59,3 +59,29 @@ coverage/
 .cache/
 .turbo/
 *.tgz
+
+# ─── Skills (installable via skills-lock.json + npx skills) ───────────────────
+# Payloads de skills se regeneran con `npx skills@latest add <source>` usando
+# skills-lock.json. Evitamos pollutar el repo con ~50 MD por skill + symlinks
+# Windows-only. Las 4 skills pre-existentes (caveman, diagnose, grill-with-docs,
+# setup-matt-pocock-skills) ya están trackeadas — solo los nuevos se ignoran.
+.agents/skills/cyber-neo/
+.agents/skills/grill-me/
+.agents/skills/handoff/
+.agents/skills/improve-codebase-architecture/
+.agents/skills/prototype/
+.agents/skills/to-issues/
+.agents/skills/to-prd/
+.agents/skills/triage/
+.agents/skills/write-a-skill/
+.agents/skills/zoom-out/
+.claude/skills/cyber-neo
+.claude/skills/grill-me
+.claude/skills/handoff
+.claude/skills/improve-codebase-architecture
+.claude/skills/prototype
+.claude/skills/to-issues
+.claude/skills/to-prd
+.claude/skills/triage
+.claude/skills/write-a-skill
+.claude/skills/zoom-out

@@ -1,7 +1,80 @@
 # ACR Networks & Solutions - ERP NOC (React+Tailwind+Prisma)
 
+## REGLA DE ENTREGA (Innegociable)
+
+Al cerrar CUALQUIER vuelta de trabajo (refactor, feature, bugfix, doc, instalación de skill) que termine con `git commit + git push`, debes responder al usuario con un **resumen estructurado** que contenga, en este orden:
+
+1. **Qué se hizo** — bullets cortos por archivo/módulo tocado (qué cambió + por qué).
+2. **Verificación** — comandos ejecutados (`node --check`, build, tests) + resultado.
+3. **Commit + push** — hash corto, branch destino, mensaje del commit, `origin/<branch>` actualizado.
+4. **Próximos pasos** — 1-3 bullets accionables si quedó algo pendiente; si no, decir "nada pendiente".
+
+Sin resumen, la tarea NO se considera entregada. Aplica incluso si el cambio es mínimo (1 línea). Si NO hubo push (porque fue solo exploración), decirlo explícito: "sin push, solo análisis".
+
+## 5 Joyas del ERP (Skills + Stack adoptados)
+
+Stack de productividad acordado. Cada joya tiene un rol fijo. Usar siempre que aplique antes de improvisar.
+
+| # | Joya | Rol | Cómo se invoca | Estado |
+|---|------|-----|---------------|--------|
+| 1 | **The Architect** (substituto) | Planea, audita, construye | `Skill: improve-codebase-architecture` + `Skill: prototype` + `Skill: to-prd` (de mattpocock) | ✅ Vía mattpocock — original `Hainrixz/the-architect` no tiene `SKILL.md` válido |
+| 2 | **Matt Pocock Skills** | Suite de razonamiento: TDD, diagnose, grill-with-docs, to-issues, zoom-out, handoff | `/diagnose`, `/tdd`, `/grill-with-docs`, etc. (todas viven en `.agents/skills/`) | ✅ 14 skills instaladas |
+| 3 | **Cyber Neo** | Auditoría de seguridad (OWASP 2025 + CWE Top 25, secretos, SAST, SCA, cripto, supply-chain) | `/cyber-neo` o pedir "security audit" | ✅ Instalada |
+| 4 | **Cult UI** (frontend) | Componentes Tailwind/shadcn-style + animaciones framer-motion | Copiar componente desde https://cult-ui.com/docs → pegar en `frontend/src/shared/components/ui/` → usar `cn()` de `@shared/utils/cn` | ✅ Runtime deps instaladas (`framer-motion`, `clsx`, `tailwind-merge`, `class-variance-authority`). Componentes se copian bajo demanda — ver `frontend/src/shared/components/ui/README.md` |
+| 5 | **Claude Code Best Practices** | Patrón de uso del asistente (no es un paquete) | Ver bloque "Claude Code Best Practices" debajo | ✅ Documentado aquí |
+
+### Claude Code Best Practices (cómo se usa Claude en este repo)
+
+Reemplaza la skill "Aprende". Es el manual operativo de cómo el asistente debe trabajar contigo:
+
+1. **CLAUDE.md es la única fuente de verdad** para reglas. Si una regla no está aquí, no existe. Cualquier petición de "recuerda esto siempre" se graba en este archivo, no en memoria volátil.
+2. **Plan antes de codear** para tareas de >3 pasos. Usa `Skill: prototype` o `Skill: to-prd` cuando la decisión sea reversible-cara.
+3. **TDD donde el negocio sea sensible** (fiscal, auth, caja). Usa `Skill: tdd` para forzar red → green → refactor.
+4. **Diagnóstico disciplinado** ante bugs ambiguos. Usa `Skill: diagnose` (reproduce → minimiza → hipótesis → instrumenta → fix).
+5. **Grill-with-docs antes de refactor grande.** Usa `Skill: grill-with-docs` para validar el plan contra `CONTEXT.md` + `docs/adr/` y actualizar docs inline.
+6. **Cyber-neo antes de merge a main** si tocaste auth, vault, crypto, o supply-chain (deps nuevas).
+7. **handoff cuando la sesión esté llena.** `Skill: handoff` empaqueta contexto comprimido para la próxima sesión.
+8. **Respuestas concisas** (modo caveman cuando se pide); código completo (cero "// resto del código"); commits convencionales (sin Co-Authored-By Claude — ver "Reglas de commits").
+9. **Sub-agents para exploración pesada.** Si el contexto va a explotar leyendo 10+ archivos, lanzar `Agent` con `subagent_type: Explore` antes de mover una línea.
+10. **Cierre obligatorio**: aplicar la "REGLA DE ENTREGA" arriba — ningún push sin su resumen.
+
 ## Arquitectura Backend
 Organización por Dominio (Layered LITE). Flujo estricto: router.js (solo HTTP y validación Zod) -> controller.js (orquestación) -> service.js (lógica de negocio pura, transacciones, auditoría) -> repo.js (queries de Prisma encapsuladas). No usar DAOs extras. Zod es el único DTO. Errores lanzan excepciones capturadas por un middleware central.
+
+### Blueprint de Modularización (Directriz Estricta)
+
+**REGLA INNEGOCIABLE:** Todo módulo nuevo o refactorizado DEBE vivir en `backend/modules/<dominio>/` (raíz del dominio, ej. `auth/`, o sub-dominio anidado, ej. `ventas/facturas/`). Cada módulo se compone de exactamente cinco archivos con responsabilidad única:
+
+```
+backend/modules/<dominio>/
+  router.js       Solo rutas HTTP + middlewares de protección (verificarJWT,
+                  requerirPermiso, rateLimit, CSRF). CERO lógica de negocio.
+                  Recibe deps inyectadas via factory y delega a controller.
+  controller.js   Pelea con HTTP: extrae req.body/params/query, valida via schema,
+                  llama al service, mapea el resultado a res.status().json(). NO
+                  toca Prisma, NO compone lógica, NO calcula.
+  service.js      Lógica de negocio pura. Cálculos, transacciones de Prisma,
+                  auditoría (auditReq), efectos colaterales (PDF, email, vault).
+                  Recibe el repo + deps inyectados. NO sabe qué es Express, req
+                  ni res. Lanza Error/Zod/Custom → capturado por middleware central.
+  repo.js         Único punto donde se llama a prisma.<model>.<method>(). Cada
+                  consulta vive como función nombrada y testeable. Encapsula
+                  filtros, includes, paginación, soft-delete. NO valida, NO formatea.
+  schema.js       Validadores Zod del dominio (request DTOs, response shape,
+                  refinements). Re-usar emptyStr/nullStr/optIdent/optCedulaRD
+                  de shared/helpers cuando aplique. Único DTO permitido.
+```
+
+**Reglas anexas (sin excepciones):**
+
+1. **Sin código spaghetti cross-layer.** router NUNCA llama directo a prisma; controller NUNCA llama directo a prisma; service NUNCA toca res/req. La cadena es unidireccional: router → controller → service → repo.
+2. **Factory pattern obligatorio.** Cada archivo exporta `function create<Capa>({ deps })` para que dependencias (prisma, auditReq, services compartidos, limiters) sean inyectadas y los singletons (stores in-memory, throttles) se preserven entre tests y producción.
+3. **Schemas en su sitio.** No declarar Zod inline en router/controller/service. Si un schema es transversal a varios módulos, vive en `backend/shared/schemas.js`; si es local, en `backend/modules/<dominio>/schema.js`.
+4. **Index opcional.** Si el módulo necesita un `index.js` (orquestador de sub-routers), se usa SOLO para componer y exportar el factory raíz — ningún handler ni schema en `index.js`.
+5. **Sub-módulos anidados.** Para dominios grandes (ej. `ventas/`), cada sub-dominio (`facturas/`, `cotizaciones/`, `pos/`) cumple el mismo molde de 5 archivos. El `index.js` del padre compone los hijos.
+6. **Naming y tamaño.** Archivos en kebab-case (`pdf-generator.js`). Si `service.js` o `router.js` superan 600 líneas, split por sub-dominio. CERO funciones de >100 líneas dentro del mismo archivo.
+7. **Tests adyacentes (opcional pero recomendado).** `__tests__/service.test.js` junto al archivo. service y repo son los únicos candidatos a unit test (puros + mockeables).
+8. **REGLA SUPREMA:** Cualquier refactor que toque server.js o backend/modules/* DEBE migrar el código tocado al nuevo molde. Prohibido seguir agregando lógica al monolito legacy. Si un handler vive aún inline en server.js, su próxima edición exige extraerlo a su módulo correspondiente.
 
 ## CONTEXTO DE LA EMPRESA
 - **Rubro:** Proveedor WISP, Infraestructura de Redes y Seguridad Electrónica.
