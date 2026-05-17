@@ -25,6 +25,22 @@ const { generarPdfDocumento, inlineAssets } = require('./services/pdf-generator'
 const { renderDocumento: renderPdfDoc } = require('./services/pdf-templates');
 const PERMISSIONS_MAP  = require('./shared/permissions.map.js');
 const { syncMikrotik } = require('./services/mikrotik');
+
+// ─── Refactor modular (Stage 1) ───────────────────────────────────────────────
+// shared/ contiene helpers, schemas, jwt-crypto y la factory de middlewares
+// reusables por backend/routes/*.js. server.js sigue siendo el orquestador:
+// inicializa Prisma, configura Express+CORS+rate-limit+CRON, monta los routers
+// y arranca el server. Los handlers legacy permanecen inline hasta migrarse
+// router-por-router; mientras tanto Express usa el PRIMER match registrado,
+// así que las definiciones inline ganan sobre los stubs de routes/.
+const createMiddlewares      = require('./shared/middlewares');
+const sharedSchemas          = require('./shared/schemas');
+const sharedHelpers          = require('./shared/helpers');
+const createAuthRouter       = require('./routes/auth');
+const createCrmRouter        = require('./routes/crm');
+const createInventarioRouter = require('./routes/inventario');
+const createVentasRouter     = require('./routes/ventas');
+const createAdminRouter      = require('./routes/admin');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
 const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
 
@@ -9703,6 +9719,37 @@ async function ensureRowLevelSecurity() {
     console.error('[DB] ensureRowLevelSecurity FAILED:', e.message)
   }
 }
+
+// ─── Montaje de routers modulares (Stage 1) ─────────────────────────────────
+// Cada router recibe las dependencias inyectadas (prisma, middlewares, schemas,
+// auditReq, helpers, limiters). Se mantienen como factories para preservar
+// singletons (cache, throttles, stores in-memory) entre server.js y rutas.
+// Se montan AL FINAL para que Express resuelva primero los handlers legacy
+// inline; cuando un handler migre a routes/*.js se elimina de server.js y el
+// router toma control sin más cambios.
+const _sharedMw = createMiddlewares({
+  prisma,
+  auditReq,
+  vaultLastReveal: _vaultLastReveal,
+  vaultCooldownMs: VAULT_COOLDOWN_MS,
+});
+const _routerDeps = {
+  prisma,
+  middlewares: _sharedMw,
+  schemas:     sharedSchemas,
+  helpers:     sharedHelpers,
+  auditReq,
+  limiters: {
+    loginLimiter, totpLimiter, backupCodeLimiter, billingLimiter,
+    uploadLimiter, uploadMulter, portalLoginLimiter, forgotLimiter,
+    checkoutLimiter, catalogoPublicoLimiter, trackingLimiter,
+  },
+};
+app.use('/api', createAuthRouter(_routerDeps));
+app.use('/api', createCrmRouter(_routerDeps));
+app.use('/api', createInventarioRouter(_routerDeps));
+app.use('/api', createVentasRouter(_routerDeps));
+app.use('/api', createAdminRouter(_routerDeps));
 
 async function startServer() {
   try {

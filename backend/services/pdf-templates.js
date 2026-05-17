@@ -843,7 +843,7 @@ function renderDocumento(opts) {
         <div class="qr-ttl">Verificación Anti-Fraude</div>
         <div>Escanea el QR o toca la URL para validar.</div>
         ${verify?.url
-          ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}">${escape(verify.url)}</a></div>`
+          ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit; display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${escape(verify.url)}</a></div>`
           : ''}
       </div>
     </div>

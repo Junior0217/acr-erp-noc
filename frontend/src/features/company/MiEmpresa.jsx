@@ -2,14 +2,12 @@ import { useEffect, useState, useRef } from 'react'
 import { toast } from 'sonner'
 import {
   Building2, FileText, Phone, MapPin, User, Save, Loader2, ShieldCheck,
-  Image as ImageIcon, AlertTriangle, ShieldOff, Stamp, PenTool, Lock, Upload, X, Trash2,
-  ScrollText,
+  Image as ImageIcon, ShieldOff, Stamp, PenTool, Lock, Upload, Trash2,
+  ScrollText, ShieldAlert,
 } from 'lucide-react'
 import { apiFetch } from '@shared/utils/api'
 import { useEmpresa } from '@shared/contexts/EmpresaContext'
 import { useAuth } from '@shared/contexts/AuthContext'
-
-const API = import.meta.env.VITE_API_URL || ''
 
 const INPUT    = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-blue-500'
 const LABEL    = 'block text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-1'
@@ -43,12 +41,26 @@ const ASSETS = [
   { key: 'firmaGerente', label: 'Firma Gerente', desc: 'Firma escaneada (PNG transparente) — sobre línea de firma', Icon: PenTool   },
 ]
 
+const TABS = [
+  { id: 'legales',     label: 'Datos Legales y Contacto', Icon: FileText,    color: 'blue'   },
+  { id: 'multimedia',  label: 'Multimedia',                Icon: ImageIcon,   color: 'violet' },
+  { id: 'seguridad',   label: 'Seguridad y Permisos',      Icon: ShieldAlert, color: 'amber'  },
+  { id: 'comerciales', label: 'Condiciones Comerciales',   Icon: ScrollText,  color: 'blue'   },
+]
+
+const TAB_COLORS = {
+  blue:   { active: 'bg-blue-600/15 border-blue-500/40 text-blue-300',     idle: 'border-slate-700/50 text-slate-400 hover:text-slate-200 hover:border-slate-600' },
+  violet: { active: 'bg-violet-600/15 border-violet-500/40 text-violet-300', idle: 'border-slate-700/50 text-slate-400 hover:text-slate-200 hover:border-slate-600' },
+  amber:  { active: 'bg-amber-600/15 border-amber-500/40 text-amber-300',   idle: 'border-slate-700/50 text-slate-400 hover:text-slate-200 hover:border-slate-600' },
+}
+
 export default function MiEmpresa() {
   const { tienePermiso } = useAuth()
   const { empresa, hasFull, refresh } = useEmpresa()
   const [form, setForm]   = useState(empresa)
   const [busy, setBusy]   = useState(false)
   const [dirty, setDirty] = useState(false)
+  const [tab, setTab]     = useState('legales')
 
   const canView = tienePermiso('empresa:ver') || tienePermiso('sistema:admin')
   const canEdit = tienePermiso('empresa:editar')
@@ -66,9 +78,6 @@ export default function MiEmpresa() {
   function setField(k) {
     return e => { setForm(f => ({ ...f, [k]: e.target.value })); setDirty(true) }
   }
-  function setAsset(k) {
-    return e => { setForm(f => ({ ...f, assets: { ...(f.assets ?? {}), [k]: e.target.value } })); setDirty(true) }
-  }
 
   async function guardar(e) {
     e.preventDefault()
@@ -77,7 +86,6 @@ export default function MiEmpresa() {
     try {
       const payload = { ...form }
       if (payload.fechaInicio === '' || payload.fechaInicio == null) delete payload.fechaInicio
-      // Sólo envía las URLs que el user editó (preservar nulls del DB)
       if (payload.assets) {
         const filteredAssets = {}
         for (const k of ['logoClaro','logoOscuro','selloFisico','firmaGerente']) {
@@ -126,8 +134,6 @@ export default function MiEmpresa() {
         Icon={asset.Icon}
         url={form.assets?.[asset.key] ?? ''}
         canEdit={canEdit}
-        // El upload sólo sube a Storage y devuelve URL. La URL se persiste
-        // a BD recién cuando se envía el form completo (botón "Guardar cambios").
         onUpdated={(url) => {
           setForm(f => ({ ...f, assets: { ...(f.assets ?? {}), [asset.key]: url } }))
           setDirty(true)
@@ -139,6 +145,7 @@ export default function MiEmpresa() {
   return (
     <div className="min-h-screen bg-slate-900 text-slate-100 p-4 md:p-6">
       <form onSubmit={guardar} className="space-y-5 max-w-5xl mx-auto">
+
         <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-violet-500/10 border border-violet-500/30 rounded-lg">
@@ -146,7 +153,7 @@ export default function MiEmpresa() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-slate-100 tracking-tight">Mi Empresa</h1>
-              <p className="text-xs text-slate-500 mt-0.5">Identidad legal · contacto · multimedia (logos, sello, firma)</p>
+              <p className="text-xs text-slate-500 mt-0.5">Identidad legal · contacto · multimedia · seguridad · condiciones</p>
             </div>
           </div>
           {canEdit ? (
@@ -169,150 +176,174 @@ export default function MiEmpresa() {
           </div>
         )}
 
-        {TEXT_SECTIONS.map(s => {
-          const Icon = s.Icon
-          return (
-            <section key={s.id} className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
-              <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
-                <Icon size={15} className="text-blue-400" />
-                <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest">{s.title}</h3>
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{s.fields.map(renderField)}</div>
-            </section>
-          )
-        })}
-
-        <section className="bg-slate-800/40 border border-violet-500/30 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
-            <ImageIcon size={15} className="text-violet-400" />
-            <h3 className="text-xs font-bold text-violet-400 uppercase tracking-widest">Multimedia (Assets JSON)</h3>
-            <span className="ml-auto text-[10px] text-slate-500">Sube directo · PNG/JPG/SVG · max 2MB</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{ASSETS.map(renderAsset)}</div>
-        </section>
-
-        <section className="bg-slate-800/40 border border-amber-700/30 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
-            <Lock size={15} className="text-amber-400" />
-            <h3 className="text-xs font-bold text-amber-400 uppercase tracking-widest">PIN de Supervisor (POS)</h3>
-            <span className="ml-auto text-[10px] text-slate-500">Requerido para descuentos &gt; {Number(form.maxDescuentoCajero ?? 15)}%</span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className={LABEL}>PIN (4–8 dígitos)</label>
-              {canEdit ? (
-                <input type="password" inputMode="numeric" autoComplete="off" maxLength={8}
-                  value={form.pinSupervisor ?? ''}
-                  onChange={e => { setForm(f => ({ ...f, pinSupervisor: e.target.value.replace(/\D/g, '') })); setDirty(true) }}
-                  placeholder="••••"
-                  className={INPUT + ' font-mono tracking-[0.4em] text-center'} />
-              ) : (
-                <div className={READONLY + ' font-mono tracking-[0.4em] text-center'}>{'•'.repeat((form.pinSupervisor ?? '').length || 4)}</div>
-              )}
-              <p className="text-[10px] text-slate-600 mt-1">
-                El cajero deberá ingresarlo si aplica un descuento global mayor al{' '}
-                <span className="font-mono text-amber-400">{Number(form.maxDescuentoCajero ?? 15)}%</span> en el POS.
-              </p>
-            </div>
-            <div>
-              <label className={LABEL}>Umbral PIN (% descuento)</label>
-              {canEdit ? (
-                <input type="number" min={0} max={100} step={1}
-                  value={form.maxDescuentoCajero ?? 15}
-                  onChange={e => {
-                    const n = parseInt(e.target.value, 10)
-                    const clamped = isNaN(n) ? 15 : Math.max(0, Math.min(100, n))
-                    setForm(f => ({ ...f, maxDescuentoCajero: clamped }))
-                    setDirty(true)
-                  }}
-                  className={INPUT + ' font-mono text-center'} />
-              ) : (
-                <div className={READONLY + ' font-mono text-center'}>{Number(form.maxDescuentoCajero ?? 15)}%</div>
-              )}
-              <p className="text-[10px] text-slate-600 mt-1">
-                Sobre este % el POS exige PIN supervisor. <span className="font-mono text-slate-500">0% = siempre, 100% = nunca.</span>
-              </p>
-            </div>
-          </div>
-        </section>
-
-        <section className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
-          <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
-            <ScrollText size={15} className="text-blue-400" />
-            <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest">Condiciones Comerciales por Defecto</h3>
-            <span className="ml-auto text-[10px] text-slate-500">Aparecen en PDFs · pueden sobrescribirse por documento</span>
-          </div>
-          {/* Cada término tiene: texto default + flag obligatorio.
-              - texto: aparece en el PDF cuando el documento no lo sobreescribe.
-              - obligatorio: si está ON, el cajero NO puede ocultar la fila desde
-                el carrito (ni con PIN supervisor). El backend ignora cualquier
-                override que intente apagar un término obligatorio.
-              La estructura serializada es plana: condicionesDefault[k] es el
-              texto, condicionesDefault._obligatorio[k] es el flag. Mantiene
-              compatibilidad con docs viejos que solo tenían strings. */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {['validez','pago','entrega','garantia'].map(k => {
-              const obligatorio = !!form.condicionesDefault?._obligatorio?.[k]
+        <nav className="sticky top-0 z-10 -mx-4 md:mx-0 px-4 md:px-0 py-2 bg-slate-900/95 backdrop-blur border-b border-slate-800 md:border-0 md:bg-transparent md:backdrop-blur-0 md:py-0">
+          <div className="flex flex-wrap gap-2">
+            {TABS.map(t => {
+              const Icon = t.Icon
+              const active = tab === t.id
+              const colors = TAB_COLORS[t.color]
               return (
-                <div key={k}>
-                  <div className="flex items-center justify-between mb-1">
-                    <label className={LABEL + ' mb-0'}>{k}</label>
-                    {canEdit ? (
-                      <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Si está obligatorio, el cajero no podrá ocultar esta fila del PDF.">
-                        <input
-                          type="checkbox"
-                          checked={obligatorio}
-                          onChange={e => {
-                            const next = e.target.checked
-                            setForm(f => {
-                              const cd = { ...(f.condicionesDefault ?? {}) }
-                              const ob = { ...(cd._obligatorio ?? {}) }
-                              ob[k] = next
-                              cd._obligatorio = ob
-                              return { ...f, condicionesDefault: cd }
-                            })
-                            setDirty(true)
-                          }}
-                          className="h-3 w-3 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 cursor-pointer"
-                        />
-                        <span className={`flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider ${obligatorio ? 'text-amber-400' : 'text-slate-500'}`}>
-                          <Lock size={9} /> Obligatorio
-                        </span>
-                      </label>
-                    ) : (
-                      obligatorio && (
-                        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
-                          <Lock size={9} /> Obligatorio
-                        </span>
-                      )
-                    )}
-                  </div>
-                  {canEdit ? (
-                    <input type="text" maxLength={280}
-                      value={form.condicionesDefault?.[k] ?? ''}
-                      onChange={e => { setForm(f => ({ ...f, condicionesDefault: { ...(f.condicionesDefault ?? {}), [k]: e.target.value } })); setDirty(true) }}
-                      placeholder={k === 'validez' ? '15 días calendario desde la emisión.' :
-                                   k === 'pago'    ? '50% al iniciar · 50% contra entrega.' :
-                                   k === 'entrega' ? '5 a 10 días laborables tras anticipo.' :
-                                                     '1 año sobre instalación.'}
-                      className={INPUT} />
-                  ) : (
-                    <div className={READONLY}>{form.condicionesDefault?.[k] || <span className="text-slate-700 italic">—</span>}</div>
-                  )}
-                </div>
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => setTab(t.id)}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border text-xs font-semibold transition-colors ${active ? colors.active : colors.idle}`}
+                >
+                  <Icon size={13} />
+                  <span className="hidden sm:inline">{t.label}</span>
+                  <span className="sm:hidden">{t.label.split(' ')[0]}</span>
+                </button>
               )
             })}
           </div>
-          {canEdit && (
-            <p className="mt-3 text-[10px] text-slate-500 leading-relaxed flex items-start gap-1.5">
-              <Lock size={10} className="text-amber-400 flex-shrink-0 mt-0.5" />
-              <span>
-                Los términos marcados como <span className="text-amber-400 font-semibold">Obligatorio</span> se imprimirán
-                SIEMPRE en facturas y cotizaciones. El cajero no podrá ocultarlos desde el carrito ni siquiera con PIN supervisor.
-              </span>
-            </p>
-          )}
-        </section>
+        </nav>
+
+        {tab === 'legales' && (
+          <div className="space-y-5">
+            {TEXT_SECTIONS.map(s => {
+              const Icon = s.Icon
+              return (
+                <section key={s.id} className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
+                  <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
+                    <Icon size={15} className="text-blue-400" />
+                    <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest">{s.title}</h3>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">{s.fields.map(renderField)}</div>
+                </section>
+              )
+            })}
+          </div>
+        )}
+
+        {tab === 'multimedia' && (
+          <section className="bg-slate-800/40 border border-violet-500/30 rounded-xl p-5">
+            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
+              <ImageIcon size={15} className="text-violet-400" />
+              <h3 className="text-xs font-bold text-violet-400 uppercase tracking-widest">Multimedia · Logos · Sello · Firma</h3>
+              <span className="ml-auto text-[10px] text-slate-500">PNG/JPG/SVG · max 2MB</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">{ASSETS.map(renderAsset)}</div>
+          </section>
+        )}
+
+        {tab === 'seguridad' && (
+          <section className="bg-slate-800/40 border border-amber-700/30 rounded-xl p-5">
+            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
+              <Lock size={15} className="text-amber-400" />
+              <h3 className="text-xs font-bold text-amber-400 uppercase tracking-widest">PIN Supervisor y Límite Descuento</h3>
+              <span className="ml-auto text-[10px] text-slate-500">Requerido para descuentos &gt; {Number(form.maxDescuentoCajero ?? 15)}%</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className={LABEL}>PIN (4–8 dígitos)</label>
+                {canEdit ? (
+                  <input type="password" inputMode="numeric" autoComplete="off" maxLength={8}
+                    value={form.pinSupervisor ?? ''}
+                    onChange={e => { setForm(f => ({ ...f, pinSupervisor: e.target.value.replace(/\D/g, '') })); setDirty(true) }}
+                    placeholder="••••"
+                    className={INPUT + ' font-mono tracking-[0.4em] text-center'} />
+                ) : (
+                  <div className={READONLY + ' font-mono tracking-[0.4em] text-center'}>{'•'.repeat((form.pinSupervisor ?? '').length || 4)}</div>
+                )}
+                <p className="text-[10px] text-slate-600 mt-1">
+                  El cajero deberá ingresarlo si aplica un descuento global mayor al{' '}
+                  <span className="font-mono text-amber-400">{Number(form.maxDescuentoCajero ?? 15)}%</span> en el POS.
+                </p>
+              </div>
+              <div>
+                <label className={LABEL}>Umbral PIN (% descuento)</label>
+                {canEdit ? (
+                  <input type="number" min={0} max={100} step={1}
+                    value={form.maxDescuentoCajero ?? 15}
+                    onChange={e => {
+                      const n = parseInt(e.target.value, 10)
+                      const clamped = isNaN(n) ? 15 : Math.max(0, Math.min(100, n))
+                      setForm(f => ({ ...f, maxDescuentoCajero: clamped }))
+                      setDirty(true)
+                    }}
+                    className={INPUT + ' font-mono text-center'} />
+                ) : (
+                  <div className={READONLY + ' font-mono text-center'}>{Number(form.maxDescuentoCajero ?? 15)}%</div>
+                )}
+                <p className="text-[10px] text-slate-600 mt-1">
+                  Sobre este % el POS exige PIN supervisor. <span className="font-mono text-slate-500">0% = siempre, 100% = nunca.</span>
+                </p>
+              </div>
+            </div>
+          </section>
+        )}
+
+        {tab === 'comerciales' && (
+          <section className="bg-slate-800/40 border border-slate-700/50 rounded-xl p-5">
+            <div className="flex items-center gap-2 mb-4 pb-2 border-b border-slate-700/50">
+              <ScrollText size={15} className="text-blue-400" />
+              <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest">Condiciones Comerciales por Defecto</h3>
+              <span className="ml-auto text-[10px] text-slate-500">Validez · Pago · Entrega · Garantía</span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              {['validez','pago','entrega','garantia'].map(k => {
+                const obligatorio = !!form.condicionesDefault?._obligatorio?.[k]
+                return (
+                  <div key={k}>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className={LABEL + ' mb-0'}>{k}</label>
+                      {canEdit ? (
+                        <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Si está obligatorio, el cajero no podrá ocultar esta fila del PDF.">
+                          <input
+                            type="checkbox"
+                            checked={obligatorio}
+                            onChange={e => {
+                              const next = e.target.checked
+                              setForm(f => {
+                                const cd = { ...(f.condicionesDefault ?? {}) }
+                                const ob = { ...(cd._obligatorio ?? {}) }
+                                ob[k] = next
+                                cd._obligatorio = ob
+                                return { ...f, condicionesDefault: cd }
+                              })
+                              setDirty(true)
+                            }}
+                            className="h-3 w-3 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 cursor-pointer"
+                          />
+                          <span className={`flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider ${obligatorio ? 'text-amber-400' : 'text-slate-500'}`}>
+                            <Lock size={9} /> Obligatorio
+                          </span>
+                        </label>
+                      ) : (
+                        obligatorio && (
+                          <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
+                            <Lock size={9} /> Obligatorio
+                          </span>
+                        )
+                      )}
+                    </div>
+                    {canEdit ? (
+                      <input type="text" maxLength={280}
+                        value={form.condicionesDefault?.[k] ?? ''}
+                        onChange={e => { setForm(f => ({ ...f, condicionesDefault: { ...(f.condicionesDefault ?? {}), [k]: e.target.value } })); setDirty(true) }}
+                        placeholder={k === 'validez' ? '15 días calendario desde la emisión.' :
+                                     k === 'pago'    ? '50% al iniciar · 50% contra entrega.' :
+                                     k === 'entrega' ? '5 a 10 días laborables tras anticipo.' :
+                                                       '1 año sobre instalación.'}
+                        className={INPUT} />
+                    ) : (
+                      <div className={READONLY}>{form.condicionesDefault?.[k] || <span className="text-slate-700 italic">—</span>}</div>
+                    )}
+                  </div>
+                )
+              })}
+            </div>
+            {canEdit && (
+              <p className="mt-3 text-[10px] text-slate-500 leading-relaxed flex items-start gap-1.5">
+                <Lock size={10} className="text-amber-400 flex-shrink-0 mt-0.5" />
+                <span>
+                  Los términos marcados como <span className="text-amber-400 font-semibold">Obligatorio</span> se imprimirán
+                  SIEMPRE en facturas y cotizaciones. El cajero no podrá ocultarlos desde el carrito ni siquiera con PIN supervisor.
+                </span>
+              </p>
+            )}
+          </section>
+        )}
 
         <div className="text-xs text-slate-600 text-center pt-4 border-t border-slate-800">
           Singleton ID=1 · cualquier cambio afecta facturas, cotizaciones y portal B2C en tiempo real
@@ -339,7 +370,6 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
       toast.error(`Tipo no soportado: ${file.type}. Usa PNG, JPG o SVG.`)
       return
     }
-    // Preview local inmediato (data URL)
     const reader = new FileReader()
     reader.onload = e => setPreview(e.target.result)
     reader.readAsDataURL(file)
@@ -349,7 +379,6 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
       const fd = new FormData()
       fd.append('file', file)
       fd.append('kind', kind)
-      // apiFetch detecta FormData → omite Content-Type pero conserva X-CSRF-Token + cookie credentials
       const r = await apiFetch('/api/configuracion/empresa/upload', { method: 'POST', body: fd })
       const j = await r.json().catch(() => ({}))
       if (r.ok && j.url) {
@@ -372,9 +401,6 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
     }
   }
 
-  // Quitar no toca BD: sólo marca el asset como null en el form padre.
-  // El borrado real ocurre al pulsar "Guardar cambios" (PATCH /api/configuracion/empresa),
-  // y el orphan-cleanup en Storage corre fire-and-forget en el backend.
   function quitar() {
     if (!canEdit) return
     onUpdated?.(null)
