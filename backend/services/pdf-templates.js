@@ -522,12 +522,11 @@ html, body {
 }
 .footer .qr-block .qr-text { font-size: 7.5px; color: #475569; line-height: 1.4; max-width: 220px; }
 .footer .qr-block .qr-text .qr-ttl { font-weight: 800; text-transform: uppercase; letter-spacing: 0.08em; color: #0f172a; font-size: 8px; }
-/* Anti-OCR mobile: URL/HASH se imprimen en UNA SOLA línea física. Los visores
-   móviles (WhatsApp PDF preview, Chrome móvil) hacen OCR del texto visual y,
-   si la URL salta de línea, truncan el link visible — el lector tap-tappea y
-   aterriza en un dominio incompleto. nowrap + ellipsis garantiza una línea
-   completa: el <a> sigue funcionando como link clickable correcto, y el QR
-   se queda como fallback táctil gigante (ver `<a class="qr-anchor">`). */
+/* Anti-OCR mobile: URL/HASH se imprimen en UNA SOLA linea fisica. Los visores
+   moviles (WhatsApp PDF preview, Chrome movil) hacen OCR del texto visual y,
+   si la URL salta de linea, truncan el link visible. nowrap + ellipsis
+   garantiza una linea completa: el <a> sigue funcionando como link clickable
+   correcto, y el QR se queda como fallback tactil gigante (ver qr-anchor). */
 .footer .qr-block .qr-text .qr-hash { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #334155; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; max-width: 220px; }
 .footer .qr-block .qr-text .qr-url  { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e40af; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 1px; max-width: 220px; }
 .footer .qr-block .qr-text .qr-url a { color: inherit; text-decoration: none; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
