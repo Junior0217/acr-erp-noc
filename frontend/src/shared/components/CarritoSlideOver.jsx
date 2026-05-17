@@ -356,13 +356,15 @@ export default function CarritoSlideOver() {
           {/* Tipo de Comprobante eliminado: el backend deriva el NCF
               automáticamente desde el cliente seleccionado (cliente.tipoNcf). */}
 
-          <div className="flex items-center justify-between">
-            <label className="text-xs text-slate-400 font-medium">Aplicar ITBIS (18%)</label>
+          <div className="flex items-center justify-between gap-2">
+            <label className="text-xs text-slate-400 font-medium truncate">Aplicar ITBIS (18%)</label>
             <button
+              type="button"
               onClick={() => updateCartMeta({ applyItbis: !carrito?.applyItbis })}
-              className={`w-10 h-5 rounded-full transition-colors relative ${carrito?.applyItbis ? 'bg-blue-600' : 'bg-slate-700'}`}
+              aria-pressed={!!carrito?.applyItbis}
+              className={`relative inline-flex h-5 w-10 flex-shrink-0 rounded-full transition-colors ${carrito?.applyItbis ? 'bg-blue-600' : 'bg-slate-700'}`}
             >
-              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-transform ${carrito?.applyItbis ? 'translate-x-5' : 'translate-x-0.5'}`} />
+              <span className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${carrito?.applyItbis ? 'translate-x-5' : 'translate-x-0'}`} />
             </button>
           </div>
 
@@ -383,53 +385,67 @@ export default function CarritoSlideOver() {
             </div>
             <div className="space-y-1.5">
               {CONDICIONES_META.map(({ k, label, hint }) => {
-                const on   = incluirCond[k]
+                // Obligatorio: configurado por owner en MiEmpresa. Si está ON,
+                // el toggle queda forzado ON y bloqueado — ni PIN supervisor
+                // puede ocultar la fila (el backend también lo enforcea).
+                const obligatorio = !!empresa?.condicionesDefault?._obligatorio?.[k]
+                const on   = obligatorio ? true : incluirCond[k]
                 const def  = _previewCondicion(empresa, k)
                 const hasDefault = !def.startsWith('— sin texto')
                 return (
                   <div
                     key={k}
-                    className={`rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}
-                    title={hint}
+                    className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}
+                    title={obligatorio ? `${label} es obligatorio (configurado en MiEmpresa)` : hint}
                   >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-1.5 min-w-0">
-                        <span className="text-[11px] font-medium text-slate-200 truncate">{label}</span>
-                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wide font-semibold flex-shrink-0 ${on ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
-                          {on ? 'En PDF' : 'Oculto'}
+                    <div className="flex w-full items-center justify-between gap-2">
+                      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                        <span className="truncate text-[11px] font-medium text-slate-200">{label}</span>
+                        {obligatorio && <Lock size={9} className="flex-shrink-0 text-amber-400" />}
+                        <span className={`flex-shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${on ? 'bg-blue-600/20 text-blue-300 border-blue-600/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
+                          {obligatorio ? 'Forzado' : (on ? 'En PDF' : 'Oculto')}
                         </span>
                       </div>
                       <button
                         type="button"
-                        onClick={() => requestToggleCondicion(k, !on)}
-                        className={`w-8 h-4 rounded-full transition-colors relative flex-shrink-0 ${on ? 'bg-blue-600' : 'bg-slate-700'}`}
+                        onClick={() => {
+                          if (obligatorio) {
+                            toast.error(`${label} está marcado como obligatorio en MiEmpresa — no se puede ocultar.`)
+                            return
+                          }
+                          requestToggleCondicion(k, !on)
+                        }}
+                        disabled={obligatorio}
+                        aria-pressed={on}
                         aria-label={`Toggle ${label}`}
+                        className={`relative inline-flex h-4 w-8 flex-shrink-0 rounded-full transition-colors ${on ? 'bg-blue-600' : 'bg-slate-700'} ${obligatorio ? 'opacity-60 cursor-not-allowed' : ''}`}
                       >
-                        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                        <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0'}`} />
                       </button>
                     </div>
-                    <div className={`mt-1 text-[10px] leading-snug line-clamp-2 ${on ? (hasDefault ? 'text-slate-400' : 'text-amber-400/80 italic') : 'text-slate-600 line-through'}`}>
-                      <span className="text-slate-500 font-semibold mr-1">Default:</span>{def}
+                    <div className={`mt-1 text-[10px] leading-snug line-clamp-2 break-words ${on ? (hasDefault ? 'text-slate-400' : 'text-amber-400/80 italic') : 'text-slate-600 line-through'}`}>
+                      <span className="mr-1 font-semibold text-slate-500">Default:</span>{def}
                     </div>
                   </div>
                 )
               })}
               {/* Notas — switch independiente con preview del textarea */}
-              <div className={`rounded-lg border px-2.5 py-1.5 transition-colors ${incluirNotas ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
-                <div className="flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-[11px] font-medium text-slate-200 truncate">Notas / Aclaraciones</span>
-                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wide font-semibold flex-shrink-0 ${incluirNotas ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
+              <div className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${incluirNotas ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
+                <div className="flex w-full items-center justify-between gap-2">
+                  <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                    <span className="truncate text-[11px] font-medium text-slate-200">Notas / Aclaraciones</span>
+                    <span className={`flex-shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${incluirNotas ? 'bg-blue-600/20 text-blue-300 border-blue-600/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
                       {incluirNotas ? 'En PDF' : 'Oculto'}
                     </span>
                   </div>
                   <button
                     type="button"
                     onClick={() => requestToggleCondicion('notas', !incluirNotas)}
-                    className={`w-8 h-4 rounded-full transition-colors relative flex-shrink-0 ${incluirNotas ? 'bg-blue-600' : 'bg-slate-700'}`}
+                    aria-pressed={incluirNotas}
                     aria-label="Toggle Notas"
+                    className={`relative inline-flex h-4 w-8 flex-shrink-0 rounded-full transition-colors ${incluirNotas ? 'bg-blue-600' : 'bg-slate-700'}`}
                   >
-                    <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${incluirNotas ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                    <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${incluirNotas ? 'translate-x-4' : 'translate-x-0'}`} />
                   </button>
                 </div>
                 {!incluirNotas && (

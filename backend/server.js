@@ -1360,6 +1360,7 @@ app.post('/api/portal/cotizacion', verificarPortalJWT, async (req, res) => {
       include: { lineas: true },
     })
 
+    await persistirVerifyHash(factura)
     auditReq('portal:cotizacion', req, { facturaId: factura.id, total, lineas: lineas.length }, { userId: null, userName: req.portalUser.nombre })
     res.status(201).json({ id: factura.id, noFactura: factura.noFactura, total, lineas: factura.lineas.length })
   } catch (e) {
@@ -1661,6 +1662,7 @@ app.post('/api/portal/checkout', checkoutLimiter, verificarPortalJWT, async (req
         lineas: { createMany: { data: lineasData } },
       },
     })
+    await persistirVerifyHash(factura)
     auditReq('ecommerce:checkout', req, { facturaId: factura.id, total, items: items.length }, { userId: null, userName: req.portalUser.nombre })
     res.status(201).json({ paymentRef: factura.id, total, gateway: 'azul', sandbox: !process.env.AZUL_WEBHOOK_SECRET })
   } catch (e) {
@@ -3189,10 +3191,23 @@ const VERIFY_SECRET =
   process.env.SESSION_SECRET ??
   'acr-noc-verify-secret-fallback-v1'
 
-function _normStr(v) { return v == null ? '' : String(v).trim() }
+// Normalización rígida — TODO valor que entra al HMAC pasa por aquí.
+// Cualquier ambigüedad (null vs '', Decimal vs number, Date vs ISO) se aplana
+// a una representación canónica única para que persist y verify siempre
+// produzcan el mismo payload byte-a-byte.
+function _normStr(v) {
+  // null, undefined, NaN, número 0 → tratamos solo como string. `0` es válido.
+  if (v == null) return ''
+  // String(NaN) === 'NaN' — bloquéamos también.
+  const s = String(v).trim()
+  return s === 'NaN' || s === 'undefined' || s === 'null' ? '' : s
+}
 function _normMoney(v) {
   if (v == null || v === '') return '0.00'
-  const n = typeof v === 'number' ? v : Number(v?.toString?.() ?? v)
+  // Decimal.js (Prisma) → preferimos toString() que respeta la escala almacenada,
+  // luego Number → toFixed(2) para colapsar variaciones de trailing zeros.
+  const s = typeof v === 'object' && typeof v.toString === 'function' ? v.toString() : String(v)
+  const n = Number(s)
   return Number.isFinite(n) ? n.toFixed(2) : '0.00'
 }
 function _normDateYMD(v) {
@@ -3207,7 +3222,27 @@ function _normDateYMD(v) {
   return `${y}-${m}-${day}`
 }
 
-function facturaVerifyHash(f) {
+// Trazas opt-in para diagnóstico del hash. Activa con VERIFY_HASH_DEBUG=1 en el
+// entorno (no se loguea por default — los IDs/totales son sensibles). Permite
+// comparar el payload exacto que entra al HMAC en persist vs en /verify.
+const VERIFY_HASH_DEBUG = process.env.VERIFY_HASH_DEBUG === '1'
+function _hashDbg(tag, f, payload, hash) {
+  if (!VERIFY_HASH_DEBUG) return
+  console.log(`[HASH ${tag}]`, {
+    id:           f?.id,
+    noFactura:    f?.noFactura,
+    ncfRaw:       f?.ncf,
+    ncfNorm:      _normStr(f?.ncf),
+    totalRaw:     f?.total?.toString?.() ?? f?.total,
+    totalNorm:    _normMoney(f?.total),
+    fechaRaw:     f?.fechaEmision,
+    fechaNorm:    _normDateYMD(f?.fechaEmision),
+    payload,
+    hash,
+  })
+}
+
+function facturaVerifyHash(f, dbgTag) {
   if (!f) return ''
   const payload = [
     _normStr(f.id),
@@ -3216,7 +3251,9 @@ function facturaVerifyHash(f) {
     _normMoney(f.total),
     _normDateYMD(f.fechaEmision),
   ].join('|')
-  return crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
+  const hash = crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
+  if (dbgTag) _hashDbg(dbgTag, f, payload, hash)
+  return hash
 }
 
 // Lifecycle-safe verifyHash persistence.
@@ -3236,7 +3273,7 @@ async function persistirVerifyHash(factura) {
       select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true },
     })
     if (!fresh) return factura
-    const vh = facturaVerifyHash(fresh)
+    const vh = facturaVerifyHash(fresh, 'persist')
     await prisma.factura.update({
       where: { id: factura.id },
       data:  { verifyHash: vh, pdfUrl: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
@@ -3274,7 +3311,7 @@ console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${PUBLIC_VERIFY_BASE}`)
 // bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
 // vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
 // el template nuevo. Cero intervención manual, cero migración de schema.
-const PDF_TEMPLATE_VERSION = 'v8-2026-05-16-verifyhash-normalize'
+const PDF_TEMPLATE_VERSION = 'v9-2026-05-16-hash-lifecycle-sync'
 let _pdfCacheVersionChecked = false
 async function invalidarPdfsSiCambioTemplate() {
   if (_pdfCacheVersionChecked) return
@@ -3362,8 +3399,18 @@ async function invalidarPdfCache(facturaId) {
 // (el usuario decidió ocultarla en este documento concreto).
 function mergeCondiciones(empresa, factura) {
   const defs = empresa?.condicionesDefault ?? {}
+  const obligatorios = defs?._obligatorio ?? {}
   const own  = factura?.condiciones ?? {}
+  const defaultText = (k) => {
+    const d = defs?.[k]
+    return typeof d === 'string' && d.trim() ? d.trim() : null
+  }
   const pick = (k) => {
+    // Términos marcados obligatorios en MiEmpresa NO se pueden ocultar a nivel
+    // de documento. Cualquier override que diga `incluir:false` es ignorado y
+    // siempre cae al texto default de empresa. Si no hay default, retornamos
+    // null para no imprimir una fila vacía con el label suelto.
+    if (obligatorios[k]) return defaultText(k)
     const v = own?.[k]
     if (v !== undefined && v !== null) {
       if (typeof v === 'string') {
@@ -3377,9 +3424,7 @@ function mergeCondiciones(empresa, factura) {
       }
     }
     // No override -> default empresa.
-    const d = defs?.[k]
-    if (typeof d === 'string' && d.trim()) return d.trim()
-    return null
+    return defaultText(k)
   }
   return {
     validez:  pick('validez'),
@@ -3424,6 +3469,12 @@ async function buildPdfData(facturaOrCotizacion) {
   const cedulaParaPDF = f.esCotizacion
     ? (c.rnc ? null : (c.cedula ? `***-*******-${String(c.cedula).replace(/\D/g, '').slice(-4)}` : null))
     : c.cedula
+  // Hash computado UNA sola vez sobre la lectura DB de la factura — mismo valor
+  // viaja al QR (image) y a la sección verify (texto debajo del QR). Antes se
+  // recomputaba en dos puntos y, si f mutaba mid-build (caso raro pero posible
+  // con relations lazy-loaded), las dos llamadas divergían.
+  const verifyHashFinal = facturaVerifyHash(f, 'pdf-build')
+  const verifyUrl = `${PUBLIC_VERIFY_BASE}/verify/${verifyHashFinal}`
   return {
     empresa: empresaConAssets,
     cliente: {
@@ -3464,15 +3515,12 @@ async function buildPdfData(facturaOrCotizacion) {
     estado:       f.estado,
     notas:        f.notas,
     condiciones:  mergeCondiciones(empresa, f),
-    verify: (() => {
-      const hash = facturaVerifyHash(f)
-      return { hash, url: `${PUBLIC_VERIFY_BASE}/verify/${hash}` }
-    })(),
+    verify: { hash: verifyHashFinal, url: verifyUrl },
     // QR pre-renderizado como data:image/png;base64 — SIEMPRE generado. El
     // destinatario escanea con cualquier cámara y aterriza en /verify/:hash.
     // Si edita el PDF con Photoshop, el hash en pantalla deja de matchear con
     // el calculado por el backend y la página marca el documento como ALTERADO.
-    verifyQrDataUri: await renderVerifyQr(`${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(f)}`),
+    verifyQrDataUri: await renderVerifyQr(verifyUrl),
   }
 }
 
@@ -3885,6 +3933,7 @@ app.get('/api/publico/verify/:hash', verifyLimiter, async (req, res) => {
   try {
     const hash = String(req.params.hash || '').toLowerCase()
     if (!/^[a-f0-9]{24}$/.test(hash)) return res.status(400).json({ valid: false, error: 'Hash inválido.' })
+    if (VERIFY_HASH_DEBUG) console.log(`[HASH verify-in] hash=${hash}`)
 
     // H4: lookup O(log n) por columna indexada verifyHash. Fallback al scan legacy
     // si la fila aún no tiene hash precomputado (facturas pre-H4 deployment).
@@ -3893,16 +3942,20 @@ app.get('/api/publico/verify/:hash', verifyLimiter, async (req, res) => {
       select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true, estado: true, esCotizacion: true, clienteId: true },
     })
     if (!match) {
-      // Fallback transitorio: facturas legacy sin verifyHash. Scan acotado a las
-      // 20k más recientes (suficiente para histórico no migrado).
+      // Fallback expandido: facturas legacy sin verifyHash O con verifyHash
+      // distinto (drift de normalización antes de cache-bust). Scan acotado.
+      // Acepta ambos: rows sin hash (legacy puro) y rows con hash divergente
+      // (post-cambio normalización) — recomputa y compara contra el hash entrante.
       const candidatos = await prisma.factura.findMany({
-        where:  { deletedAt: null, verifyHash: null },
+        where:  { deletedAt: null, OR: [{ verifyHash: null }, { verifyHash: { not: hash } }] },
         select: { id: true, noFactura: true, ncf: true, total: true, fechaEmision: true, estado: true, esCotizacion: true, clienteId: true },
         orderBy:{ fechaEmision: 'desc' },
         take:   20000,
       })
-      match = candidatos.find(f => facturaVerifyHash(f) === hash) ?? null
-      // Self-heal: backfill el hash en la primera consulta exitosa.
+      match = candidatos.find(f => facturaVerifyHash(f, 'verify-scan') === hash) ?? null
+      // Self-heal: backfill el hash en la primera consulta exitosa. Sobrescribe
+      // cualquier verifyHash divergente para que el lookup O(log n) funcione
+      // en el próximo scan sin caer al scan secuencial.
       if (match) {
         prisma.factura.update({ where: { id: match.id }, data: { verifyHash: hash } }).catch(() => {})
       }
@@ -7777,7 +7830,10 @@ const CARRITO_INCLUDE = {
 app.get('/api/carrito', verificarJWT, async (req, res) => {
   try {
     let c = await prisma.carritoTemp.findUnique({ where: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
-    if (!c) c = await prisma.carritoTemp.create({ data: { empleadoId: req.user.sub }, include: CARRITO_INCLUDE })
+    // Nuevo carrito → applyItbis arranca ON. DGII default es factura con ITBIS;
+    // mostrar el toggle en azul evita que el cajero crea que está "apagado" por
+    // bug visual (el schema default era false antes y daba esa impresión).
+    if (!c) c = await prisma.carritoTemp.create({ data: { empleadoId: req.user.sub, applyItbis: true }, include: CARRITO_INCLUDE })
     res.json(formatCarrito(c))
   } catch { res.status(500).json({ error: 'Error al obtener carrito.' }) }
 })
@@ -8069,6 +8125,7 @@ app.post('/api/cotizaciones/:id/revivir', verificarJWT, requerirPermiso('factura
       puedeOverridePrecio: _puedeOverride,
       empleadoId:          req.user?.sub ?? null,
     })
+    await persistirVerifyHash(nuevaFactura)
     auditReq('cotizacion:revivir', req, { originalId: original.id, nuevaId: nuevaFactura.id })
     res.status(201).json({ factura: nuevaFactura, lineas: lineasRevividas })
   } catch (e) {
@@ -8387,6 +8444,9 @@ async function buildFacturaPDFBuffer(factura) {
     ? { ...empresa, assets: await inlineAssets(empresa.assets ?? {}) }
     : { razonSocial: '', rnc: '', assets: {} }
   const c = factura.cliente ?? {}
+  // Hash computado UNA sola vez; mismo valor para QR + texto verify.
+  const legacyHash      = facturaVerifyHash(factura, 'pdf-legacy')
+  const legacyVerifyUrl = `${PUBLIC_VERIFY_BASE}/verify/${legacyHash}`
   // Soporta tanto factura.lineas (POS) como factura.orden.lineas (OT) — coge la primera no vacía.
   const lineasSrc = (factura.lineas?.length ? factura.lineas : factura.orden?.lineas) ?? []
   const items = lineasSrc.map(l => ({
@@ -8424,8 +8484,8 @@ async function buildFacturaPDFBuffer(factura) {
     estado:       factura.estado,
     notas:        factura.notas,
     condiciones:  mergeCondiciones(empresa, factura),
-    verify:       { hash: facturaVerifyHash(factura), url: `${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(factura)}` },
-    verifyQrDataUri: await renderVerifyQr(`${PUBLIC_VERIFY_BASE}/verify/${facturaVerifyHash(factura)}`),
+    verify:       { hash: legacyHash, url: legacyVerifyUrl },
+    verifyQrDataUri: await renderVerifyQr(legacyVerifyUrl),
   })
   return generarPdfDocumento(html)
 }
@@ -8520,7 +8580,7 @@ async function billarOTsISP() {
           const itbis     = otFull.cliente.itbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0
           const total     = Math.round((subtotal + itbis) * 100) / 100
 
-          await tx.factura.create({
+          return tx.factura.create({
             data: {
               noFactura,
               clienteId:  otFull.clienteId,
@@ -8534,6 +8594,10 @@ async function billarOTsISP() {
               fechaVence: new Date(hoy.getTime() + 30 * 24 * 60 * 60 * 1000),
             },
           })
+        }).then(async (facturaCreada) => {
+          // Hash post-commit: persistirVerifyHash usa el prisma global y necesita
+          // que la row ya esté visible para findUnique (read committed).
+          if (facturaCreada?.id) await persistirVerifyHash(facturaCreada)
         })
         facturadas++
       } catch (err) {

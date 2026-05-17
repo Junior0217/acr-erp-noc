@@ -242,25 +242,76 @@ export default function MiEmpresa() {
             <h3 className="text-xs font-bold text-blue-400 uppercase tracking-widest">Condiciones Comerciales por Defecto</h3>
             <span className="ml-auto text-[10px] text-slate-500">Aparecen en PDFs · pueden sobrescribirse por documento</span>
           </div>
+          {/* Cada término tiene: texto default + flag obligatorio.
+              - texto: aparece en el PDF cuando el documento no lo sobreescribe.
+              - obligatorio: si está ON, el cajero NO puede ocultar la fila desde
+                el carrito (ni con PIN supervisor). El backend ignora cualquier
+                override que intente apagar un término obligatorio.
+              La estructura serializada es plana: condicionesDefault[k] es el
+              texto, condicionesDefault._obligatorio[k] es el flag. Mantiene
+              compatibilidad con docs viejos que solo tenían strings. */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {['validez','pago','entrega','garantia'].map(k => (
-              <div key={k}>
-                <label className={LABEL}>{k}</label>
-                {canEdit ? (
-                  <input type="text" maxLength={280}
-                    value={form.condicionesDefault?.[k] ?? ''}
-                    onChange={e => { setForm(f => ({ ...f, condicionesDefault: { ...(f.condicionesDefault ?? {}), [k]: e.target.value } })); setDirty(true) }}
-                    placeholder={k === 'validez' ? '15 días calendario desde la emisión.' :
-                                 k === 'pago'    ? '50% al iniciar · 50% contra entrega.' :
-                                 k === 'entrega' ? '5 a 10 días laborables tras anticipo.' :
-                                                   '1 año sobre instalación.'}
-                    className={INPUT} />
-                ) : (
-                  <div className={READONLY}>{form.condicionesDefault?.[k] || <span className="text-slate-700 italic">—</span>}</div>
-                )}
-              </div>
-            ))}
+            {['validez','pago','entrega','garantia'].map(k => {
+              const obligatorio = !!form.condicionesDefault?._obligatorio?.[k]
+              return (
+                <div key={k}>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className={LABEL + ' mb-0'}>{k}</label>
+                    {canEdit ? (
+                      <label className="flex items-center gap-1.5 cursor-pointer select-none" title="Si está obligatorio, el cajero no podrá ocultar esta fila del PDF.">
+                        <input
+                          type="checkbox"
+                          checked={obligatorio}
+                          onChange={e => {
+                            const next = e.target.checked
+                            setForm(f => {
+                              const cd = { ...(f.condicionesDefault ?? {}) }
+                              const ob = { ...(cd._obligatorio ?? {}) }
+                              ob[k] = next
+                              cd._obligatorio = ob
+                              return { ...f, condicionesDefault: cd }
+                            })
+                            setDirty(true)
+                          }}
+                          className="h-3 w-3 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500 focus:ring-offset-0 cursor-pointer"
+                        />
+                        <span className={`flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider ${obligatorio ? 'text-amber-400' : 'text-slate-500'}`}>
+                          <Lock size={9} /> Obligatorio
+                        </span>
+                      </label>
+                    ) : (
+                      obligatorio && (
+                        <span className="flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wider text-amber-400">
+                          <Lock size={9} /> Obligatorio
+                        </span>
+                      )
+                    )}
+                  </div>
+                  {canEdit ? (
+                    <input type="text" maxLength={280}
+                      value={form.condicionesDefault?.[k] ?? ''}
+                      onChange={e => { setForm(f => ({ ...f, condicionesDefault: { ...(f.condicionesDefault ?? {}), [k]: e.target.value } })); setDirty(true) }}
+                      placeholder={k === 'validez' ? '15 días calendario desde la emisión.' :
+                                   k === 'pago'    ? '50% al iniciar · 50% contra entrega.' :
+                                   k === 'entrega' ? '5 a 10 días laborables tras anticipo.' :
+                                                     '1 año sobre instalación.'}
+                      className={INPUT} />
+                  ) : (
+                    <div className={READONLY}>{form.condicionesDefault?.[k] || <span className="text-slate-700 italic">—</span>}</div>
+                  )}
+                </div>
+              )
+            })}
           </div>
+          {canEdit && (
+            <p className="mt-3 text-[10px] text-slate-500 leading-relaxed flex items-start gap-1.5">
+              <Lock size={10} className="text-amber-400 flex-shrink-0 mt-0.5" />
+              <span>
+                Los términos marcados como <span className="text-amber-400 font-semibold">Obligatorio</span> se imprimirán
+                SIEMPRE en facturas y cotizaciones. El cajero no podrá ocultarlos desde el carrito ni siquiera con PIN supervisor.
+              </span>
+            </p>
+          )}
         </section>
 
         <div className="text-xs text-slate-600 text-center pt-4 border-t border-slate-800">
