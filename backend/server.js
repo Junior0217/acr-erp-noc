@@ -956,6 +956,10 @@ const _routerDeps = {
   protegerPropietario,
   // Sequence defaults (definido arriba)
   SECUENCIA_DEFAULTS,
+  // Express app expuesta para admin/ops._scanRoutes (introspección /_meta/endpoints).
+  // Fix de ReferenceError latente: el código original referenciaba `app` como
+  // naked identifier dentro del factory, rompiendo al primer hit del endpoint.
+  app,
 };
 app.use('/api', createAuthRouter(_routerDeps));
 app.use('/api', createCrmRouter(_routerDeps));

@@ -177,3 +177,21 @@ Default canonical strings: `needs-triage`, `needs-info`, `ready-for-agent`, `rea
 ### Domain docs
 
 Single-context repo: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+## REGLA DE SEGURIDAD (CYBER NEO ALWAYS-ON)
+
+Antes de finalizar cualquier tarea o hacer un commit, debes auditar OBLIGATORIAMENTE tu propio código buscando vulnerabilidades OWASP Top 10, inyecciones SQL, fugas de PII, y fallos de control de acceso. Si detectas un riesgo, corrígelo silenciosamente antes de hacer push.
+
+**Checklist mínimo por commit:**
+1. **A01 Broken Access Control** — verifica que cada ruta tenga `verificarJWT`/`requerirPermiso`/`requerirNivel` correcto. Endpoints públicos: cero PII en response shape.
+2. **A02 Cryptographic Failures** — bcrypt cost ≥ 10, AES-256-GCM con IV random, HMAC timing-safe (`crypto.timingSafeEqual`), tokens random 32+ bytes.
+3. **A03 Injection** — Prisma parametrizado SIEMPRE. CERO `$queryRawUnsafe` con string-concat de input usuario. Zod-validar antes de tocar DB.
+4. **A04 Insecure Design** — state machines explícitas, idempotencia, rate-limiters por superficie pública, audit-trail inmutable.
+5. **A05 Security Misconfiguration** — cookies httpOnly + signed + secure + sameSite + partitioned (prod). CSP nonces dinámicos. CORS whitelist.
+6. **A07 Identification/Auth Failures** — login response unificado (anti-enumeration), forgot-password 200 OK siempre, brute-force protection (loginLimiter/totpLimiter/backupCodeLimiter), 2FA TOTP + backup codes + WebAuthn.
+7. **A08 Integrity Failures** — hash-chain AuditLog + AuditCaja (HMAC-SHA256 + prevHash), verifyHash en facturas (anti-tamper PDF), WebAuthn counter anti-clone.
+8. **A09 Logging Failures** — auditReq en cada operación mutating. CERO password/hash/token en metadata.
+9. **PII en logs/responses** — emails OK (ya en URL del request), telefonos parciales, cédula enmascarada en PDFs de cotización, NUNCA passwords/hashes/secrets.
+10. **Path Traversal en uploads/downloads** — path = `${bucket}/${kind}/${UUID-DB}-${randomBytes}.${ext}` (cero `req.params` directo). MIME real por magic bytes.
+
+Si encuentras una vulnerabilidad pre-existente fuera del scope del commit actual, NO la introduzcas en el changelog público — corrígela silenciosamente y deja una nota en el cuerpo del commit (`Cyber Neo silent fix: ...`).
