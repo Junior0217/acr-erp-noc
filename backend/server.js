@@ -68,7 +68,7 @@ const {
   detectMimeFromBuffer, svgSeguro, comprimirImagen,
 } = SUPA_INFRA;
 const startCronJobs = require('./jobs/cron');
-const createAuthRouter       = require('./routes/auth');
+const createAuthRouter       = require('./modules/auth/router');
 const createCrmRouter        = require('./routes/crm');
 const createInventarioRouter = require('./routes/inventario');
 const createVentasRouter     = require('./routes/ventas');
@@ -476,81 +476,13 @@ app.use(csrfMiddleware);
 
 // Zod helpers + schemas + UUID validator + formateadores RD + middlewares de
 // auth/permisos/nivel + device fingerprint helpers viven en shared/helpers.js,
-// shared/schemas.js y shared/middlewares.js. Aquí solo dejamos constantes que
-// completarLogin sigue necesitando inline.
+// shared/schemas.js y shared/middlewares.js. completarLogin (sesión + cookies +
+// device fingerprint) migró a backend/modules/auth/service.js. server.js solo
+// retiene IDLE_TTL_MS porque otros middlewares lo consumen via _routerDeps.
 
 // Idle timeout: 30 min sliding session. JWT TTL = 30 min; renewed on activity
 // via sliding refresh in verificarJWT. RememberMe extends to 30d but keeps idle.
 const IDLE_TTL_MS = 30 * 60 * 1000
-
-function completarLogin(empleado, req, res, rememberMe = false, needs2FASetup = false) {
-  const jti        = crypto.randomUUID()
-  const ua         = req.headers['user-agent'] || ''
-  const ip         = req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.socket?.remoteAddress || null
-  const acceptLang = req.headers['accept-language'] || ''
-  const secChUa    = req.headers['sec-ch-ua'] || ''
-  const deviceHash = computeDeviceHash(ua, ip, acceptLang, secChUa)
-  const ttl       = rememberMe ? 30 * 24 * 60 * 60 * 1000 : IDLE_TTL_MS
-  const jwtTTL    = rememberMe ? '30d' : '30m'
-  const expiresAt = new Date(Date.now() + ttl)
-
-  // Device fingerprint: detecta first-login desde un dispositivo nuevo.
-  // Si es desconocido, registra + dispara alerta en AuditCaja para que el
-  // dashboard del owner muestre "Inicio desde dispositivo desconocido".
-  const fingerprintTask = (async () => {
-    try {
-      const existing = await prisma.deviceFingerprint.findUnique({
-        where: { empleadoId_hash: { empleadoId: empleado.id, hash: deviceHash } },
-      })
-      if (existing) {
-        await prisma.deviceFingerprint.update({
-          where: { id: existing.id },
-          data:  { ultimoLogin: new Date(), ip, userAgent: ua },
-        })
-        return { nuevoDispositivo: false }
-      }
-      await prisma.deviceFingerprint.create({
-        data: { empleadoId: empleado.id, hash: deviceHash, label: labelFromUA(ua), ip, userAgent: ua },
-      })
-      // Alerta visible al owner via AuditCaja (vista existente filtra por tipo).
-      await prisma.auditCaja.create({ data: {
-        tipo: 'device_nuevo', empleadoId: empleado.id,
-        detalle: `Nuevo dispositivo: ${labelFromUA(ua)} desde ${ip ?? 'IP desconocida'}`,
-        ip, ua: ua.slice(0, 200),
-      }}).catch(() => {})
-      auditReq('auth:device_nuevo', req, { empleadoId: empleado.id, deviceHash, label: labelFromUA(ua) })
-      return { nuevoDispositivo: true }
-    } catch (e) { console.error('[FINGERPRINT]', e.message); return { nuevoDispositivo: false } }
-  })()
-
-  return fingerprintTask.then(({ nuevoDispositivo }) =>
-  prisma.sessionToken.create({ data: { jti, empleadoId: empleado.id, userAgent: ua, expiresAt, ip, deviceHash } }).then(() => {
-    const permisos = [...new Set([
-      ...(empleado.roles ?? []).flatMap(r => Array.isArray(r.permisos) ? r.permisos : []),
-      ...(Array.isArray(empleado.permisosExtra) ? empleado.permisosExtra : []),
-    ])]
-    const jwtPayload = { sub: empleado.id, nombre: empleado.nombre, permisos, jti, ua, ...(needs2FASetup ? { needs2FASetup: true } : {}) }
-    const jwtStr = jwt.sign(jwtPayload, process.env.JWT_SECRET, { expiresIn: jwtTTL })
-    const token  = wrapJWT(jwtStr)
-    const csrf    = crypto.randomBytes(32).toString('hex')
-    const isProd  = process.env.NODE_ENV === 'production'
-    const cookieBase = {
-      secure:   isProd,
-      sameSite: isProd ? 'none' : 'lax',
-      maxAge:   ttl,
-      ...(isProd ? { partitioned: true } : {}),
-    }
-    res.cookie('csrf',  csrf,  { ...cookieBase, httpOnly: false })
-    res.cookie('token', token, { ...cookieBase, httpOnly: true, signed: true })
-    // M2: csrf token vive SOLO en cookie. NUNCA eco en JSON ni en header de
-    // respuesta — un XSS o log leak NO debe revelar el token. El cliente lo lee
-    // via /api/auth/csrf que requiere session válida (cookie httpOnly).
-    const response = { id: empleado.id, nombre: empleado.nombre, cargo: empleado.cargo, permisos }
-    if (needs2FASetup)    response.needs2FASetup = true
-    if (nuevoDispositivo) response.nuevoDispositivo = true
-    return response
-  }))
-}
 
 // ─── Portal JWT ───────────────────────────────────────────────────────────────
 // PORTAL_JWT_SECRET + verificarPortalJWT viven en shared/jwt-crypto.js y
@@ -1943,7 +1875,9 @@ const _routerDeps = {
   // Helpers monolíticos pasados a routers para que handlers extraídos
   // sigan funcionando sin re-implementación. A medida que cada router migra
   // su lógica completa, estos punteros se podrán mover a shared/.
-  completarLogin,
+  // completarLogin se eliminó: vive en modules/auth/service.js. Los otros
+  // routers lo destructuran pero nunca lo invocan — destructure undefined
+  // no rompe (se limpiará al migrar cada módulo).
   twoFAStore,
   challengeStore,
   warmChallengeStore,
