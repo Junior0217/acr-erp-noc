@@ -25,6 +25,7 @@ function createOrdenesRouter(deps) {
     prisma, middlewares, auditReq, helpers, limiters,
     nextNomenclatura, generarSiguienteCodigo,
     supabase, detectMimeFromBuffer, comprimirImagen,
+    bomService,
   } = deps;
   if (!prisma)                                       throw new Error('createOrdenesRouter: prisma required');
   if (!middlewares)                                  throw new Error('createOrdenesRouter: middlewares required');
@@ -45,6 +46,7 @@ function createOrdenesRouter(deps) {
     supabase, OT_FOTOS_BUCKET,
     detectMimeFromBuffer, comprimirImagen,
     nextNomenclatura, generarSiguienteCodigo,
+    bomService,
   });
   const controller = createOrdenesController({
     service, schemas: ordenesSchemas, prisma, helpers,

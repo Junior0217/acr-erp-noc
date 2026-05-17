@@ -56,12 +56,16 @@ function createOrdenesService(deps) {
     supabase, OT_FOTOS_BUCKET,
     detectMimeFromBuffer, comprimirImagen,
     nextNomenclatura, generarSiguienteCodigo,
+    bomService,
   } = deps;
   if (!repo)                                      throw new Error('createOrdenesService: repo required');
   if (typeof auditReq !== 'function')             throw new Error('createOrdenesService: auditReq required');
   if (typeof nextNomenclatura !== 'function')     throw new Error('createOrdenesService: nextNomenclatura required');
   if (typeof generarSiguienteCodigo !== 'function') throw new Error('createOrdenesService: generarSiguienteCodigo required');
   if (!OT_FOTOS_BUCKET)                           throw new Error('createOrdenesService: OT_FOTOS_BUCKET required');
+  if (!bomService || typeof bomService.expandirLineaAComponentes !== 'function') {
+    throw new Error('createOrdenesService: bomService.expandirLineaAComponentes required (shared/services/bom-expansion.service)');
+  }
 
   function _fakeReqForAudit(reqMeta, user) {
     return {
@@ -100,49 +104,11 @@ function createOrdenesService(deps) {
     }
   }
 
-  /**
-   * BOM expansion local. Expande una línea a {productoId, cantidad}[].
-   * Misma lógica que pos/service para mantener invariantes idénticas
-   * (productos directos, bundles, items vinculados, servicios puros).
-   */
-  async function expandirLineaAComponentes(tx, linea) {
-    if (!linea || typeof linea !== 'object') return [];
-    const cantidad = Number(linea.cantidad);
-    if (!Number.isFinite(cantidad) || cantidad <= 0) return [];
-    if (linea.productoId) {
-      return [{ productoId: linea.productoId, cantidad, source: 'direct' }];
-    }
-    if (linea.itemCatalogoId) {
-      let it;
-      try {
-        it = await repo.findItemCatalogoForExpansion(tx, linea.itemCatalogoId);
-      } catch (e) {
-        console.warn(`[OT expandir] lookup falló id=${linea.itemCatalogoId}:`, e.message);
-        return [];
-      }
-      if (!it) return [];
-      if (it.esBundle && Array.isArray(it.componentes) && it.componentes.length > 0) {
-        return it.componentes
-          .filter(c => c?.producto && c.producto.tipoItem !== 'SERVICIO' && Number(c.cantidad) > 0)
-          .map(c => ({
-            productoId:   c.productoId,
-            cantidad:     Number(c.cantidad) * cantidad,
-            nombre:       c.producto.nombre ?? 'Componente',
-            source:       'bundle',
-            bundleItemId: it.id,
-          }));
-      }
-      if (it.productoId && it.producto?.tipoItem !== 'SERVICIO') {
-        return [{
-          productoId: it.productoId,
-          cantidad,
-          nombre:     it.producto?.nombre ?? it.nombre ?? 'Producto',
-          source:     'linked',
-        }];
-      }
-    }
-    return [];
-  }
+  // BOM expansion centralizado en shared/services/bom-expansion.service.js
+  // (Fase 2.4). Antes vivía duplicado aquí + pos/service.js.
+  // NOTA: el llamador histórico pasa (tx, linea) en ese orden; bomService
+  // acepta (linea, tx) — adaptamos firma.
+  const expandirLineaAComponentes = (tx, linea) => bomService.expandirLineaAComponentes(linea, tx);
 
   // ─── OT: listar ──────────────────────────────────────────────────────────
   async function listarOrdenesTrabajo(query) {

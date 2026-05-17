@@ -42,6 +42,7 @@ const createAuditService      = require('./shared/services/audit.service');
 const createSequencesService  = require('./shared/services/sequences.service');
 const createVerifyHashService = require('./shared/services/verify-hash.service');
 const createNcfService        = require('./shared/services/ncf.service');
+const createBomExpansionSvc   = require('./shared/services/bom-expansion.service');
 // Helpers + Schemas destructurados al scope global para que los handlers legacy
 // inline que aún viven en server.js sigan funcionando sin tocarlos uno por uno.
 // A medida que cada handler migre a routes/*.js, esta lista se irá vaciando.
@@ -169,6 +170,7 @@ const prisma = prismaBase.$extends({
 const { _canonicalizarLog, appendAuditLog, auditReq } = createAuditService({ prisma });
 const { SECUENCIA_DEFAULTS, generarSiguienteCodigo }  = createSequencesService({ prisma });
 const _ncfService = createNcfService({ prisma });
+const _bomService = createBomExpansionSvc({ prisma });
 const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
   = createVerifyHashService({ prisma });
 
@@ -920,6 +922,8 @@ const _routerDeps = {
   // (modules/admin/empresa/ncf/) lo consume; facturas/notas también lo
   // consumen. CERO acceso directo a prisma.configuracionNCF desde routers.
   ncfService:       _ncfService,
+  // BOM expansion centralizado (Fase 2.4) — pos + ordenes lo consumen.
+  bomService:       _bomService,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,

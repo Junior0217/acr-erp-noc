@@ -22,7 +22,7 @@ const posSchemas           = require('./schema');
 function createPosRouter(deps) {
   const {
     prisma, middlewares, auditReq, helpers, limiters,
-    generarSiguienteCodigo, persistirVerifyHash,
+    generarSiguienteCodigo, persistirVerifyHash, bomService,
   } = deps;
   if (!prisma)                                       throw new Error('createPosRouter: prisma required');
   if (!middlewares)                                  throw new Error('createPosRouter: middlewares required');
@@ -38,7 +38,7 @@ function createPosRouter(deps) {
   }
 
   const repo       = createPosRepo(prisma);
-  const service    = createPosService({ repo, auditReq, generarSiguienteCodigo, persistirVerifyHash });
+  const service    = createPosService({ repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService });
   const controller = createPosController({ service, schemas: posSchemas, prisma });
 
   // pinVerifyLimiter LOCAL: 10 intentos por usuario (o fingerprint hash) en

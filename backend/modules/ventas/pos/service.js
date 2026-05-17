@@ -47,11 +47,14 @@ function totalLinea(pu, pct, monto, cant) {
 }
 
 function createPosService(deps) {
-  const { repo, auditReq, generarSiguienteCodigo, persistirVerifyHash } = deps;
+  const { repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService } = deps;
   if (!repo)                                          throw new Error('createPosService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createPosService: auditReq required');
   if (typeof generarSiguienteCodigo !== 'function')   throw new Error('createPosService: generarSiguienteCodigo required');
   if (typeof persistirVerifyHash !== 'function')      throw new Error('createPosService: persistirVerifyHash required');
+  if (!bomService || typeof bomService.expandirLineaAComponentes !== 'function') {
+    throw new Error('createPosService: bomService.expandirLineaAComponentes required (shared/services/bom-expansion.service)');
+  }
 
   function _fakeReqForAudit(reqMeta, user) {
     return {
@@ -84,53 +87,9 @@ function createPosService(deps) {
     return { status: 200, body: { valid: true } };
   }
 
-  // ─── BOM expansion ───────────────────────────────────────────────────────
-  /**
-   * Expande una línea a su lista de {productoId, cantidad} físicos.
-   *   - productoId directo → [{ productoId, cantidad }]
-   *   - itemCatalogo bundle → N entries (componente × line.qty)
-   *   - itemCatalogo simple vinculado a Producto físico → 1 entry
-   *   - servicio puro → []
-   * Acepta tx para correr dentro de transacción.
-   */
-  async function expandirLineaAComponentes(linea, tx) {
-    if (!linea || typeof linea !== 'object') return [];
-    const cantidad = Number(linea.cantidad);
-    if (!Number.isFinite(cantidad) || cantidad <= 0) return [];
-    if (linea.productoId) {
-      return [{ productoId: linea.productoId, cantidad, source: 'direct' }];
-    }
-    if (linea.itemCatalogoId) {
-      let it;
-      try {
-        it = await repo.findItemCatalogoFullForExpansion(linea.itemCatalogoId, tx);
-      } catch (e) {
-        console.warn(`[expandirLineaAComponentes] lookup falló id=${linea.itemCatalogoId}:`, e.message);
-        return [];
-      }
-      if (!it) return [];
-      if (it.esBundle && Array.isArray(it.componentes) && it.componentes.length > 0) {
-        return it.componentes
-          .filter(c => c?.producto && c.producto.tipoItem !== 'SERVICIO' && Number(c.cantidad) > 0)
-          .map(c => ({
-            productoId:   c.productoId,
-            cantidad:     Number(c.cantidad) * cantidad,
-            nombre:       c.producto.nombre ?? 'Componente',
-            source:       'bundle',
-            bundleItemId: it.id,
-          }));
-      }
-      if (it.productoId && it.producto?.tipoItem !== 'SERVICIO') {
-        return [{
-          productoId: it.productoId,
-          cantidad,
-          nombre:     it.producto?.nombre ?? it.nombre ?? 'Producto',
-          source:     'linked',
-        }];
-      }
-    }
-    return [];
-  }
+  // BOM expansion centralizado en shared/services/bom-expansion.service.js
+  // (Fase 2.4). pos y ordenes lo consumen para eliminar duplicación.
+  const expandirLineaAComponentes = (linea, tx) => bomService.expandirLineaAComponentes(linea, tx);
 
   // ─── /pos/venta ──────────────────────────────────────────────────────────
   /**
