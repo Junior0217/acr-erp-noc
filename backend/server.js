@@ -3177,10 +3177,45 @@ app.post('/api/inventario/upload-url',
 // Hash determinístico sobre campos vitales del documento. Validación pública
 // via /api/publico/verify/:hash — quien recibe el PDF puede confirmar que el
 // monto/cliente/NCF coincide con lo emitido (defensa anti-Photoshop).
-const VERIFY_SECRET = process.env.VERIFY_SECRET ?? process.env.JWT_SECRET ?? 'change-me-verify-secret'
+//
+// CRÍTICO: la normalización abajo es load-bearing. Prisma devuelve Decimal
+// como objeto que stringifica distinto ("150" vs "150.00") según versión y
+// path (raw query vs ORM). DateTime puede llegar como Date o ISO string. Si
+// los inputs no se castean rígidamente, el hash difiere entre la generación
+// del PDF y la verificación pública → "Documento no válido" falsos.
+const VERIFY_SECRET =
+  process.env.VERIFY_SECRET ??
+  process.env.JWT_SECRET ??
+  process.env.SESSION_SECRET ??
+  'acr-noc-verify-secret-fallback-v1'
+
+function _normStr(v) { return v == null ? '' : String(v).trim() }
+function _normMoney(v) {
+  if (v == null || v === '') return '0.00'
+  const n = typeof v === 'number' ? v : Number(v?.toString?.() ?? v)
+  return Number.isFinite(n) ? n.toFixed(2) : '0.00'
+}
+function _normDateYMD(v) {
+  if (!v) return ''
+  const d = v instanceof Date ? v : new Date(v)
+  if (Number.isNaN(d.getTime())) return ''
+  // UTC YYYY-MM-DD: ignora horas/zona → el mismo doc emitido ayer 23:59 local
+  // y leído hoy 00:01 UTC produce la misma clave.
+  const y = d.getUTCFullYear()
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const day = String(d.getUTCDate()).padStart(2, '0')
+  return `${y}-${m}-${day}`
+}
 
 function facturaVerifyHash(f) {
-  const payload = [f.id, f.noFactura, f.ncf ?? '', String(f.total), f.fechaEmision?.toISOString?.() ?? f.fechaEmision ?? ''].join('|')
+  if (!f) return ''
+  const payload = [
+    _normStr(f.id),
+    _normStr(f.noFactura),
+    _normStr(f.ncf),
+    _normMoney(f.total),
+    _normDateYMD(f.fechaEmision),
+  ].join('|')
   return crypto.createHmac('sha256', VERIFY_SECRET).update(payload).digest('hex').slice(0, 24)
 }
 
@@ -3223,7 +3258,7 @@ console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${PUBLIC_VERIFY_BASE}`)
 // bajo la clave reservada `_pdfCacheVersion` y, al boot, comparamos. Si difiere,
 // vaciamos pdfUrl masivamente — al siguiente request el endpoint regenera con
 // el template nuevo. Cero intervención manual, cero migración de schema.
-const PDF_TEMPLATE_VERSION = 'v7-2026-05-15-direccion-sin-label'
+const PDF_TEMPLATE_VERSION = 'v8-2026-05-16-verifyhash-normalize'
 let _pdfCacheVersionChecked = false
 async function invalidarPdfsSiCambioTemplate() {
   if (_pdfCacheVersionChecked) return
@@ -3238,9 +3273,12 @@ async function invalidarPdfsSiCambioTemplate() {
       console.log(`[PDF] template ${PDF_TEMPLATE_VERSION} ya activa, sin cambios`)
       return
     }
+    // v8: el algoritmo de verifyHash cambió (normalización rígida). Hashes
+    // antiguos en DB son obsoletos — los limpiamos para que el endpoint
+    // /verify recalcule con la nueva función y self-heal backfillea.
     const r = await prisma.factura.updateMany({
-      where: { pdfUrl: { not: null } },
-      data:  { pdfUrl: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
+      where: { OR: [{ pdfUrl: { not: null } }, { verifyHash: { not: null } }] },
+      data:  { pdfUrl: null, verifyHash: null, pdfInvalidatedAt: new Date(), pdfRenderAttempts: 0 },
     })
     // Si el record empresa no existe (DB virgen) o el update falla, NO abortamos
     // la invalidación masiva — la próxima cold-start lo intentará otra vez. Lo

@@ -26,6 +26,16 @@ const DEFAULT_EMPRESA = {
   representanteNombre:   null,
   representanteApellido: null,
   representanteCargo:    null,
+  // Términos comerciales por defecto — aparecen en el PDF si el documento no
+  // los override. Se sobrescriben con los valores reales una vez el endpoint
+  // autenticado /api/configuracion/empresa responde con los configurados en
+  // MiEmpresa.
+  condicionesDefault: {
+    validez:  'Esta cotización es válida por 30 días a partir de la fecha de emisión.',
+    pago:     '50% de anticipo al confirmar la orden, 50% restante contra entrega.',
+    entrega:  'Tiempo de entrega estimado entre 5 y 10 días hábiles, sujeto a disponibilidad.',
+    garantia: 'Garantía de fábrica sobre equipos y 90 días sobre mano de obra de instalación.',
+  },
 }
 
 const CACHE_KEY = 'acr.empresa.publico.v1'

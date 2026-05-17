@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound } from 'lucide-react'
+import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound, Info } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
+import { useEmpresa } from '../contexts/EmpresaContext'
 import { apiFetch } from '../utils/api'
 import { useDebounce } from '../hooks/useDebounce'
 import { toast } from 'sonner'
@@ -169,8 +170,25 @@ function LineaRow({ linea, onUpdate, onRemove, descuentosUnlocked }) {
   )
 }
 
+// Texto por defecto que se imprimirá si el switch correspondiente queda en ON.
+// Lee de empresa.condicionesDefault (configurado en MiEmpresa) y cae al
+// fallback hardcoded del contexto si aún no llegó la respuesta del backend.
+function _previewCondicion(empresa, key) {
+  const t = empresa?.condicionesDefault?.[key]
+  if (typeof t === 'string' && t.trim()) return t.trim()
+  return '— sin texto configurado, se omitirá del PDF —'
+}
+
+const CONDICIONES_META = [
+  { k: 'validez',  label: 'Validez',        hint: 'Período durante el que la cotización conserva precios.' },
+  { k: 'pago',     label: 'Forma de Pago',  hint: 'Esquema de anticipo / saldo / crédito que verá el cliente.' },
+  { k: 'entrega',  label: 'Entrega',        hint: 'Tiempo de despacho/instalación comprometido.' },
+  { k: 'garantia', label: 'Garantía',       hint: 'Cobertura post-venta sobre equipos y mano de obra.' },
+]
+
 export default function CarritoSlideOver() {
   const { carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout } = useCart()
+  const { empresa } = useEmpresa()
   const [nombreWalkIn, setNombreWalkIn] = useState('')
   const [descTipo, setDescTipo]         = useState('pct')
   const [descValor, setDescValor]       = useState(0)
@@ -354,53 +372,86 @@ export default function CarritoSlideOver() {
 
           {/* Condiciones del documento — switches togglables, cada cambio
               pide PIN supervisor. Si el PIN falla o se cancela, el switch
-              NO cambia. Estado por defecto: todas ON (heredan empresa). */}
+              NO cambia. Estado por defecto: todas ON (heredan empresa).
+              Cada item muestra debajo el texto real que se imprimirá si
+              queda ON (preview del default configurado en MiEmpresa). */}
           <div className="pt-1 border-t border-slate-800 mt-1">
-            <div className="text-[10px] uppercase tracking-widest text-slate-500 mb-1.5 flex items-center gap-1.5">
-              <Lock size={9} className="text-amber-400" />
-              Términos en PDF (cambios requieren PIN)
+            <div className="text-[10px] uppercase tracking-widest text-slate-500 mb-1.5 flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5">
+                <Lock size={9} className="text-amber-400" />
+                Términos en PDF (cambios requieren PIN)
+              </span>
+              <span className="text-[9px] normal-case tracking-normal text-slate-600 flex items-center gap-1">
+                <Info size={9} /> Default desde MiEmpresa
+              </span>
             </div>
-            <div className="grid grid-cols-2 gap-y-1.5 gap-x-3">
-              {[
-                { k: 'validez',  label: 'Validez' },
-                { k: 'pago',     label: 'Forma de Pago' },
-                { k: 'entrega',  label: 'Entrega' },
-                { k: 'garantia', label: 'Garantía' },
-              ].map(({ k, label }) => (
-                <label key={k} className="flex items-center justify-between text-[11px] text-slate-300 cursor-pointer">
-                  <span>{label}</span>
+            <div className="space-y-1.5">
+              {CONDICIONES_META.map(({ k, label, hint }) => {
+                const on   = incluirCond[k]
+                const def  = _previewCondicion(empresa, k)
+                const hasDefault = !def.startsWith('— sin texto')
+                return (
+                  <div
+                    key={k}
+                    className={`rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}
+                    title={hint}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="text-[11px] font-medium text-slate-200 truncate">{label}</span>
+                        <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wide font-semibold flex-shrink-0 ${on ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
+                          {on ? 'En PDF' : 'Oculto'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => requestToggleCondicion(k, !on)}
+                        className={`w-8 h-4 rounded-full transition-colors relative flex-shrink-0 ${on ? 'bg-blue-600' : 'bg-slate-700'}`}
+                        aria-label={`Toggle ${label}`}
+                      >
+                        <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0.5'}`} />
+                      </button>
+                    </div>
+                    <div className={`mt-1 text-[10px] leading-snug line-clamp-2 ${on ? (hasDefault ? 'text-slate-400' : 'text-amber-400/80 italic') : 'text-slate-600 line-through'}`}>
+                      <span className="text-slate-500 font-semibold mr-1">Default:</span>{def}
+                    </div>
+                  </div>
+                )
+              })}
+              {/* Notas — switch independiente con preview del textarea */}
+              <div className={`rounded-lg border px-2.5 py-1.5 transition-colors ${incluirNotas ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-[11px] font-medium text-slate-200 truncate">Notas / Aclaraciones</span>
+                    <span className={`text-[9px] px-1.5 py-0.5 rounded-full uppercase tracking-wide font-semibold flex-shrink-0 ${incluirNotas ? 'bg-blue-600/20 text-blue-300 border border-blue-600/30' : 'bg-slate-800 text-slate-500 border border-slate-700'}`}>
+                      {incluirNotas ? 'En PDF' : 'Oculto'}
+                    </span>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => requestToggleCondicion(k, !incluirCond[k])}
-                    className={`w-7 h-4 rounded-full transition-colors relative ${incluirCond[k] ? 'bg-blue-600' : 'bg-slate-700'}`}
-                    aria-label={`Toggle ${label}`}
+                    onClick={() => requestToggleCondicion('notas', !incluirNotas)}
+                    className={`w-8 h-4 rounded-full transition-colors relative flex-shrink-0 ${incluirNotas ? 'bg-blue-600' : 'bg-slate-700'}`}
+                    aria-label="Toggle Notas"
                   >
-                    <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${incluirCond[k] ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                    <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${incluirNotas ? 'translate-x-4' : 'translate-x-0.5'}`} />
                   </button>
-                </label>
-              ))}
-              {/* Notas — switch independiente abajo, span 2 columnas */}
-              <label className="col-span-2 flex items-center justify-between text-[11px] text-slate-300 cursor-pointer pt-1 mt-1 border-t border-slate-800/50">
-                <span>Agregar Notas al PDF</span>
-                <button
-                  type="button"
-                  onClick={() => requestToggleCondicion('notas', !incluirNotas)}
-                  className={`w-7 h-4 rounded-full transition-colors relative ${incluirNotas ? 'bg-blue-600' : 'bg-slate-700'}`}
-                  aria-label="Toggle Notas"
-                >
-                  <span className={`absolute top-0.5 w-3 h-3 rounded-full bg-white shadow transition-transform ${incluirNotas ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                </button>
-              </label>
-              {incluirNotas && (
-                <textarea
-                  value={notasTexto}
-                  onChange={e => setNotasTexto(e.target.value)}
-                  maxLength={2000}
-                  rows={2}
-                  placeholder="Notas internas / aclaraciones para el cliente..."
-                  className="col-span-2 mt-1 w-full bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors resize-none"
-                />
-              )}
+                </div>
+                {!incluirNotas && (
+                  <div className="mt-1 text-[10px] leading-snug text-slate-600 italic">
+                    Por defecto el PDF no incluye notas. Activa para añadir un mensaje libre al cliente.
+                  </div>
+                )}
+                {incluirNotas && (
+                  <textarea
+                    value={notasTexto}
+                    onChange={e => setNotasTexto(e.target.value)}
+                    maxLength={2000}
+                    rows={2}
+                    placeholder="Notas internas / aclaraciones para el cliente (máx. 2000 caracteres)..."
+                    className="mt-1.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors resize-none"
+                  />
+                )}
+              </div>
             </div>
           </div>
 
