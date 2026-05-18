@@ -786,9 +786,85 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
     }
   }, [cart.length])
 
+  // Mejora #10: scanner barcode global. Pistola USB-HID emula teclado con
+  // input ULTRA-rápido (≥8 chars en <300ms) terminado en Enter. Acumulamos
+  // teclas en un buffer y, al detectar el patrón scanner (no humano), buscamos
+  // el código en /api/ventas/catalogo y auto-agregamos al carrito.
+  //
+  // Anti-conflicto: ignoramos si el foco está en un input/textarea/select
+  // editable (el usuario está tipeando). El scanner emite tan rápido que
+  // ese caso no aplica naturalmente; aún así doble-guard.
+  const scanBufferRef = useRef({ chars: '', lastAt: 0 })
+  useEffect(() => {
+    function onKey(e) {
+      const tag = (e.target?.tagName || '').toLowerCase()
+      const inField = (tag === 'input' || tag === 'textarea' || tag === 'select') && !e.target?.readOnly
+      // Ignoramos si está editando un input. El scanner típicamente NO
+      // está enfocado en ningún campo concreto (focus en body).
+      if (inField) {
+        scanBufferRef.current = { chars: '', lastAt: 0 }
+        return
+      }
+      const now = Date.now()
+      const buf = scanBufferRef.current
+      // Reset si pasaron >300ms entre tecla — humano.
+      if (now - buf.lastAt > 300) buf.chars = ''
+      buf.lastAt = now
+      if (e.key === 'Enter') {
+        const code = buf.chars.trim()
+        buf.chars = ''
+        // Patrón scanner: ≥8 chars + termina con Enter rápido. Si es <8 o
+        // tardó >300ms → no es scanner, ignoramos.
+        if (code.length < 8) return
+        e.preventDefault()
+        ;(async () => {
+          try {
+            const r = await apiFetch(`/api/ventas/catalogo/buscar?q=${encodeURIComponent(code)}&incluir=item,producto&limit=5`)
+            const j = await r.json().catch(() => ({ items: [] }))
+            const all = Array.isArray(j?.items) ? j.items : []
+            // Match exacto por codigo o sku — case-insensitive.
+            const codeUp = code.toUpperCase()
+            const match = all.find(it => String(it.codigo || it.sku || '').toUpperCase() === codeUp)
+            if (match) {
+              addItem(match, 1)
+              toast.success(`Scanner: ${match.nombre}`, { duration: 1500 })
+            } else {
+              toast.error(`Scanner: código "${code}" no encontrado.`, { duration: 2000 })
+            }
+          } catch { toast.error('Scanner: error de red.') }
+        })()
+        return
+      }
+      // Char acumulable: letra/dígito/punto/guión. Filtra modificadores.
+      if (e.key.length === 1 && /[\w\-\.]/.test(e.key)) {
+        buf.chars += e.key
+      } else if (e.key.length > 1) {
+        // Tab, Shift, etc. → ignoramos (no afectan buffer).
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   function addItem(item, qty = 1) {
     posAddItem(item, qty)
     toast.success(`${item.nombre} × ${qty}`, { duration: 1500 })
+    // Mejora #16: fire-and-forget reserva temporal de stock (15 min TTL).
+    // Solo si el item está vinculado a un Producto físico (productoId).
+    // El cron de ventas libera la reserva si la venta no se concreta.
+    if (item.productoId) {
+      apiFetch('/api/inventario/reservas', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({
+          productoId: item.productoId,
+          cantidad:   qty,
+          ttlMin:     15,
+          motivo:     `POS cart · ${item.codigo ?? item.sku ?? ''}`,
+        }),
+      }).catch(() => { /* fire-and-forget; el cron limpia si caduca */ })
+    }
   }
   function updateLine(idx, changes) { posUpdateLine(idx, changes) }
   function removeLine(idx)          { posRemoveLine(idx) }

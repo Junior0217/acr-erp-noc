@@ -235,6 +235,26 @@ function createInventarioService({ repo, generarSiguienteCodigo, auditReq }) {
     return { status: 200, body: result };
   }
 
+  // Mejora #16: reserva temporal POS. El cron de ventas libera al expirar.
+  async function crearReservaPOS(data, user, reqMeta) {
+    const { productoId, cantidad, ttlMin = 15, motivo } = data;
+    const prod = await repo.findProductoForReserva(productoId);
+    if (!prod) throw new InventarioError(404, 'PROD_NOT_FOUND', 'Producto no encontrado.');
+    if (cantidad > prod.stockActual) {
+      throw new InventarioError(409, 'STOCK_INSUFICIENTE',
+        `Stock insuficiente: solo quedan ${prod.stockActual} de ${prod.nombre}.`);
+    }
+    const expiraEn = new Date(Date.now() + ttlMin * 60 * 1000);
+    const motivoFinal = motivo ?? `POS · cajero ${user?.sub ?? 'anon'} · TTL ${ttlMin}min`;
+    const reserva = await repo.crearReservaInventario({
+      productoId, cantidad, expiraEn, motivo: motivoFinal,
+    });
+    auditReq('inventario:reserva_pos', _fakeReqForAudit(reqMeta, user), {
+      reservaId: reserva.id, productoId, cantidad, ttlMin,
+    });
+    return { status: 201, body: reserva };
+  }
+
   return {
     InventarioError,
     formatProducto,
@@ -251,6 +271,7 @@ function createInventarioService({ repo, generarSiguienteCodigo, auditReq }) {
     listPrestamos,
     createPrestamo,
     devolverPrestamo,
+    crearReservaPOS,
   };
 }
 

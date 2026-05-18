@@ -129,6 +129,22 @@ function createInventarioController({ service, schemas }) {
     return service.devolverPrestamo(req.params.id, req.user, reqMeta);
   });
 
+  // Mejora #16: reserva temporal de stock (POS / cotizaciones cortas).
+  // Body: { productoId: Int, cantidad: Int>=1, ttlMin?: 1-60, motivo?: string }
+  // El cron `liberarReservasExpiradas` (ventas/_cron.js cada 5 min) libera
+  // las reservas cuando expiraEn < now. Cero-side-effects en stock real.
+  const reservaSchema = require('zod').z.object({
+    productoId: require('zod').z.coerce.number().int().positive(),
+    cantidad:   require('zod').z.coerce.number().int().min(1).max(9999),
+    ttlMin:     require('zod').z.coerce.number().int().min(1).max(60).optional().default(15),
+    motivo:     require('zod').z.string().max(120).optional(),
+  });
+  const crearReserva = _wrap(async (req) => {
+    const data = reservaSchema.parse(req.body ?? {});
+    const reqMeta = _extractReqMeta(req);
+    return service.crearReservaPOS(data, req.user, reqMeta);
+  });
+
   return {
     listCategorias,
     createCategoria,
@@ -143,6 +159,7 @@ function createInventarioController({ service, schemas }) {
     listPrestamos,
     createPrestamo,
     devolverPrestamo,
+    crearReserva,
   };
 }
 

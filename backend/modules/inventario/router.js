@@ -58,6 +58,10 @@ function createInventarioRouter(deps) {
   router.post('/prestamos',                 verificarJWT, requerirPermiso('ot:editar'), controller.createPrestamo);
   router.patch('/prestamos/:id/devolver',   verificarJWT, requerirPermiso('ot:editar'), controller.devolverPrestamo);
 
+  // ─── Reserva temporal POS (#16) ───────────────────────────────────────────
+  // Cualquier cajero con pos:facturar puede reservar; el cron libera al expirar.
+  router.post('/inventario/reservas',       verificarJWT, requerirPermiso('pos:facturar'), controller.crearReserva);
+
   return router;
 }
 

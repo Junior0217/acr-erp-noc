@@ -181,6 +181,22 @@ function createInventarioRepo(prisma) {
     });
   }
 
+  // Mejora #16: reserva temporal de stock POS. Crea row con expiraEn=
+  // now+ttlMin. El cron del módulo ventas (cada 5 min) marca liberada=true
+  // cuando expiraEn < now. NO modifica stockActual del Producto — es virtual.
+  async function findProductoForReserva(productoId) {
+    return prisma.producto.findUnique({
+      where:  { id: productoId },
+      select: { id: true, nombre: true, sku: true, stockActual: true },
+    });
+  }
+  async function crearReservaInventario({ productoId, cantidad, expiraEn, motivo }) {
+    return prisma.reservaInventario.create({
+      data:   { productoId, cantidad, expiraEn, motivo: motivo ?? null },
+      select: { id: true, productoId: true, cantidad: true, expiraEn: true, motivo: true },
+    });
+  }
+
   return {
     listCategorias,
     createCategoria,
@@ -196,7 +212,10 @@ function createInventarioRepo(prisma) {
     findPrestamo,
     createPrestamoTx,
     devolverPrestamoTx,
+    findProductoForReserva,
+    crearReservaInventario,
   };
 }
 
+// Exporta también helpers de reserva para el factory parent.
 module.exports = createInventarioRepo;

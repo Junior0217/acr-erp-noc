@@ -194,4 +194,28 @@ async function alertarRangosNCF() {
 cron.schedule('0 8 * * *', alertarRangosNCF, { timezone: 'America/Santo_Domingo' })
 
 
+// ─── Mejora #16 — Liberador de reservas de inventario expiradas ─────────────
+// Cada 5 min: marca como liberadas las reservas cuya expiraEn ya pasó. Hoy
+// las cotizaciones crean reservas con TTL 72h y el POS las crea con TTL
+// 15 min. Sin este liberador, las reservas quedan ocupando stock virtual
+// indefinidamente → oversell aparente, badge "stock bajo" falso.
+//
+// Idempotente: re-ejecutar no hace daño (filtra liberada=false).
+async function liberarReservasExpiradas() {
+  try {
+    const ahora = new Date()
+    const result = await prisma.reservaInventario.updateMany({
+      where: { liberada: false, expiraEn: { lt: ahora } },
+      data:  { liberada: true },
+    })
+    if (result.count > 0) {
+      console.log(`[RESERVA CRON] Liberadas ${result.count} reserva(s) expirada(s).`)
+    }
+  } catch (e) {
+    console.error('[RESERVA CRON]', e.message)
+  }
+}
+cron.schedule('*/5 * * * *', liberarReservasExpiradas, { timezone: 'America/Santo_Domingo' })
+
+
 };
