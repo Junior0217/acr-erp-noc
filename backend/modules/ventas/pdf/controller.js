@@ -137,7 +137,40 @@ function createPdfController({ service, schemas, helpers, auditReq }) {
     }
   });
 
-  return { getCotizacionPdf, getFacturaPdf, postBulkPdf };
+  // Mejora #12: preview PDF en memoria (no toca BD, no consume NCF).
+  const previewPdfBodySchema = z.object({
+    clienteId:           z.string().uuid(),
+    esCotizacion:        z.boolean().optional().default(false),
+    applyItbis:          z.boolean().optional().default(true),
+    diasVence:           z.coerce.number().int().min(0).max(365).optional().default(30),
+    descuentoGlobalPct:  z.coerce.number().min(0).max(100).optional().default(0),
+    descuentoGlobalMonto:z.coerce.number().min(0).optional().default(0),
+    condicionesOverride: z.any().optional(),
+    notasOverride:       z.string().max(2000).nullable().optional(),
+    lineas: z.array(z.object({
+      itemCatalogoId:      z.string().uuid().optional().nullable(),
+      productoId:          z.coerce.number().int().positive().optional().nullable(),
+      descripcion:         z.string().max(500).optional(),
+      cantidad:            z.coerce.number().int().min(1).max(9999).default(1),
+      precioUnitario:      z.coerce.number().min(0).optional(),
+      descuentoPorcentaje: z.coerce.number().min(0).max(100).optional().default(0),
+      descuentoMonto:      z.coerce.number().min(0).optional().default(0),
+    })).min(1).max(200),
+  });
+  const postPreviewPdf = _wrap(async (req, res) => {
+    const dto = previewPdfBodySchema.parse(req.body ?? {});
+    const buffer = await service.generarPreviewPdfBuffer(dto);
+    if (!buffer) {
+      return res.status(500).json({ error: 'Error generando preview PDF.' });
+    }
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline; filename="preview.pdf"');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('X-Preview', '1');
+    res.end(buffer);
+  });
+
+  return { getCotizacionPdf, getFacturaPdf, postBulkPdf, postPreviewPdf };
 }
 
 module.exports = createPdfController;

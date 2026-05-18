@@ -30,7 +30,7 @@ function buildPdfModule(deps) {
   const repo       = createPdfRepo(prisma);
   const service    = createPdfService({
     repo, supabase, inlineAssets, renderPdfDoc, generarPdfDocumento,
-    facturaVerifyHash, QRCode,
+    facturaVerifyHash, QRCode, prisma,
   });
   const controller = createPdfController({
     service,

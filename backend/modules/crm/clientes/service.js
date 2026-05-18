@@ -55,19 +55,47 @@ function createClientesService(deps) {
     };
   }
 
-  // Auto-derivación de tipoNcf si el cajero no lo especifica explícitamente.
-  // Reduce ~80% de los errores en el reporte 607 por NCF mal asignado.
+  // Auto-derivación de tipoNcf basado en figura jurídica del cliente.
+  // Sincronizado con el select del frontend `FormularioCliente.jsx`. Cambiar
+  // la spelling aquí o allá rompe el mapping — modificar ambos.
   //
-  // Reglas (Norma DGII 06-2018):
-  //   - tipoEmpresa contiene "gobierno"/"estatal"/"municipal" → Gubernamental (B15)
-  //   - tipoEmpresa contiene "zona franca" o "exonerado"      → Régimen Especial (B14)
-  //   - tiene RNC válido (9 dígitos)                          → Crédito Fiscal (B01)
-  //   - cualquier otro caso (persona física, sin RNC)         → Consumidor Final (B02)
+  // Mapping DGII (Norma 06-2018 + 05-2019):
+  //   SRL, EIRL, SA, SAS                       → Crédito Fiscal (B01)
+  //   Persona Física, Informal                 → Consumidor Final (B02)
+  //   ONG, Zona Franca                         → Régimen Especial (B14)
+  //   Gobierno Central, Ayuntamiento/Municipal → Gubernamental (B15)
+  //   Extranjero                               → Exportaciones (B16)
+  //
+  // El `tipoNcf` enviado explícitamente desde el frontend siempre prevalece.
+  // Fallback heurístico (RNC válido → B01, sino B02) cubre clientes legacy
+  // que no tengan `tipoEmpresa` seteado.
+  const _MAP_TIPO_EMPRESA_NCF = {
+    'srl':                          'Crédito Fiscal',
+    'sa':                           'Crédito Fiscal',
+    'eirl':                         'Crédito Fiscal',
+    'sas':                          'Crédito Fiscal',
+    'persona física':               'Consumidor Final',
+    'persona fisica':               'Consumidor Final',
+    'informal / sin comprobante':   'Consumidor Final',
+    'informal':                     'Consumidor Final',
+    'ong / sin fines de lucro':     'Régimen Especial',
+    'ong':                          'Régimen Especial',
+    'zona franca':                  'Régimen Especial',
+    'gobierno central':             'Gubernamental',
+    'ayuntamiento / municipal':     'Gubernamental',
+    'ayuntamiento':                 'Gubernamental',
+    'extranjero':                   'Exportaciones',
+  };
   function _derivarTipoNcf(data) {
     if (data.tipoNcf && data.tipoNcf.trim()) return data.tipoNcf;
-    const empresa = String(data.tipoEmpresa ?? '').toLowerCase();
-    if (/(gobierno|estatal|municipal|gubern)/.test(empresa)) return 'Gubernamental';
-    if (/(zona\s*franca|exonerad|regimen\s*especial|régimen\s*especial)/.test(empresa)) return 'Régimen Especial';
+    const empresa = String(data.tipoEmpresa ?? '').toLowerCase().trim();
+    // 1) Lookup exacto en mapping (cubre el select del frontend).
+    if (_MAP_TIPO_EMPRESA_NCF[empresa]) return _MAP_TIPO_EMPRESA_NCF[empresa];
+    // 2) Heurística por substring (clientes legacy con texto libre).
+    if (/(gobierno|estatal|municipal|gubern|ayuntamiento)/.test(empresa)) return 'Gubernamental';
+    if (/(extranjer|exportac)/.test(empresa))                             return 'Exportaciones';
+    if (/(zona\s*franca|ong|exonerad|regimen\s*especial|régimen\s*especial)/.test(empresa)) return 'Régimen Especial';
+    // 3) Fallback por RNC: persona jurídica → B01, persona física → B02.
     const rnc = String(data.rnc ?? '').replace(/\D/g, '');
     if (rnc.length === 9) return 'Crédito Fiscal';
     return 'Consumidor Final';

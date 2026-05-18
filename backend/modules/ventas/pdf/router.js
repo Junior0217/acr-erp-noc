@@ -10,6 +10,7 @@
 
 const express   = require('express');
 const rateLimit = require('express-rate-limit');
+const { reqFingerprint } = require('../../../shared/helpers');
 
 function createPdfRouter({ controller, middlewares }) {
   if (!controller)  throw new Error('createPdfRouter: controller required');
@@ -46,6 +47,20 @@ function createPdfRouter({ controller, middlewares }) {
     verificarJWT,
     requerirPermiso('factura:ver'),
     controller.postBulkPdf,
+  );
+
+  // POST /api/ventas/facturas/preview-pdf — preview en memoria (#12).
+  // NO consume NCF, NO persiste factura, NO descuenta stock. Solo render.
+  // Cualquier JWT válido puede consumirlo — el cliente lo invoca al abrir
+  // el modal de Checkout para que el cajero vea cómo queda antes de emitir.
+  const previewLimiter = rateLimit({
+    windowMs: 60_000, max: 30,
+    keyGenerator: (req) => req.user?.sub ? `preview:${req.user.sub}` : reqFingerprint(req),
+    message: { error: 'Demasiados previews PDF. Espera unos segundos.' },
+  });
+  router.post('/ventas/facturas/preview-pdf',
+    verificarJWT, previewLimiter,
+    controller.postPreviewPdf,
   );
 
   return router;

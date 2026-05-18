@@ -131,7 +131,7 @@ async function _mapWithConcurrency(items, limit, fn) {
 function createPdfService(deps) {
   const {
     repo, supabase, inlineAssets, renderPdfDoc, generarPdfDocumento,
-    facturaVerifyHash, QRCode,
+    facturaVerifyHash, QRCode, prisma,
   } = deps;
   if (!repo)                                        throw new Error('createPdfService: repo required');
   if (typeof inlineAssets !== 'function')           throw new Error('createPdfService: inlineAssets required');
@@ -139,6 +139,9 @@ function createPdfService(deps) {
   if (typeof generarPdfDocumento !== 'function')    throw new Error('createPdfService: generarPdfDocumento required');
   if (typeof facturaVerifyHash !== 'function')      throw new Error('createPdfService: facturaVerifyHash required');
   if (!QRCode)                                      throw new Error('createPdfService: QRCode required');
+  // prisma opcional — solo necesario para previewPDF (mejora #12). Si falta,
+  // la fn lanza al ejecutarse, no en factory init.
+  const prismaPdf = prisma;
 
   // ─── QR cache (LRU simple) ────────────────────────────────────────────────
   const _qrCache = new Map();
@@ -431,6 +434,111 @@ function createPdfService(deps) {
     }
   }
 
+  // Mejora #12: genera PDF buffer en memoria a partir de un DTO de carrito,
+  // SIN tocar BD (no inserta factura, no consume NCF). El cajero ve cómo
+  // queda el documento antes de emitir → cero typos en facturas reales.
+  //
+  // Se hidratan:
+  //   - cliente desde clienteId
+  //   - producto/item de cada línea
+  // Se construye un objeto factura-mock con noFactura='PREVIEW' + ncf=null
+  // que pasa por buildPdfData → renderPdfDoc → generarPdfDocumento.
+  async function generarPreviewPdfBuffer(dto) {
+    if (!dto?.clienteId) throw new PdfError(400, 'CLIENTE_REQUIRED', 'clienteId requerido para preview.');
+    if (!Array.isArray(dto.lineas) || dto.lineas.length === 0) {
+      throw new PdfError(400, 'LINEAS_REQUIRED', 'Se requiere al menos una línea.');
+    }
+    const cliente = await prismaPdf.cliente.findUnique({
+      where:  { id: dto.clienteId },
+      select: {
+        id: true, noCliente: true, razonSocial: true, nombreContacto: true,
+        rnc: true, cedula: true, direccion: true, sector: true, provincia: true,
+        telefonoPrincipal: true, email: true, tipoNcf: true,
+      },
+    });
+    if (!cliente) throw new PdfError(404, 'CLIENTE_NOT_FOUND', 'Cliente no encontrado.');
+
+    // Hidrata productos + items para descripciones reales en PDF.
+    const productoIds = [...new Set(dto.lineas.filter(l => l.productoId).map(l => l.productoId))];
+    const itemIds     = [...new Set(dto.lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))];
+    const [productos, itemsCat] = await Promise.all([
+      productoIds.length ? prismaPdf.producto.findMany({
+        where:  { id: { in: productoIds } },
+        select: { id: true, sku: true, nombre: true, precio: true },
+      }) : [],
+      itemIds.length ? prismaPdf.itemCatalogo.findMany({
+        where:  { id: { in: itemIds } },
+        select: { id: true, codigo: true, nombre: true, precio: true, productoId: true,
+                  producto: { select: { id: true, sku: true, nombre: true } } },
+      }) : [],
+    ]);
+    const pMap = Object.fromEntries(productos.map(p => [p.id, p]));
+    const iMap = Object.fromEntries(itemsCat.map(it => [it.id, it]));
+
+    // Construye líneas con shape compatible con buildPdfData.
+    let subtotal = 0;
+    const lineas = dto.lineas.map(l => {
+      const cantidad = Math.max(1, Number(l.cantidad) || 1);
+      const p = l.productoId ? pMap[l.productoId] : null;
+      const it = l.itemCatalogoId ? iMap[l.itemCatalogoId] : null;
+      const precio = Number(l.precioUnitario ?? it?.precio ?? p?.precio ?? 0);
+      const pct  = Number(l.descuentoPorcentaje ?? 0);
+      const mon  = Number(l.descuentoMonto ?? 0);
+      const efectivo = Math.max(0, precio * (1 - pct / 100) - mon);
+      subtotal += efectivo * cantidad;
+      return {
+        producto:    p ?? it?.producto ?? null,
+        itemCatalogo: it ? { sku: it.codigo, nombre: it.nombre, descripcion: null } : null,
+        descripcion: l.descripcion ?? it?.nombre ?? p?.nombre ?? 'Item',
+        cantidad,
+        precioUnitario: efectivo,
+      };
+    });
+    subtotal = Math.round(subtotal * 100) / 100;
+    const aplicarItbis = dto.applyItbis !== false;
+    const itbisAmt = aplicarItbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0;
+    const descGlobalPct   = Number(dto.descuentoGlobalPct ?? 0);
+    const descGlobalMonto = Number(dto.descuentoGlobalMonto ?? 0);
+    const descGlobal = descGlobalPct > 0 ? subtotal * (descGlobalPct / 100) : descGlobalMonto;
+    const subtotalConDesc = Math.max(0, subtotal - descGlobal);
+    const total = Math.round((subtotalConDesc + (aplicarItbis ? subtotalConDesc * 0.18 : 0)) * 100) / 100;
+    const diasVence = Math.max(0, Number(dto.diasVence ?? 30));
+
+    // Mock factura — id falso, sin persistir. verifyHash se calcula a partir
+    // de campos ya seteados (PDF lo muestra para coherencia visual; nunca se
+    // persistirá porque la fn NO toca BD).
+    const facturaMock = {
+      id:           'preview-' + Date.now().toString(36),
+      noFactura:    dto.esCotizacion ? 'COT-PREVIEW' : 'FAC-PREVIEW',
+      ncf:          null,
+      tipoNcf:      cliente.tipoNcf ?? null,
+      clienteId:    cliente.id,
+      cliente,
+      lineas,
+      subtotal:     subtotalConDesc,
+      itbis:        aplicarItbis ? Math.round(subtotalConDesc * 0.18 * 100) / 100 : 0,
+      total,
+      fechaEmision: new Date(),
+      fechaVence:   diasVence > 0 ? new Date(Date.now() + diasVence * 86_400_000) : null,
+      estado:       'Borrador',
+      esCotizacion: !!dto.esCotizacion,
+      esNotaCredito: false,
+      esNotaDebito:  false,
+      facturaOrigen: null,
+      notas:         dto.notasOverride ?? null,
+      condiciones:   dto.condicionesOverride ?? {},
+      snapshot:      null,
+    };
+    const data = await buildPdfData(facturaMock);
+    // Marca visual PREVIEW para que el cajero no confunda con una factura real.
+    data._preview = true;
+    const html = renderPdfDoc({
+      tipo:     facturaMock.esCotizacion ? 'cotizacion' : 'factura',
+      ...data,
+    });
+    return generarPdfDocumento(html);
+  }
+
   return {
     PdfError,
     PDF_TEMPLATE_VERSION,
@@ -444,6 +552,7 @@ function createPdfService(deps) {
     fetchOrRenderDocument,
     renderVerifyQr,
     prerenderPdfsBatch,
+    generarPreviewPdfBuffer,
     _mapWithConcurrency,
   };
 }

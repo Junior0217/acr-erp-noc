@@ -398,7 +398,22 @@ const LABEL =
 const SECTION =
   "text-xs font-bold text-blue-400 uppercase tracking-widest border-b border-blue-600/20 pb-1 mb-3 col-span-full flex items-center gap-2";
 
-const TIPOS_EMPRESA = ["SRL", "SA", "EIRL", "SAS", "Unipersonal"];
+// Figuras jurídicas RD. El backend `_derivarTipoNcf` mapea cada una a su
+// tipoNcf DGII canónico (B01/B02/B14/B15/B16). Cambiar la spelling aquí
+// rompe el mapping — sincronizar también en backend/modules/crm/clientes/service.js.
+const TIPOS_EMPRESA = [
+  "Persona Física",
+  "Informal / Sin Comprobante",
+  "EIRL",
+  "SRL",
+  "SA",
+  "SAS",
+  "Gobierno Central",
+  "Ayuntamiento / Municipal",
+  "ONG / Sin fines de lucro",
+  "Zona Franca",
+  "Extranjero",
+];
 const TIPOS_CLIENTE  = ["Empresarial", "Pyme", "Corporativo", "Residencial", "Gobierno"];
 const TIPOS_SERVICIO = [
   "WISP (Internet)", "CCTV & Videovigilancia", "Redes Estructuradas",

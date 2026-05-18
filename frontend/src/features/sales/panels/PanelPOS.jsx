@@ -240,6 +240,21 @@ function ItemDetailModal({ item, onClose, onConfirm }) {
 }
 
 // ── CatalogSearch ─────────────────────────────────────────────────────────────
+// Mejora #11: ordenamiento personalizado por cajero. Persistencia local —
+// cada navegador/cuenta-OS guarda su propio orden. Drag desde la grip-handle
+// reordena. Drag desde el card body sigue funcionando para drop al carrito.
+const POS_CAT_ORDER_KEY = 'acr_pos_catalog_order'
+function loadCatalogOrder() {
+  try {
+    const raw = localStorage.getItem(POS_CAT_ORDER_KEY)
+    const parsed = raw ? JSON.parse(raw) : []
+    return Array.isArray(parsed) ? parsed.filter(x => typeof x === 'string') : []
+  } catch { return [] }
+}
+function saveCatalogOrder(ids) {
+  try { localStorage.setItem(POS_CAT_ORDER_KEY, JSON.stringify(ids.slice(0, 500))) } catch {}
+}
+
 function CatalogSearch({ onAdd }) {
   const [q, setQ]                 = useState('')
   const [items, setItems]         = useState([])
@@ -247,6 +262,11 @@ function CatalogSearch({ onAdd }) {
   const [tab, setTab]             = useState('all') // all | articulos | servicios
   const [filtroCat, setFiltroCat] = useState('')
   const [detailItem, setDetailItem] = useState(null)
+  // Orden personalizado del cajero (favoritos arriba). Inicializa una vez
+  // desde localStorage. Cada reorder mediante drag-handle persiste.
+  const [customOrder, setCustomOrder] = useState(() => loadCatalogOrder())
+  const [dragOverId, setDragOverId]   = useState(null)
+  const reorderSourceRef = useRef(null)
 
   const cargar = useCallback(async (query) => {
     setLoading(true)
@@ -267,8 +287,37 @@ function CatalogSearch({ onAdd }) {
   const matchTab = it => tab === 'articulos' ? (it.tipo === 'Recurrente' || it.tipo === 'VentaUnica')
                        : tab === 'servicios' ? it.tipo === 'Servicio'
                        : true
-  const filtered = items.filter(it => matchTab(it) && (!filtroCat || it.categoria === filtroCat))
+  const filteredRaw = items.filter(it => matchTab(it) && (!filtroCat || it.categoria === filtroCat))
+  // Aplica el orden personalizado: items en customOrder aparecen primero
+  // en el orden guardado; los nuevos (no presentes) al final preservando
+  // su orden de servidor.
+  const orderIndex = new Map(customOrder.map((id, i) => [id, i]))
+  const filtered = [...filteredRaw].sort((a, b) => {
+    const ai = orderIndex.has(a.id) ? orderIndex.get(a.id) : Number.POSITIVE_INFINITY
+    const bi = orderIndex.has(b.id) ? orderIndex.get(b.id) : Number.POSITIVE_INFINITY
+    return ai - bi
+  })
   const categoriasDisponibles = Array.from(new Set(items.filter(matchTab).map(it => it.categoria).filter(Boolean)))
+
+  // Reorder helper: mueve `sourceId` justo antes de `targetId` (o al final
+  // si target=null). Persiste localStorage. Solo afecta IDs visibles en
+  // `filtered` ahora — items futuros que no estén en customOrder se acomodan
+  // al final automáticamente.
+  function reorderItems(sourceId, targetId) {
+    if (!sourceId || sourceId === targetId) return
+    const visibleIds = filtered.map(it => it.id)
+    const src = visibleIds.indexOf(sourceId)
+    if (src === -1) return
+    const next = visibleIds.filter(id => id !== sourceId)
+    const tgt = targetId ? next.indexOf(targetId) : next.length
+    next.splice(tgt === -1 ? next.length : tgt, 0, sourceId)
+    setCustomOrder(next)
+    saveCatalogOrder(next)
+  }
+  function resetCatalogOrder() {
+    setCustomOrder([])
+    saveCatalogOrder([])
+  }
 
   function handleConfirm(item, qty) {
     onAdd(item, qty)
@@ -354,8 +403,49 @@ function CatalogSearch({ onAdd }) {
                 }
                 if (!descPreview) descPreview = String(item.descripcion).replace(/[*_`#-]/g, '').trim()
               }
+              const isDragOver = dragOverId === item.id
               return (
-                <button key={item.id}
+                <div key={item.id}
+                  onDragOver={e => {
+                    // Solo aceptamos drops de reorder (no del cart→item).
+                    if (e.dataTransfer.types.includes('application/x-acr-reorder')) {
+                      e.preventDefault()
+                      setDragOverId(item.id)
+                    }
+                  }}
+                  onDragLeave={() => setDragOverId(null)}
+                  onDrop={e => {
+                    const sourceId = e.dataTransfer.getData('application/x-acr-reorder')
+                    if (sourceId) {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      reorderItems(sourceId, item.id)
+                      setDragOverId(null)
+                      reorderSourceRef.current = null
+                    }
+                  }}
+                  className={`group relative ${isDragOver ? 'ring-2 ring-blue-400 ring-offset-2 ring-offset-slate-900 rounded-xl' : ''}`}>
+                  {/* Mejora #11: drag-handle para reorder. Solo este botón usa
+                      el formato 'application/x-acr-reorder' — el body sigue
+                      arrastrando el item al cart con 'application/x-acr-item'. */}
+                  <button
+                    type="button"
+                    draggable
+                    onDragStart={e => {
+                      try {
+                        e.dataTransfer.setData('application/x-acr-reorder', item.id)
+                        e.dataTransfer.effectAllowed = 'move'
+                      } catch {}
+                      reorderSourceRef.current = item.id
+                    }}
+                    onDragEnd={() => { setDragOverId(null); reorderSourceRef.current = null }}
+                    title="Arrastra para reordenar (orden persiste por cajero)"
+                    aria-label="Mover item"
+                    className="absolute -top-1 -left-1 z-20 w-5 h-5 rounded bg-slate-900/80 border border-slate-700/60 text-slate-500 hover:text-slate-200 hover:bg-slate-800 transition-colors flex items-center justify-center cursor-grab active:cursor-grabbing opacity-0 group-hover:opacity-100"
+                  >
+                    <GripVertical size={11} />
+                  </button>
+                  <button
                   onClick={() => setDetailItem(item)}
                   draggable={!sinStock}
                   onDragStart={e => {
@@ -363,7 +453,7 @@ function CatalogSearch({ onAdd }) {
                     try { e.dataTransfer.setData('application/x-acr-item', JSON.stringify(item)) } catch {}
                     e.dataTransfer.effectAllowed = 'copy'
                   }}
-                  className={`group relative text-left bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : 'cursor-grab active:cursor-grabbing'}`}>
+                  className={`relative text-left w-full bg-slate-800/40 hover:bg-slate-800/80 border ${meta.border} rounded-xl p-2.5 transition-all hover:border-blue-500/50 hover:shadow-lg hover:shadow-blue-600/10 flex flex-col gap-2 ${sinStock ? 'opacity-60' : 'cursor-grab active:cursor-grabbing'}`}>
                   {/* Badge tipoItem (esquina superior derecha) */}
                   <span className={`absolute top-1.5 right-1.5 z-10 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[8px] font-bold uppercase tracking-wider ${
                     esArticulo
@@ -402,6 +492,7 @@ function CatalogSearch({ onAdd }) {
                     </div>
                   </div>
                 </button>
+                </div>
               )
             })}
           </div>
@@ -1237,6 +1328,28 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
           submitting={submitting}
           onClose={() => setShowCheckout(false)}
           onSubmit={(pagos, pinSupervisor) => submit(false, { pagos, pinSupervisor })}
+          previewDto={{
+            clienteId:           cliente?.id,
+            esCotizacion:        false,
+            applyItbis,
+            diasVence,
+            descuentoGlobalPct:  descGlobalPct,
+            descuentoGlobalMonto: descGlobalMonto,
+            condicionesOverride: advancedOpen ? {
+              ...(validezTexto.trim()  && mostrarValidez  ? { validez:  { incluir: true, texto: validezTexto.trim().slice(0, 500) } }  : {}),
+              ...(formaPagoTexto.trim()                   ? { pago:     { incluir: true, texto: formaPagoTexto.trim().slice(0, 500) } } : {}),
+              ...(entregaTexto.trim()  && mostrarEntrega  ? { entrega:  { incluir: true, texto: entregaTexto.trim().slice(0, 500) } }  : {}),
+              ...(garantiaTexto.trim() && mostrarGarantia ? { garantia: { incluir: true, texto: garantiaTexto.trim().slice(0, 500) } } : {}),
+            } : undefined,
+            notasOverride: (mostrarNotas && notasTexto.trim()) ? notasTexto.trim().slice(0, 2000) : '',
+            lineas: (Array.isArray(cart) ? cart : []).map(l => ({
+              ...(l.itemCatalogoId ? { itemCatalogoId: l.itemCatalogoId } : { productoId: l.productoId }),
+              cantidad:            l.cantidad,
+              precioUnitario:      l.precioUnitario,
+              descuentoPorcentaje: l.descuentoPorcentaje ?? 0,
+              descuentoMonto:      l.descuentoMonto ?? 0,
+            })),
+          }}
         />
       )}
 
@@ -1255,8 +1368,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   )
 }
 
-// ── CheckoutModal: cobro mixto + PIN supervisor ──────────────────────────────
-function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitting, onClose, onSubmit }) {
+// ── CheckoutModal: cobro mixto + PIN supervisor + preview PDF (#12) ─────────
+function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitting, onClose, onSubmit, previewDto }) {
   const [pagos, setPagos] = useState([{ metodo: 'Efectivo', monto: total, refer: '' }])
   const [pinSupervisor, setPinSupervisor] = useState('')
   const [showPin, setShowPin] = useState(false)
@@ -1264,6 +1377,53 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
   const diff = Math.round((total - sumaPagos) * 100) / 100
   const sumaOk = Math.abs(diff) < 0.01
   const puedeFacturar = sumaOk && (!necesitaPIN || pinSupervisor.trim().length >= 4)
+
+  // #12 — Preview PDF en vivo. Fetch a /preview-pdf con el DTO actual,
+  // convierte a blob URL y muestra en <iframe>. Debounce 400ms para no
+  // saturar el backend (Puppeteer es costoso). El URL anterior se revoca
+  // antes de setear el nuevo para evitar leaks de memoria.
+  const [previewUrl, setPreviewUrl] = useState(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
+  const [previewError, setPreviewError] = useState(null)
+  useEffect(() => {
+    if (!previewDto?.clienteId || !Array.isArray(previewDto.lineas) || previewDto.lineas.length === 0) return
+    let cancel = false
+    let blobToRevoke = null
+    const t = setTimeout(async () => {
+      setPreviewLoading(true); setPreviewError(null)
+      try {
+        const r = await apiFetch('/api/ventas/facturas/preview-pdf', {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/pdf' },
+          body:    JSON.stringify(previewDto),
+        })
+        if (!r.ok) {
+          const j = await r.json().catch(() => ({}))
+          if (!cancel) setPreviewError(j.error ?? `Preview falló (HTTP ${r.status}).`)
+          return
+        }
+        const blob = await r.blob()
+        const url  = URL.createObjectURL(blob)
+        blobToRevoke = url
+        if (!cancel) {
+          setPreviewUrl(prev => { try { if (prev) URL.revokeObjectURL(prev) } catch {}; return url })
+        } else {
+          try { URL.revokeObjectURL(url) } catch {}
+        }
+      } catch (e) {
+        if (!cancel) setPreviewError('Error de red al generar preview.')
+      } finally {
+        if (!cancel) setPreviewLoading(false)
+      }
+    }, 400)
+    return () => {
+      cancel = true
+      clearTimeout(t)
+      if (blobToRevoke) { try { URL.revokeObjectURL(blobToRevoke) } catch {} }
+    }
+  }, [JSON.stringify(previewDto ?? {})])
+  // Cleanup último blob al desmontar.
+  useEffect(() => () => { if (previewUrl) try { URL.revokeObjectURL(previewUrl) } catch {} }, []) // eslint-disable-line react-hooks/exhaustive-deps
 
   function addPago()        { setPagos(p => [...(Array.isArray(p) ? p : []), { metodo: 'Transferencia', monto: Math.max(diff, 0), refer: '' }]) }
   function removePago(i)    { setPagos(p => (Array.isArray(p) ? p : []).filter((_, idx) => idx !== i)) }
@@ -1277,7 +1437,7 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-md bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
+      <div className="relative z-10 w-full max-w-5xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl flex flex-col max-h-[92vh]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800">
           <div>
             <h2 className="text-sm font-bold text-slate-100 uppercase tracking-wider">Cobro / Facturar</h2>
@@ -1286,7 +1446,8 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
           <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
         </div>
 
-        <div className="p-5 space-y-4 overflow-y-auto">
+        <div className="flex flex-col lg:flex-row gap-0 overflow-hidden">
+        <div className="lg:w-[40%] p-5 space-y-4 overflow-y-auto lg:border-r lg:border-slate-800">
           {necesitaPIN && (
             <div className="flex items-start gap-2 p-3 rounded-lg bg-amber-900/20 border border-amber-700/40 text-xs text-amber-300">
               <span className="w-1.5 h-1.5 rounded-full mt-1.5 bg-amber-400 flex-shrink-0" />
@@ -1340,6 +1501,42 @@ function CheckoutModal({ total, necesitaPIN, descuentoPct, maxPct = 15, submitti
                 className="w-full bg-slate-800 border border-amber-700/40 rounded-lg px-3 py-2 text-sm font-mono text-center tracking-[0.4em] text-slate-100 focus:outline-none focus:border-amber-500" />
             </div>
           )}
+        </div>
+
+        {/* #12 — Preview PDF en vivo. Iframe muestra cómo quedará la factura
+            antes de emitir. Se regenera con debounce 400ms al cambiar lineas
+            o condiciones del cart. NO toca BD (no consume NCF). */}
+        <div className="lg:flex-1 lg:min-h-[60vh] min-h-[40vh] bg-slate-950 relative flex flex-col">
+          <div className="px-3 py-2 border-b border-slate-800 flex items-center justify-between flex-shrink-0">
+            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1.5">
+              <FileText size={11} className="text-blue-400" /> Preview PDF (no emite todavía)
+            </span>
+            <span className="text-[9px] font-mono text-slate-600">
+              {previewLoading ? 'Regenerando…' : previewError ? '⚠ error' : previewUrl ? '✓ actualizado' : '—'}
+            </span>
+          </div>
+          <div className="flex-1 relative overflow-hidden">
+            {previewLoading && !previewUrl && (
+              <div className="absolute inset-0 flex items-center justify-center text-slate-500 z-10">
+                <Loader2 size={18} className="animate-spin text-blue-400" />
+              </div>
+            )}
+            {previewError && !previewUrl && (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-amber-400 text-xs gap-1 p-4 text-center">
+                <AlertCircle size={20} />
+                <span>{previewError}</span>
+              </div>
+            )}
+            {previewUrl && (
+              <iframe
+                title="Preview PDF"
+                src={previewUrl}
+                className="absolute inset-0 w-full h-full bg-white"
+                sandbox="allow-same-origin"
+              />
+            )}
+          </div>
+        </div>
         </div>
 
         <div className="flex justify-end gap-2 px-5 py-4 border-t border-slate-800">
