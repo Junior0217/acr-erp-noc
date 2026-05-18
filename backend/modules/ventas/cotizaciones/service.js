@@ -20,6 +20,7 @@ class CotError extends Error {
 }
 
 function createCotizacionesService(deps) {
+  const { cotEventoSvc } = deps;
   const {
     repo, auditReq, decryptTOTP, authenticator, syncMikrotik,
     persistirVerifyHash, procesarFacturaPOS, pdfService, totalLinea,
@@ -266,6 +267,32 @@ function createCotizacionesService(deps) {
       }
     }
     auditReq('cotizacion:etapa', _fakeReqForAudit(reqMeta, user), { id: f.id, etapa, reservasLiberadas });
+
+    // Mejora #4 — append-evento al hash-chain. Map etapa → accion canónica.
+    if (cotEventoSvc) {
+      const ETAPA_TO_ACCION = {
+        'Enviada':     'enviar',
+        'Aceptada':    'aceptar',
+        'Perdida':     'perder',
+        'Convertida':  'convertir',
+        'Negociacion': 'editar',
+        'Borrador':    'editar',
+      };
+      const accion = ETAPA_TO_ACCION[etapa] ?? 'editar';
+      try {
+        await cotEventoSvc.appendEvento({
+          cotizacionId: f.id,
+          accion,
+          snapshot: cotEventoSvc.snapshotFromFactura(f),
+          user,
+          reqMeta,
+        });
+      } catch (e) {
+        // No bloquea la operación de etapa — el hash-chain es para auditoría
+        // post-hoc. Loggeamos y seguimos.
+        console.error('[COT EVENTO chain]', e.message);
+      }
+    }
     return { status: 200, body: { ...f, reservasLiberadas } };
   }
 

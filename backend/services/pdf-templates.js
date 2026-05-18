@@ -707,10 +707,35 @@ function renderDocumento(opts) {
         Para emisión de factura formal se requiere confirmación por escrito.
       </div>`
 
+  // Mejora #1: CSP nonce dinámico. El template tiene SOLO inline-style del CSS
+  // arriba (no inline-script). Con CSP, cualquier <script> que se cuele en
+  // descripciones de líneas (vía exploit XSS) se bloquea — Puppeteer no
+  // ejecuta nada que no tenga el nonce correcto.
+  //
+  // Política:
+  //   default-src 'none'           → cero requests externos (data exfil)
+  //   img-src 'self' data: https:  → logos + QRs base64
+  //   style-src 'nonce-${X}' 'unsafe-inline'
+  //                               → permite <style> con nonce; 'unsafe-inline'
+  //                               → es necesario para inline `style="..."` que
+  //                               → el template usa para colores condicionales
+  //   script-src 'nonce-${X}'      → exige nonce; bloquea cualquier <script> inyectado
+  //   base-uri 'none'              → previene <base href> hijack
+  //   frame-ancestors 'none'       → no embeddable en iframes
+  const cspNonce = require('crypto').randomBytes(16).toString('base64');
+  const csp = [
+    "default-src 'none'",
+    "img-src 'self' data: https:",
+    `style-src 'nonce-${cspNonce}' 'unsafe-inline'`,
+    `script-src 'nonce-${cspNonce}'`,
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+  ].join('; ');
   return `<!DOCTYPE html>
 <html lang="es"><head>
   <meta charset="UTF-8"><title>${escape(tipoLabel)} ${escape(numero)}</title>
-  <style>${CSS}</style>
+  <meta http-equiv="Content-Security-Policy" content="${csp}">
+  <style nonce="${cspNonce}">${CSS}</style>
 </head><body>
 <div class="sheet">
 

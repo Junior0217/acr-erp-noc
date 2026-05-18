@@ -22,7 +22,7 @@ const cotizacionesSchemas          = require('./schema');
 function createCotizacionesRouter(deps) {
   const {
     prisma, middlewares, auditReq, helpers, limiters,
-    persistirVerifyHash, pdfService,
+    persistirVerifyHash, pdfService, cotEventoSvc,
   } = deps;
   if (!prisma)       throw new Error('createCotizacionesRouter: prisma required');
   if (!middlewares)  throw new Error('createCotizacionesRouter: middlewares required');
@@ -42,9 +42,11 @@ function createCotizacionesRouter(deps) {
     repo, auditReq, decryptTOTP, authenticator,
     syncMikrotik:        _syncMikrotik,
     persistirVerifyHash, procesarFacturaPOS, pdfService,
-    totalLinea,
+    totalLinea, cotEventoSvc,
   });
-  const controller = createCotizacionesController({ service, schemas: cotizacionesSchemas, helpers });
+  const controller = createCotizacionesController({
+    service, schemas: cotizacionesSchemas, helpers, cotEventoSvc,
+  });
 
   const router = express.Router();
 
@@ -59,6 +61,13 @@ function createCotizacionesRouter(deps) {
 
   // ─── Pipeline Kanban (Fase 1.4) ─────────────────────────────────────────
   router.patch('/cotizaciones/:id/etapa',      verificarJWT, requerirPermiso('venta:editar_cotizaciones'),    controller.patchEtapaCotizacion);
+
+  // ─── Mejora #4 — Historial hash-chain + verify ──────────────────────────
+  if (cotEventoSvc && controller.getCotizacionHistorial) {
+    router.get('/cotizaciones/:id/historial',
+      verificarJWT, requerirPermiso('venta:ver_cotizaciones'),
+      controller.getCotizacionHistorial);
+  }
 
   return router;
 }

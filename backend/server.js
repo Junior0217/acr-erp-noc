@@ -176,6 +176,11 @@ const _bomService = createBomExpansionSvc({ prisma });
 // deducir stock; el router de inventario expone /stock/stream que suscribe.
 const createStockStreamHub = require('./shared/services/stock-stream.service');
 const _stockHub = createStockStreamHub();
+
+// #4: hash-chain Cotizaciones. Append cada evento (crear/editar/etapa) +
+// endpoint /cotizaciones/:id/historial valida la cadena (anti-tamper).
+const createCotEventoSvc = require('./shared/services/cotizacion-evento.service');
+const _cotEventoSvc = createCotEventoSvc({ prisma });
 const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
   = createVerifyHashService({ prisma });
 
@@ -926,6 +931,7 @@ const _routerDeps = {
   // BOM expansion centralizado (Fase 2.4) — pos + ordenes lo consumen.
   bomService:       _bomService,
   stockHub:         _stockHub,
+  cotEventoSvc:     _cotEventoSvc,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,

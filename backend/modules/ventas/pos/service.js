@@ -338,6 +338,19 @@ function createPosService(deps) {
       facturaId: factura.id, total: Number(factura.total),
     });
 
+    // Mejora #4 — primer evento del hash-chain para cotizaciones recién creadas.
+    // No bloquea la operación si falla (auditoría post-hoc).
+    if (dto.esCotizacion && deps.cotEventoSvc) {
+      try {
+        await deps.cotEventoSvc.appendEvento({
+          cotizacionId: factura.id,
+          accion: 'crear',
+          snapshot: deps.cotEventoSvc.snapshotFromFactura(factura),
+          user, reqMeta,
+        });
+      } catch (e) { console.error('[COT EVENTO crear]', e.message); }
+    }
+
     // Post-commit: reservas (cotización) o stock deduction (factura real).
     if (dto.esCotizacion) {
       try {

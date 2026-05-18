@@ -1106,6 +1106,47 @@ model AuditCaja {
   @@index([hash])
 }
 
+// ─── Mejora #4 — Hash-chain Cotizaciones ─────────────────────────────────────
+//
+// Cada cambio de estado o edición de una cotización (Factura con
+// esCotizacion=true) genera una fila acá con snapshot canónico + hash-chain
+// HMAC-SHA256 anclado al prevHash de la fila anterior de la MISMA cotización.
+//
+// Casos cubiertos:
+//   - 'crear'   : primera fila al emitir cotización. prevHash=null, hash sobre snapshot inicial.
+//   - 'editar'  : se modificó cualquier campo de la cotización pre-conversión.
+//   - 'enviar'  : cajero la mandó al cliente (cambio etapaPipeline → 'Enviada').
+//   - 'aceptar' : cliente confirmó (etapaPipeline → 'Aceptada').
+//   - 'convertir' : conversión a factura real (etapaPipeline → 'Convertida').
+//   - 'perder'  : etapaPipeline → 'Perdida'.
+//
+// Si alguien edita la fila Factura directamente con SQL, la cadena se rompe
+// (siguiente verifyHashChain detecta el tampering). Auditor puede invocar
+// GET /api/cotizaciones/:id/historial para validar la cadena.
+model CotizacionEvento {
+  id           Int      @id @default(autoincrement())
+  cotizacionId String
+  accion       String // 'crear' | 'editar' | 'enviar' | 'aceptar' | 'convertir' | 'perder'
+  // Snapshot canónico del estado al momento de la acción. Incluye total +
+  // lineas count + etapaPipeline + condiciones snapshot. JSON minified —
+  // determinista para reproducir el hash.
+  snapshot     Json
+  // HMAC-SHA256(canonical(snapshot) + prevHash) firmado con AUDIT_SECRET.
+  hash         String
+  // Hash de la fila anterior de la MISMA cotizacionId (ordered por createdAt
+  // ASC). Null en la primera fila (acción='crear').
+  prevHash     String?
+  empleadoId   Int?
+  ip           String?
+  ua           String?
+  createdAt    DateTime @default(now())
+
+  @@index([cotizacionId])
+  @@index([cotizacionId, createdAt])
+  @@index([accion])
+  @@index([hash])
+}
+
 // ─── Trazabilidad serializada (CCTV, routers, NVR) ───────────────────────────
 model ProductoSerial {
   id            Int       @id @default(autoincrement())

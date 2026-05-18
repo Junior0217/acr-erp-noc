@@ -43,7 +43,7 @@ function _wrap(fn) {
   };
 }
 
-function createCotizacionesController({ service, schemas, helpers }) {
+function createCotizacionesController({ service, schemas, helpers, cotEventoSvc }) {
   if (!service) throw new Error('createCotizacionesController: service required');
   if (!schemas) throw new Error('createCotizacionesController: schemas required');
   if (!helpers) throw new Error('createCotizacionesController: helpers required');
@@ -93,7 +93,21 @@ function createCotizacionesController({ service, schemas, helpers }) {
     return service.cambiarEtapaCotizacion(req.params.id, dto, req.user, reqMeta);
   });
 
-  return { listCotizaciones, postRevivir, getFactura, listFacturas, patchEstadoFactura, patchEtapaCotizacion };
+  // Mejora #4 — Historial hash-chain. GET /cotizaciones/:id/historial.
+  const getCotizacionHistorial = _wrap(async (req) => {
+    _assertUUID(req.params.id);
+    if (!cotEventoSvc) {
+      return { status: 503, body: { error: 'Servicio de eventos no disponible.' } };
+    }
+    const result = await cotEventoSvc.verifyChain(req.params.id);
+    return { status: 200, body: result };
+  });
+
+  return {
+    listCotizaciones, postRevivir, getFactura, listFacturas,
+    patchEstadoFactura, patchEtapaCotizacion,
+    getCotizacionHistorial,
+  };
 }
 
 module.exports = createCotizacionesController;

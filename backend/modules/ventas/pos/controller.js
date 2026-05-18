@@ -113,7 +113,7 @@ function createPosController({ service, schemas, prisma, stockHub }) {
     }
     const dto     = posVentaSchema.parse(req.body);
     const reqMeta = _extractReqMeta(req);
-    const result  = await service.procesarVentaPOS(dto, req.user, reqMeta, { prisma, stockHub });
+    const result  = await service.procesarVentaPOS(dto, req.user, reqMeta, { prisma, stockHub, cotEventoSvc });
     if (ikey && result?.status === 201) _idempSet(ikey, result);
     return result;
   });
