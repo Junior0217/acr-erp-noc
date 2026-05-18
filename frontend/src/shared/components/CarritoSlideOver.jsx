@@ -225,6 +225,14 @@ export default function CarritoSlideOver() {
   const [incluirCond, setIncluirCond] = useState({ validez: true, pago: true, entrega: true, garantia: true })
   const [incluirNotas, setIncluirNotas] = useState(false)
   const [notasTexto,   setNotasTexto]   = useState('')
+  // Paridad #5 con POS: textareas de override por condición. Si quedan vacíos,
+  // el backend hace fallback al default de MiEmpresa via mergeCondiciones. Si
+  // el cajero escribe override (tras PIN), se persiste en condicionesOverride.
+  // El bloqueo aplica idéntico al POS — solo editable cuando descuentosUnlocked.
+  const [overrideValidez,  setOverrideValidez]  = useState('')
+  const [overridePago,     setOverridePago]     = useState('')
+  const [overrideEntrega,  setOverrideEntrega]  = useState('')
+  const [overrideGarantia, setOverrideGarantia] = useState('')
   // pendingCondToggle: { campo: 'validez'|'pago'|...|'notas'|'itbis', nextValue: bool }
   // Se vacía al abrir/cancelar el modal. Al confirmar el PIN, aplicamos el
   // toggle al estado real (incluirCond/incluirNotas/applyItbis vía updateCartMeta).
@@ -241,6 +249,10 @@ export default function CarritoSlideOver() {
       setIncluirCond({ validez: true, pago: true, entrega: true, garantia: true })
       setIncluirNotas(false)
       setNotasTexto('')
+      setOverrideValidez('')
+      setOverridePago('')
+      setOverrideEntrega('')
+      setOverrideGarantia('')
     }
   }, [open])
 
@@ -297,12 +309,23 @@ export default function CarritoSlideOver() {
     const descuento = descValor > 0
       ? (descTipo === 'pct' ? { descuentoGlobalPct: descValor } : { descuentoGlobalMonto: descValor })
       : {}
-    // condicionesOverride: solo enviamos campos donde el usuario tocó el
-    // switch (incluir=false). Los que siguen true los omitimos para que
-    // el backend caiga al default de empresa via mergeCondiciones.
+    // condicionesOverride: 3 ramas por condición.
+    //   1) Switch OFF → { incluir: false, texto: null } (oculta del PDF).
+    //   2) Switch ON + texto override no vacío → { incluir: true, texto } (override del default empresa).
+    //   3) Switch ON sin texto → se omite la clave (backend cae al default empresa).
     const condicionesOverride = {}
+    const overridesMap = {
+      validez:  overrideValidez,
+      pago:     overridePago,
+      entrega:  overrideEntrega,
+      garantia: overrideGarantia,
+    }
     for (const k of ['validez','pago','entrega','garantia']) {
-      if (incluirCond[k] === false) condicionesOverride[k] = { incluir: false, texto: null }
+      if (incluirCond[k] === false) {
+        condicionesOverride[k] = { incluir: false, texto: null }
+      } else if (overridesMap[k]?.trim()) {
+        condicionesOverride[k] = { incluir: true, texto: overridesMap[k].trim().slice(0, 500) }
+      }
     }
     // notasOverride: si el switch está OFF (default), enviamos string vacío
     // para que el backend persista null y el PDF oculte la sección. Si está
@@ -456,6 +479,33 @@ export default function CarritoSlideOver() {
                     <div className={`mt-1 text-[10px] leading-snug line-clamp-2 break-words ${on ? (hasDefault ? 'text-slate-400' : 'text-amber-400/80 italic') : 'text-slate-600 line-through'}`}>
                       <span className="mr-1 font-semibold text-slate-500">Default:</span>{def}
                     </div>
+                    {/* Override editable (paridad #5 con POS). Solo visible si la
+                        condición está incluida + no es obligatoria. Bloqueado
+                        hasta autorización por PIN supervisor — clic abre modal. */}
+                    {on && !obligatorio && (() => {
+                      const overrideVal = k === 'validez'  ? overrideValidez
+                                        : k === 'pago'     ? overridePago
+                                        : k === 'entrega'  ? overrideEntrega
+                                        : overrideGarantia
+                      const overrideSet = k === 'validez'  ? setOverrideValidez
+                                        : k === 'pago'     ? setOverridePago
+                                        : k === 'entrega'  ? setOverrideEntrega
+                                        : setOverrideGarantia
+                      return (
+                        <input
+                          type="text"
+                          maxLength={500}
+                          value={overrideVal}
+                          onChange={e => overrideSet(e.target.value)}
+                          disabled={!descuentosUnlocked}
+                          onClick={() => { if (!descuentosUnlocked) setPinModalOpen(true) }}
+                          placeholder={!descuentosUnlocked
+                            ? 'Override · clic para autorizar (PIN supervisor)'
+                            : `Sobrescribir "${label}" para este documento (vacío = default empresa)`}
+                          className="mt-1.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+                        />
+                      )
+                    })()}
                   </div>
                 )
               })}

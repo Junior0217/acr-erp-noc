@@ -406,6 +406,9 @@ export default function PanelFacturas({ highlightId = null }) {
   const [bulkBusy, setBulkBusy] = useState(false)
   // Details modal (slide-over)
   const [detailFactura, setDetailFactura] = useState(null)
+  // #20: NC en 1-click directo desde la fila — abre el modal NC sin pasar
+  // por el detalle de factura. Reusa el ModalNotaModificatoria existente.
+  const [quickNcFactura, setQuickNcFactura] = useState(null)
 
   const fetchFacturas = useCallback(async () => {
     setLoading(true)
@@ -711,6 +714,17 @@ export default function PanelFacturas({ highlightId = null }) {
                           </button>
                         </div>
                       )}
+                      {/* #20 — Devolución 1-click. Sólo para facturas reales
+                          Emitida/Pagada que no sean ya NC/ND ni cotización. */}
+                      {!f.esCotizacion && !f.esNotaCredito && !f.esNotaDebito &&
+                       (f.estado === 'Emitida' || f.estado === 'Pagada') &&
+                       updating !== f.id && (
+                        <button onClick={() => setQuickNcFactura(f)} disabled={!!updating}
+                          title="Devolución 1-click — emite Nota de Crédito DGII B04 (motivo + PIN)"
+                          className="ml-1.5 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition-all disabled:opacity-40 shadow-md shadow-red-600/30">
+                          ↩ Devolución
+                        </button>
+                      )}
                       {/* God Mode: revertir factura Pagada/Anulada (solo sistema:owner) */}
                       {isOwner && (f.estado === 'Pagada' || f.estado === 'Anulada') && updating !== f.id && (
                         <button onClick={() => revertirFactura(f)} disabled={!!updating}
@@ -797,6 +811,20 @@ export default function PanelFacturas({ highlightId = null }) {
           downloadingId={downloadingId}
           onCondicionesGuardadas={() => fetchFacturas()}
           onNotaCreditoEmitida={(nc) => { fetchFacturas(); if (nc?.id) previewPDF(nc) }}
+        />
+      )}
+
+      {/* #20 — Modal NC 1-click. Reusa ModalNotaModificatoria del detalle. */}
+      {quickNcFactura && (
+        <ModalNotaModificatoria
+          mode="nc"
+          factura={quickNcFactura}
+          onClose={() => setQuickNcFactura(null)}
+          onSuccess={(doc) => {
+            setQuickNcFactura(null)
+            fetchFacturas()
+            if (doc?.id) previewPDF(doc)
+          }}
         />
       )}
     </div>
