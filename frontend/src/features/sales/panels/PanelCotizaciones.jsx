@@ -161,6 +161,30 @@ function normCondField(v) {
   return { incluir: !!v.incluir, texto: String(v.texto ?? '') }
 }
 
+// Parser de descripción de línea (idéntico al template PDF + PanelPOS).
+// Acepta:
+//   - JSON v=1: `{"v":1,"titulo":"X","bullets":["a","b"]}` → renderiza título + bullets
+//   - Markdown / texto plano: lo limpia mínimamente y lo muestra tal cual
+// Sin esto, el frontend mostraba el JSON crudo en el detalle.
+function descripcionPartes(raw) {
+  if (raw == null) return { titulo: '', bullets: [] }
+  if (typeof raw === 'string' && raw.length > 1 && raw[0] === '{') {
+    try {
+      const o = JSON.parse(raw)
+      if (o?.v === 1) {
+        return {
+          titulo:  String(o.titulo ?? '').trim(),
+          bullets: Array.isArray(o.bullets) ? o.bullets.map(b => String(b).trim()).filter(Boolean) : [],
+        }
+      }
+    } catch {}
+  }
+  // Legacy: split por saltos, strip prefijos markdown.
+  const lines = String(raw).split(/\r?\n/).map(l => l.replace(/^[-*•·]\s+/, '').replace(/^\d+\.\s+/, '').trim()).filter(Boolean)
+  if (lines.length === 0) return { titulo: '', bullets: [] }
+  return { titulo: lines[0].replace(/^\*\*(.+)\*\*$/, '$1'), bullets: lines.slice(1) }
+}
+
 function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
   const { clearCart, updateCartMeta, addItem, setOpen } = useCart()
   const [loading, setLoading]   = useState(true)
@@ -273,9 +297,9 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
   const totalAmt      = preview?.totales?.total ?? 0
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
-      <div className="relative z-10 bg-slate-900 border border-slate-700 rounded-xl shadow-2xl w-full max-w-lg flex flex-col max-h-[90vh]">
+    <div className="fixed inset-0 z-40 flex justify-end" role="dialog" aria-modal="true">
+      <div className="absolute inset-0 bg-black/70 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative h-full w-full sm:w-[560px] bg-slate-950 border-l border-slate-800 flex flex-col shadow-2xl">
 
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 flex-shrink-0">
@@ -338,18 +362,36 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                 </div>
                 {(Array.isArray(preview.lineas) ? preview.lineas : []).map((l, i) => {
                   const lineTotal = Math.round(l.precioUnitario * l.cantidad * 100) / 100
+                  const desc = descripcionPartes(l._meta?.descripcion)
                   return (
-                    <div key={i} className="grid grid-cols-12 gap-2 px-3 py-2.5 items-center">
-                      <div className="col-span-6">
-                        <div className="text-sm text-slate-200 leading-tight">{l._meta?.descripcion}</div>
+                    <div key={i} className="grid grid-cols-12 gap-2 px-3 py-2.5 items-start">
+                      <div className="col-span-6 min-w-0">
+                        {/* Render estructurado: título destacado + bullets compactos.
+                            Antes mostraba el JSON crudo {v:1,titulo:...}. */}
+                        {desc.titulo && (
+                          <div className="text-sm font-medium text-slate-100 leading-tight">{desc.titulo}</div>
+                        )}
+                        {desc.bullets.length > 0 && (
+                          <ul className="mt-0.5 space-y-0.5">
+                            {desc.bullets.map((b, j) => (
+                              <li key={j} className="text-[11px] text-slate-400 leading-snug flex gap-1.5">
+                                <span className="text-slate-600 select-none">·</span>
+                                <span>{b}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                        {!desc.titulo && desc.bullets.length === 0 && (
+                          <div className="text-sm text-slate-400 italic">— sin descripción —</div>
+                        )}
                         {l._meta?.precioActualizado && (
-                          <div className="text-[10px] text-amber-400 mt-0.5">
+                          <div className="text-[10px] text-amber-400 mt-1">
                             RD$ {fmt(l._meta.precioEnCotizacion)} → RD$ {fmt(l._meta.precioActual)}
                           </div>
                         )}
                       </div>
-                      <div className="col-span-2 text-center text-slate-400 text-sm">×{l.cantidad}</div>
-                      <div className="col-span-4 text-right font-mono text-sm text-slate-300">RD$ {fmt(lineTotal)}</div>
+                      <div className="col-span-2 text-center text-slate-400 text-sm pt-0.5">×{l.cantidad}</div>
+                      <div className="col-span-4 text-right font-mono text-sm text-slate-300 pt-0.5">RD$ {fmt(lineTotal)}</div>
                     </div>
                   )
                 })}
