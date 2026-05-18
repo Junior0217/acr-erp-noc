@@ -202,6 +202,7 @@ const navItems = [
   { to: '/mapa',         label: 'Mapa NOC',       icon: Globe,           sub: 'Cobertura · Geo',            permiso: 'mapa:ver'       },
   { to: '/reportes',     label: 'Reportes',       icon: BarChart2,       sub: 'KPIs · Exportar',            permiso: 'reportes:ver'   },
   { to: '/dgii',         label: 'DGII Fiscal',    icon: FileText,        sub: 'Reportes 606 · 607',          permiso: 'dgii:reportar'  },
+  { to: '/dgii/compras', label: 'Compras (DGII)', icon: ShoppingCart,    sub: 'Gastos a Suplidores · 606',   permiso: 'dgii:reportar'  },
   { to: '/empresa',      label: 'Mi Empresa',     icon: Building2,       sub: 'Identidad · Logos · Firma',  permiso: 'empresa:ver'    },
   { to: '/configuracion',label: 'Configuración',  icon: Settings,        sub: 'Perfil · Seguridad',         permiso: null             },
 ]
