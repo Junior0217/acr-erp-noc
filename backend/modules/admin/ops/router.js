@@ -79,6 +79,24 @@ function createOpsRouter(deps) {
   // ─── Verify público anti-tamper ────────────────────────────────────────
   router.get('/publico/verify/:hash',       verifyLimiter, controller.verifyFactura);
 
+  // Mejora #7 — Public key Ed25519 para validación offline. Cualquier cliente
+  // (auditor con teléfono, herramienta externa) puede descargar la public key
+  // y verificar la firma del verifyHash sin contactar al server.
+  router.get('/publico/verify/public-key', verifyLimiter, (_req, res) => {
+    try {
+      const { getPublicKeyPem, getPublicKeyRawBase64 } = require('../../../shared/services/ed25519-sign.service');
+      res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 día
+      res.json({
+        algorithm: 'Ed25519',
+        publicKeyPem: getPublicKeyPem(),
+        publicKeyRaw: getPublicKeyRawBase64(),
+        note: 'Verifica firma sobre: facturaVerifyPayload(f) + "|" + facturaVerifyHash(f)',
+      });
+    } catch (e) {
+      res.status(503).json({ error: 'Servicio de firma no disponible.' });
+    }
+  });
+
   // ─── Portal PDF v2 ─────────────────────────────────────────────────────
   router.get('/portal/facturas/:id/pdf-v2', verificarPortalJWT, controller.portalFacturaPdfV2);
 

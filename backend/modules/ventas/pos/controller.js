@@ -54,7 +54,7 @@ function _wrap(fn) {
   };
 }
 
-function createPosController({ service, schemas, prisma, stockHub }) {
+function createPosController({ service, schemas, prisma, stockHub, cotEventoSvc, ncfReservation }) {
   if (!service)  throw new Error('createPosController: service required');
   if (!schemas)  throw new Error('createPosController: schemas required');
   if (!prisma)   throw new Error('createPosController: prisma required');
@@ -104,17 +104,55 @@ function createPosController({ service, schemas, prisma, stockHub }) {
   const postVenta = _wrap(async (req) => {
     const ikey = _idempKey(req);
     if (ikey) {
+      // Layer 1: Map in-memory (instance-local, latency ~0).
       const cached = _idempGet(ikey);
       if (cached) {
-        // Devolvemos exactamente la misma respuesta que la original. Header
-        // X-Idempotent indica al frontend que NO es una factura nueva.
         return { status: 200, body: cached.body ?? cached, headers: { 'X-Idempotent': '1' } };
+      }
+      // Layer 2: Redis cross-process (#18). Solo si está habilitado.
+      // Si otro proceso ya completó la emisión con este key → CACHED.
+      // Si otro proceso está procesando → PENDING (timeout 5s polling).
+      // Si NEW → seguimos al allocate normal.
+      if (ncfReservation?.enabled) {
+        const raw = String(req.headers['idempotency-key'] ?? '').trim();
+        const slot = await ncfReservation.acquireSlot({ userId: req.user?.sub, idemKey: raw });
+        if (slot.state === 'CACHED') {
+          return {
+            status: 200,
+            body: { reusedFromCache: true, ref: slot.value },
+            headers: { 'X-Idempotent': '1', 'X-Idempotent-Source': 'redis' },
+          };
+        }
+        if (slot.state === 'PENDING') {
+          return {
+            status: 409,
+            body: { error: 'Otra venta con la misma clave está en proceso. Reintenta en unos segundos.', code: 'IDEMP_PENDING' },
+          };
+        }
       }
     }
     const dto     = posVentaSchema.parse(req.body);
     const reqMeta = _extractReqMeta(req);
-    const result  = await service.procesarVentaPOS(dto, req.user, reqMeta, { prisma, stockHub, cotEventoSvc });
-    if (ikey && result?.status === 201) _idempSet(ikey, result);
+    let result;
+    try {
+      result = await service.procesarVentaPOS(dto, req.user, reqMeta, { prisma, stockHub, cotEventoSvc });
+    } catch (e) {
+      // Si falló, liberar slot Redis para que retry pueda intentar de nuevo.
+      if (ikey && ncfReservation?.enabled) {
+        const raw = String(req.headers['idempotency-key'] ?? '').trim();
+        await ncfReservation.releaseSlot({ userId: req.user?.sub, idemKey: raw });
+      }
+      throw e;
+    }
+    if (ikey && result?.status === 201) {
+      _idempSet(ikey, result);
+      // Marca completed en Redis con el ref de la factura emitida.
+      if (ncfReservation?.enabled) {
+        const raw = String(req.headers['idempotency-key'] ?? '').trim();
+        const ref = `${result.body?.noFactura ?? '?'}:${result.body?.ncf ?? '?'}`;
+        await ncfReservation.completeSlot({ userId: req.user?.sub, idemKey: raw, value: ref });
+      }
+    }
     return result;
   });
 

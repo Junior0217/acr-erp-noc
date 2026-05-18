@@ -181,6 +181,11 @@ const _stockHub = createStockStreamHub();
 // endpoint /cotizaciones/:id/historial valida la cadena (anti-tamper).
 const createCotEventoSvc = require('./shared/services/cotizacion-evento.service');
 const _cotEventoSvc = createCotEventoSvc({ prisma });
+
+// #18: Redis-backed idempotency NCF cross-process. Si Redis no disponible,
+// el service entra modo passthrough — pos/controller fallback al Map local.
+const createNcfReservation = require('./shared/services/ncf-reservation.service');
+const _ncfReservation = createNcfReservation({ redis: redisClient });
 const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
   = createVerifyHashService({ prisma });
 
@@ -932,6 +937,7 @@ const _routerDeps = {
   bomService:       _bomService,
   stockHub:         _stockHub,
   cotEventoSvc:     _cotEventoSvc,
+  ncfReservation:   _ncfReservation,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,

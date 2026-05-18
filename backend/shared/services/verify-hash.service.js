@@ -67,18 +67,52 @@ function _hashDbg(tag, f, payload, hash) {
   });
 }
 
-function facturaVerifyHash(f, dbgTag) {
+function facturaVerifyPayload(f) {
   if (!f) return '';
-  const payload = [
+  return [
     _normStr(f.id),
     _normStr(f.noFactura),
     _normStr(f.ncf),
     _normMoney(f.total),
     _normDateYMD(f.fechaEmision),
   ].join('|');
+}
+
+function facturaVerifyHash(f, dbgTag) {
+  if (!f) return '';
+  const payload = facturaVerifyPayload(f);
   const hash = crypto.createHmac('sha256', _resolveVerifySecret()).update(payload).digest('hex').slice(0, 24);
   if (dbgTag) _hashDbg(dbgTag, f, payload, hash);
   return hash;
+}
+
+// Mejora #7 — Ed25519 doble-firma. Aditiva al HMAC. La firma se calcula
+// sobre payload + hmac concatenado: alterar uno invalida la firma.
+// Lazy-require para no romper boot si la lib no está disponible.
+let _ed25519Svc = null;
+function _getEd25519() {
+  if (_ed25519Svc !== null) return _ed25519Svc;
+  try {
+    _ed25519Svc = require('./ed25519-sign.service');
+  } catch (e) {
+    console.warn('[VERIFY HASH] Ed25519 service no disponible:', e.message);
+    _ed25519Svc = { signVerifyPayload: () => null, verifyVerifySignature: () => false };
+  }
+  return _ed25519Svc;
+}
+
+function facturaVerifySignature(f) {
+  if (!f) return null;
+  const payload = facturaVerifyPayload(f);
+  const hmac    = facturaVerifyHash(f);
+  return _getEd25519().signVerifyPayload(`${payload}|${hmac}`);
+}
+
+function verifyFacturaSignature(f, signatureB64) {
+  if (!f || !signatureB64) return false;
+  const payload = facturaVerifyPayload(f);
+  const hmac    = facturaVerifyHash(f);
+  return _getEd25519().verifyVerifySignature(`${payload}|${hmac}`, signatureB64);
 }
 
 function createVerifyHashService({ prisma }) {
@@ -113,11 +147,19 @@ function createVerifyHashService({ prisma }) {
     return factura;
   }
 
-  return { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash };
+  return {
+    _normStr, _normMoney, _normDateYMD,
+    facturaVerifyHash, facturaVerifyPayload,
+    facturaVerifySignature, verifyFacturaSignature,
+    persistirVerifyHash,
+  };
 }
 
 module.exports = createVerifyHashService;
-module.exports.facturaVerifyHash = facturaVerifyHash;
-module.exports._normStr = _normStr;
-module.exports._normMoney = _normMoney;
-module.exports._normDateYMD = _normDateYMD;
+module.exports.facturaVerifyHash      = facturaVerifyHash;
+module.exports.facturaVerifyPayload   = facturaVerifyPayload;
+module.exports.facturaVerifySignature = facturaVerifySignature;
+module.exports.verifyFacturaSignature = verifyFacturaSignature;
+module.exports._normStr               = _normStr;
+module.exports._normMoney             = _normMoney;
+module.exports._normDateYMD           = _normDateYMD;
