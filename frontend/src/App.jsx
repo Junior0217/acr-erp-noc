@@ -24,6 +24,7 @@ const RRHH            = lazy(() => import('@features/hr/RRHH'))
 const CRM             = lazy(() => import('@features/crm/CRM'))
 const MapaNOC         = lazy(() => import('@features/map/MapaNOC'))
 const Reportes        = lazy(() => import('@features/reports/Reportes'))
+const ReportesDGII    = lazy(() => import('@features/dgii/ReportesDGII'))
 const Configuracion   = lazy(() => import('@features/settings/Configuracion'))
 const Servicios       = lazy(() => import('@features/services/Servicios'))
 const Taller          = lazy(() => import('@features/workshop/Taller'))
@@ -102,6 +103,7 @@ function AppRoutes() {
           <Route path="crm"       element={<Suspense fallback={<PageLoader />}><CRM /></Suspense>} />
           <Route path="mapa"      element={<Suspense fallback={<PageLoader />}><MapaNOC /></Suspense>} />
           <Route path="reportes"  element={<Suspense fallback={<PageLoader />}><Reportes /></Suspense>} />
+          <Route path="dgii"      element={<Suspense fallback={<PageLoader />}><ReportesDGII /></Suspense>} />
           <Route path="empresa"   element={<Suspense fallback={<PageLoader />}><MiEmpresa /></Suspense>} />
           <Route path="configuracion" element={<Suspense fallback={<PageLoader />}><Configuracion /></Suspense>} />
         </Route>

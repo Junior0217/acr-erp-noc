@@ -4,7 +4,7 @@ import {
   LayoutDashboard, ShoppingCart, PackageSearch, Boxes, BookOpen,
   Users, Handshake, Globe, BarChart2, Settings, Menu, X, ChevronRight,
   Wrench, AlertTriangle, ClipboardList, LogOut, ShieldCheck, Loader2,
-  Building2,
+  Building2, FileText,
 } from 'lucide-react'
 import { useAuth } from '../contexts/AuthContext'
 import { useCart } from '../contexts/CartContext'
@@ -201,6 +201,7 @@ const navItems = [
   { to: '/crm',          label: 'CRM',            icon: Handshake,       sub: 'Clientes · Suplidores',      permiso: 'crm:ver'        },
   { to: '/mapa',         label: 'Mapa NOC',       icon: Globe,           sub: 'Cobertura · Geo',            permiso: 'mapa:ver'       },
   { to: '/reportes',     label: 'Reportes',       icon: BarChart2,       sub: 'KPIs · Exportar',            permiso: 'reportes:ver'   },
+  { to: '/dgii',         label: 'DGII Fiscal',    icon: FileText,        sub: 'Reportes 606 · 607',          permiso: 'dgii:reportar'  },
   { to: '/empresa',      label: 'Mi Empresa',     icon: Building2,       sub: 'Identidad · Logos · Firma',  permiso: 'empresa:ver'    },
   { to: '/configuracion',label: 'Configuración',  icon: Settings,        sub: 'Perfil · Seguridad',         permiso: null             },
 ]
