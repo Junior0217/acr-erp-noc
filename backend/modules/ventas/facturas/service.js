@@ -57,6 +57,7 @@ function createFacturasService(deps) {
     repo, auditReq, ncfService,
     generarSiguienteCodigo, persistirVerifyHash,
     buildFacturaPDFBuffer, sendFacturaPDF, pdfService,
+    ownerAlerts,
   } = deps;
   if (!repo)                                          throw new Error('createFacturasService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createFacturasService: auditReq required');
@@ -224,6 +225,53 @@ function createFacturasService(deps) {
       stockRestaurado: resultado.stockRestaurado,
       motivo,
     });
+
+    // Mejora #5 — Owner God-Mode Alert. NC emitida = factura origen anulada
+    // + (típicamente) stock restaurado. Si stockRestaurado=false en una NC
+    // que debería retornar productos, el owner debe enterarse YA — eso es
+    // exactamente el fraude clásico "anulo factura, no devuelvo producto".
+    if (ownerAlerts) {
+      const stockProducts = Array.isArray(origen.lineas)
+        ? origen.lineas.some(l => l.productoId && Number(l.cantidad) > 0)
+        : false;
+      const ncSinDevolucion = stockProducts && !resultado.stockRestaurado;
+      ownerAlerts.tryEmit({
+        tipo:         'nc.emitida',
+        severity:     ncSinDevolucion ? 'critical' : 'warn',
+        resourceType: 'factura',
+        resourceId:   String(resultado.nc.id),
+        payload: {
+          ncId:            resultado.nc.id,
+          ncfNC:           resultado.nc.ncf,
+          origenId:        origen.id,
+          ncfOrigen:       origen.ncf,
+          noFacturaOrigen: origen.noFactura,
+          total:           Number(origen.total),
+          stockRestaurado: resultado.stockRestaurado,
+          tieneProductos:  stockProducts,
+          ncSinDevolucion,
+          motivo:          motivo ?? null,
+        },
+        user, reqMeta,
+      });
+      // Y la factura origen quedó Anulada como consecuencia.
+      ownerAlerts.tryEmit({
+        tipo:         'factura.anulada',
+        severity:     'warn',
+        resourceType: 'factura',
+        resourceId:   String(origen.id),
+        payload: {
+          facturaId:  origen.id,
+          noFactura:  origen.noFactura,
+          ncf:        origen.ncf,
+          total:      Number(origen.total),
+          via:        'nota-credito',
+          ncIdRelacionada: resultado.nc.id,
+          motivo:     motivo ?? null,
+        },
+        user, reqMeta,
+      });
+    }
     await _appendAuditCaja({
       tipo:       'nota_credito_emitida',
       empleadoId: user?.sub ?? null,

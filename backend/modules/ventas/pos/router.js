@@ -39,7 +39,7 @@ function createPosRouter(deps) {
   }
 
   const repo       = createPosRepo(prisma);
-  const service    = createPosService({ repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService });
+  const service    = createPosService({ repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService, ownerAlerts: deps.ownerAlerts });
   const controller = createPosController({ service, schemas: posSchemas, prisma, stockHub, cotEventoSvc, ncfReservation });
 
   // pinVerifyLimiter LOCAL: 10 intentos por usuario (o fingerprint hash) en

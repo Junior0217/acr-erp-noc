@@ -21,16 +21,17 @@
  */
 
 const express = require('express');
-const createFacturasRepo       = require('./repo');
-const createFacturasService    = require('./service');
-const createFacturasController = require('./controller');
-const facturasSchemas          = require('./schema');
+const createFacturasRepo          = require('./repo');
+const createFacturasService       = require('./service');
+const createFacturasController    = require('./controller');
+const facturasSchemas             = require('./schema');
+const createIdempotencyMiddleware = require('../../../shared/middlewares/idempotency.middleware');
 
 function createFacturasRouter(deps) {
   const {
     prisma, middlewares, auditReq, helpers, limiters,
     ncfService, generarSiguienteCodigo, persistirVerifyHash,
-    pdfService, buildFacturaPDFBuffer, sendFacturaPDF,
+    pdfService, buildFacturaPDFBuffer, sendFacturaPDF, ncfReservation,
   } = deps;
   if (!prisma)                                          throw new Error('createFacturasRouter: prisma required');
   if (!middlewares)                                     throw new Error('createFacturasRouter: middlewares required');
@@ -47,16 +48,28 @@ function createFacturasRouter(deps) {
     repo, auditReq, ncfService,
     generarSiguienteCodigo, persistirVerifyHash,
     buildFacturaPDFBuffer, sendFacturaPDF, pdfService,
+    ownerAlerts: deps.ownerAlerts,
   });
   const controller = createFacturasController({ service, schemas: facturasSchemas, prisma, helpers });
 
   const router = express.Router();
 
-  router.post('/facturas',                  verificarJWT, billingLimiter, requerirPermiso('factura:emitir'),  controller.postFactura);
-  router.post('/facturas/:id/revertir',     verificarJWT, billingLimiter, requerirPermiso('sistema:owner'),   controller.postRevertir);
-  router.post('/facturas/:id/nota-credito', verificarJWT, billingLimiter,                                      controller.postNotaCredito);
-  router.post('/facturas/:id/nota-debito',  verificarJWT, billingLimiter,                                      controller.postNotaDebito);
-  router.patch('/facturas/:id/condiciones', verificarJWT,                  requerirPermiso('factura:editar'), controller.patchCondiciones);
+  // Mejora #4 — Idempotencia universal. Cualquier botón que mueva NCF,
+  // stock o dinero debe protegerse contra doble-clic. Aplica a:
+  //   - POST /facturas              (emisión desde OT)
+  //   - POST /facturas/:id/nota-credito (B04 — afecta NCF + stock)
+  //   - POST /facturas/:id/nota-debito  (B03 — afecta NCF)
+  // required=false durante migración; subir a true cuando el front mande
+  // crypto.randomUUID() como Idempotency-Key en cada submit.
+  const idemEmision = createIdempotencyMiddleware({ scope: 'factura-emit',   ncfReservation, required: false });
+  const idemNC      = createIdempotencyMiddleware({ scope: 'nota-credito',   ncfReservation, required: false });
+  const idemND      = createIdempotencyMiddleware({ scope: 'nota-debito',    ncfReservation, required: false });
+
+  router.post('/facturas',                  verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), idemEmision,  controller.postFactura);
+  router.post('/facturas/:id/revertir',     verificarJWT, billingLimiter, requerirPermiso('sistema:owner'),                controller.postRevertir);
+  router.post('/facturas/:id/nota-credito', verificarJWT, billingLimiter, idemNC,                                           controller.postNotaCredito);
+  router.post('/facturas/:id/nota-debito',  verificarJWT, billingLimiter, idemND,                                           controller.postNotaDebito);
+  router.patch('/facturas/:id/condiciones', verificarJWT,                  requerirPermiso('factura:editar'),               controller.patchCondiciones);
 
   return router;
 }

@@ -186,6 +186,13 @@ const _cotEventoSvc = createCotEventoSvc({ prisma });
 // el service entra modo passthrough — pos/controller fallback al Map local.
 const createNcfReservation = require('./shared/services/ncf-reservation.service');
 const _ncfReservation = createNcfReservation({ redis: redisClient });
+
+// Mejora #5 — Owner God-Mode Alerts. Singleton broadcaster + persistencia
+// + webhook outbound HMAC-firmado. Inyectado en deps wiring para que
+// facturas/pos/inventario disparen `tryEmit({tipo, ...})` en eventos
+// críticos. Endpoints viven en modules/admin/owner-alerts/.
+const createOwnerAlertsSvc = require('./shared/services/owner-alerts.service');
+const _ownerAlerts = createOwnerAlertsSvc({ prisma });
 const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
   = createVerifyHashService({ prisma });
 
@@ -938,6 +945,7 @@ const _routerDeps = {
   stockHub:         _stockHub,
   cotEventoSvc:     _cotEventoSvc,
   ncfReservation:   _ncfReservation,
+  ownerAlerts:      _ownerAlerts,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,

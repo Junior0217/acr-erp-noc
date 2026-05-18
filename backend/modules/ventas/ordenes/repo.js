@@ -13,8 +13,14 @@
  *     service rechace deletes de fotos sobre OTs inmutables.
  */
 
+const createMovimientoInventarioService = require('../../../shared/services/movimiento-inventario.service');
+
 function createOrdenesRepo(prisma) {
   if (!prisma) throw new Error('createOrdenesRepo: prisma required');
+
+  // Mejora #2 — Hash-chain de movimientos. Toda Salida (OT en ejecución)
+  // y toda Entrada (devolución/cancelación) queda firmada en cadena.
+  const _movInvSvc = createMovimientoInventarioService({ prisma });
 
   // ─── OrdenTrabajo ────────────────────────────────────────────────────────
   async function listOrdenesTrabajo({ where, take, skip }) {
@@ -127,8 +133,11 @@ function createOrdenesRepo(prisma) {
   }
 
   async function crearKardexSalidaTx(tx, productoId, cantidad) {
-    return tx.movimientoInventario.create({
-      data: { productoId: Number(productoId), tipo: 'Salida', cantidad },
+    return _movInvSvc.appendMovimiento(tx, {
+      productoId: Number(productoId),
+      tipo:       'Salida',
+      cantidad:   Number(cantidad),
+      motivo:     'orden-trabajo:salida',
     });
   }
 
@@ -203,8 +212,12 @@ function createOrdenesRepo(prisma) {
   }
 
   async function crearMovimientoOITx(tx, productoId, tipo, cantidad, ordenInstalacionId) {
-    return tx.movimientoInventario.create({
-      data: { productoId, tipo, cantidad, ordenInstalacionId },
+    return _movInvSvc.appendMovimiento(tx, {
+      productoId: Number(productoId),
+      tipo,
+      cantidad:   Number(cantidad),
+      ordenInstalacionId: ordenInstalacionId ?? null,
+      motivo:     `orden-instalacion:${tipo.toLowerCase()}`,
     });
   }
 

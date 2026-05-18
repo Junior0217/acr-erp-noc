@@ -11,8 +11,14 @@
  * pero NO conoce el detalle SQL.
  */
 
+const createMovimientoInventarioService = require('../../shared/services/movimiento-inventario.service');
+
 function createInventarioRepo(prisma) {
   if (!prisma) throw new Error('createInventarioRepo: prisma is required');
+
+  // Mejora #2 — Hash-chain inmutable de movimientos. Cada préstamo (salida)
+  // y devolución (entrada) queda firmada y enlazada por producto.
+  const _movInvSvc = createMovimientoInventarioService({ prisma });
 
   // ─── Categorias ───────────────────────────────────────────────────────────
   async function listCategorias({ search }) {
@@ -139,15 +145,33 @@ function createInventarioRepo(prisma) {
    * Crea préstamo en transacción: registra salida en kardex, decrementa
    * stockActual del producto, y crea el préstamo con su FK movimientoSalidaId.
    * Si cualquier paso falla, todo se reversa.
+   *
+   * Cyber Neo (silent fix #1): la decrementación usa UPDATE-RETURNING
+   * atómico con guard `stockActual >= cantidad`. Antes era `decrement`
+   * ciego que podía dejar stock negativo bajo concurrencia o input mal
+   * validado. Si no hay stock suficiente, devuelve null y throwea
+   * STOCK_INSUFICIENTE en vez de reventar contra el CHECK constraint
+   * de la DB con un error 500 genérico.
    */
   async function createPrestamoTx({ clienteId, productoId, cantidad, fechaLimite, notas }) {
     return prisma.$transaction(async (tx) => {
-      const mov = await tx.movimientoInventario.create({
-        data: { productoId, tipo: 'Salida', cantidad },
-      });
-      await tx.producto.update({
-        where: { id: productoId },
-        data:  { stockActual: { decrement: cantidad } },
+      const rows = await tx.$queryRaw`
+        UPDATE "Producto"
+        SET    "stockActual" = "stockActual" - ${Number(cantidad)}
+        WHERE  id = ${Number(productoId)} AND "stockActual" >= ${Number(cantidad)}
+        RETURNING id, nombre, "stockActual"
+      `;
+      if (!rows || rows.length === 0) {
+        const err = new Error('Stock insuficiente para registrar el préstamo.');
+        err.status = 422;
+        err.code   = 'STOCK_INSUFICIENTE';
+        throw err;
+      }
+      const mov = await _movInvSvc.appendMovimiento(tx, {
+        productoId: Number(productoId),
+        tipo:       'Salida',
+        cantidad:   Number(cantidad),
+        motivo:     `prestamo:cliente:${clienteId}`,
       });
       return tx.equipoPrestamo.create({
         data: {
@@ -167,8 +191,11 @@ function createInventarioRepo(prisma) {
    */
   async function devolverPrestamoTx(prestamoId, prestamoPrev) {
     return prisma.$transaction(async (tx) => {
-      const mov = await tx.movimientoInventario.create({
-        data: { productoId: prestamoPrev.productoId, tipo: 'Entrada', cantidad: prestamoPrev.cantidad },
+      const mov = await _movInvSvc.appendMovimiento(tx, {
+        productoId: Number(prestamoPrev.productoId),
+        tipo:       'Entrada',
+        cantidad:   Number(prestamoPrev.cantidad),
+        motivo:     `prestamo:devolucion:${prestamoId}`,
       });
       await tx.producto.update({
         where: { id: prestamoPrev.productoId },

@@ -20,7 +20,7 @@ class CotError extends Error {
 }
 
 function createCotizacionesService(deps) {
-  const { cotEventoSvc } = deps;
+  const { cotEventoSvc, ownerAlerts } = deps;
   const {
     repo, auditReq, decryptTOTP, authenticator, syncMikrotik,
     persistirVerifyHash, procesarFacturaPOS, pdfService, totalLinea,
@@ -228,6 +228,27 @@ function createCotizacionesService(deps) {
         ip:         reqMeta?.ip,
         ua:         String(reqMeta?.ua ?? '').slice(0, 200),
       }).catch(() => {});
+      // Mejora #5 — Owner God-Mode Alert. Anulación directa (no via NC) es
+      // un evento crítico: la factura desaparece del Pagada pipeline sin
+      // contrapartida documental DGII. Severidad alta.
+      if (ownerAlerts) {
+        ownerAlerts.tryEmit({
+          tipo:         'factura.anulada',
+          severity:     Number(existing.total) > 50000 ? 'critical' : 'warn',
+          resourceType: 'factura',
+          resourceId:   String(factura.id),
+          payload: {
+            facturaId:    factura.id,
+            noFactura:    factura.noFactura,
+            ncf:          factura.ncf,
+            total:        Number(existing.total),
+            estadoPrev:   existing.estado,
+            via:          'cambio-estado-directo',
+            requirio2FA:  Number(existing.total) > Number(process.env.UMBRAL_2FA_ANULACION ?? 50000),
+          },
+          user, reqMeta,
+        });
+      }
     }
 
     // Fire-and-forget MikroTik sync (Pagada → activo / Vencida → moroso).

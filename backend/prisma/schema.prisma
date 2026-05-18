@@ -281,11 +281,22 @@ model MovimientoInventario {
   orden              OrdenInstalacion? @relation(fields: [ordenInstalacionId], references: [id], onDelete: SetNull)
   prestamoSalida     EquipoPrestamo?   @relation("PrestamoSalida")
   prestamoEntrada    EquipoPrestamo?   @relation("PrestamoEntrada")
+  // Mejora #2 — Hash-chain inmutable por producto. prevHash es el hash del
+  // movimiento anterior del MISMO productoId (ordered por id asc). hash =
+  // HMAC-SHA256(AUDIT_SECRET, canonical(snapshot) + prevHash). Filas legacy
+  // (creadas antes de la migración) pueden tener ambos NULL — se ignoran al
+  // verificar la cadena. Nuevas inserciones DEBEN llenarlos via el servicio
+  // shared/services/movimiento-inventario.service.js.
+  prevHash           String?
+  hash               String?
 
   @@index([productoId])
   @@index([ordenInstalacionId])
   @@index([fecha])
   @@index([productoId, fecha])
+  @@index([productoId, id])
+  @@index([hash])
+  @@index([prevHash])
 }
 
 // ─── Catálogo de Servicios ────────────────────────────────────────────────────
@@ -1078,6 +1089,52 @@ model EquipoPrestamo {
   @@index([productoId])
   @@index([fechaLimite])
   @@index([fechaDevolucion])
+}
+
+// ─── Mejora #5 — Owner God-Mode Alerts ───────────────────────────────────────
+//
+// Notificaciones críticas que se disparan ante eventos de alto impacto y se
+// publican en el dashboard del owner via SSE + (opcional) webhook outbound
+// firmado con HMAC para integrarse a Telegram / Discord / SMS / email.
+//
+// Tipos cubiertos (extensible):
+//   - 'factura.anulada'      : factura DGII pasa a estado Anulada
+//   - 'nc.emitida'           : Nota de Crédito B04 emitida
+//   - 'nd.emitida'           : Nota de Débito B03 emitida
+//   - 'precio.modificado'    : Producto.precio o ItemCatalogo.precio cambió
+//   - 'descuento.alto'       : descuento PIN aplicado >= umbral (default 20%)
+//   - 'stock.ajustado_manual': ajuste manual de stock fuera de venta/orden
+//   - 'login.sospechoso'     : login desde nueva IP/UA + dispositivo no reconocido
+//   - 'pin.bloqueado'        : rate-limit de PIN supervisor disparado
+//
+// Severity: 'info' | 'warn' | 'critical'. El front filtra por severity.
+//
+// `payload` JSONB libre: contiene snapshot del evento (resourceId, montos,
+// before/after, motivo). NO incluir secretos / hashes / tokens.
+//
+// `ackBy` + `ackAt`: el owner marca alertas como leídas. Si NULL → unread.
+model OwnerAlert {
+  id              Int       @id @default(autoincrement())
+  tipo            String
+  severity        String    @default("warn")
+  empleadoId      Int?
+  empleadoNombre  String?
+  // Referencia opcional al recurso afectado. Puede ser facturaId (UUID),
+  // productoId (Int as string), etc. — interpretación por tipo.
+  resourceType    String?
+  resourceId      String?
+  payload         Json
+  ip              String?
+  ua              String?
+  createdAt       DateTime  @default(now())
+  ackBy           Int?
+  ackAt           DateTime?
+
+  @@index([tipo])
+  @@index([severity])
+  @@index([createdAt])
+  @@index([ackAt])
+  @@index([tipo, createdAt])
 }
 
 // ─── Audit trail de caja: fraude interno + descuentos autorizados ────────────

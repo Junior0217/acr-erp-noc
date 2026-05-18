@@ -12,8 +12,14 @@
  * Factory: createFacturasRepo(prisma)
  */
 
+const createMovimientoInventarioService = require('../../../shared/services/movimiento-inventario.service');
+
 function createFacturasRepo(prisma) {
   if (!prisma) throw new Error('createFacturasRepo: prisma required');
+
+  // Mejora #2 — Hash-chain en cada Entrada de stock que origina la
+  // emisión de NCs (retorno de productos). Firma por producto.
+  const _movInvSvc = createMovimientoInventarioService({ prisma });
 
   // ─── Factura lookups ─────────────────────────────────────────────────────
   // Soft-delete LineaFactura (#6): todos los lookups que devuelven líneas
@@ -94,8 +100,12 @@ function createFacturasRepo(prisma) {
   }
 
   async function crearKardexEntradaTx(tx, productoId, cantidad) {
-    return tx.movimientoInventario.create({
-      data: { productoId, tipo: 'Entrada', cantidad },
+    // Hash-chain inmutable (mejora #2). Entrada típica = retorno por NC.
+    return _movInvSvc.appendMovimiento(tx, {
+      productoId: Number(productoId),
+      tipo:       'Entrada',
+      cantidad:   Number(cantidad),
+      motivo:     'nota-credito:retorno',
     });
   }
 

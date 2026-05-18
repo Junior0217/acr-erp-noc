@@ -19,8 +19,15 @@
  * STOCK_INSUFICIENTE sin escribir nada. Mantener intacto.
  */
 
+const createMovimientoInventarioService = require('../../../shared/services/movimiento-inventario.service');
+
 function createPosRepo(prisma) {
   if (!prisma) throw new Error('createPosRepo: prisma required');
+
+  // Mejora #2 — Hash-chain de movimientos de inventario. Cada Salida queda
+  // firmada y enlazada a la fila previa del mismo producto. Detecta tamper
+  // SQL directo vía verifyChain.
+  const _movInvSvc = createMovimientoInventarioService({ prisma });
 
   // ─── Empresa config ──────────────────────────────────────────────────────
   async function findEmpresaPinOnly() {
@@ -174,8 +181,13 @@ function createPosRepo(prisma) {
   }
 
   async function crearKardexSalida(productoId, cantidad, tx) {
-    return (tx ?? prisma).movimientoInventario.create({
-      data: { productoId: Number(productoId), tipo: 'Salida', cantidad },
+    // Hash-chain inmutable: prevHash = hash del movimiento previo de este
+    // producto. Tamper detectable via verifyChain. Si no hay tx, usa prisma.
+    return _movInvSvc.appendMovimiento(tx ?? prisma, {
+      productoId: Number(productoId),
+      tipo:       'Salida',
+      cantidad:   Number(cantidad),
+      motivo:     'pos:venta',
     });
   }
 

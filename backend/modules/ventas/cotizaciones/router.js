@@ -18,11 +18,12 @@ const createCotizacionesRepo       = require('./repo');
 const createCotizacionesService    = require('./service');
 const createCotizacionesController = require('./controller');
 const cotizacionesSchemas          = require('./schema');
+const createIdempotencyMiddleware  = require('../../../shared/middlewares/idempotency.middleware');
 
 function createCotizacionesRouter(deps) {
   const {
     prisma, middlewares, auditReq, helpers, limiters,
-    persistirVerifyHash, pdfService, cotEventoSvc,
+    persistirVerifyHash, pdfService, cotEventoSvc, ncfReservation,
   } = deps;
   if (!prisma)       throw new Error('createCotizacionesRouter: prisma required');
   if (!middlewares)  throw new Error('createCotizacionesRouter: middlewares required');
@@ -43,6 +44,7 @@ function createCotizacionesRouter(deps) {
     syncMikrotik:        _syncMikrotik,
     persistirVerifyHash, procesarFacturaPOS, pdfService,
     totalLinea, cotEventoSvc,
+    ownerAlerts: deps.ownerAlerts,
   });
   const controller = createCotizacionesController({
     service, schemas: cotizacionesSchemas, helpers, cotEventoSvc,
@@ -50,9 +52,20 @@ function createCotizacionesRouter(deps) {
 
   const router = express.Router();
 
+  // Mejora #4 — Idempotencia universal money-moving. Revivir cotización
+  // puede emitir factura real (NCF + stock + verifyHash) → doble-clic del
+  // cajero debe devolver la primera factura, no crear dos. required=false
+  // por ahora hasta que el front pase Idempotency-Key; cuando el front
+  // esté listo, subir a required:true.
+  const idemRevivir = createIdempotencyMiddleware({
+    scope: 'cotizacion-revivir',
+    ncfReservation,
+    required: false,
+  });
+
   // ─── Cotizaciones ────────────────────────────────────────────────────────
   router.get('/cotizaciones',                  verificarJWT, requerirPermiso('factura:ver'),                  controller.listCotizaciones);
-  router.post('/cotizaciones/:id/revivir',     verificarJWT, requerirPermiso('factura:emitir'),               controller.postRevivir);
+  router.post('/cotizaciones/:id/revivir',     verificarJWT, requerirPermiso('factura:emitir'), idemRevivir,  controller.postRevivir);
 
   // ─── Facturas (list/get/estado) — históricamente en este router ─────────
   router.get('/facturas/:id',                  verificarJWT, requerirPermiso('factura:ver'),                  controller.getFactura);

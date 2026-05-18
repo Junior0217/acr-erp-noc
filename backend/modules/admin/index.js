@@ -7,12 +7,13 @@
 
 const express = require('express');
 
-const createRrhhRouter      = require('./rrhh/router');
-const createRolesRouter     = require('./roles/router');
-const createEmpresaRouter   = require('./empresa/router');
-const createOpsRouter       = require('./ops/router');
-const createReportesRouter  = require('./reportes/router');
-const createNcfAdminRouter  = require('./empresa/ncf/router');
+const createRrhhRouter         = require('./rrhh/router');
+const createRolesRouter        = require('./roles/router');
+const createEmpresaRouter      = require('./empresa/router');
+const createOpsRouter          = require('./ops/router');
+const createReportesRouter     = require('./reportes/router');
+const createNcfAdminRouter     = require('./empresa/ncf/router');
+const createOwnerAlertsRouter  = require('./owner-alerts/router');
 
 function createAdminRouter(deps) {
   const router = express.Router();
@@ -27,6 +28,8 @@ function createAdminRouter(deps) {
   // operativo de ventas. El allocator atómico vive en
   // shared/services/ncf.service.js — este sub-router solo expone /ncf-config.
   router.use('/', createNcfAdminRouter(deps));
+  // Mejora #5 — Owner God-Mode Alerts (SSE + webhook). Solo sistema:owner.
+  router.use('/', createOwnerAlertsRouter(deps));
 
   return router;
 }

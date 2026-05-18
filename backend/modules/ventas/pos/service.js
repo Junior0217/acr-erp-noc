@@ -47,7 +47,7 @@ function totalLinea(pu, pct, monto, cant) {
 }
 
 function createPosService(deps) {
-  const { repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService } = deps;
+  const { repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService, ownerAlerts } = deps;
   if (!repo)                                          throw new Error('createPosService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createPosService: auditReq required');
   if (typeof generarSiguienteCodigo !== 'function')   throw new Error('createPosService: generarSiguienteCodigo required');
@@ -208,6 +208,29 @@ function createPosService(deps) {
       ip:         reqMeta?.ip,
       ua:         String(reqMeta?.ua ?? '').slice(0, 200),
     }).catch(() => {});
+
+    // Mejora #5 — Owner Alert si el descuento PIN supera un umbral alto
+    // (default 20%). Indica patrón potencialmente sospechoso aunque el PIN
+    // sea correcto — el supervisor mismo podría estar habilitado en algún
+    // esquema de fraude. Severity escala con el porcentaje.
+    if (ownerAlerts) {
+      const UMBRAL_ALERTA = Number(process.env.OWNER_ALERT_DESCUENTO_PCT ?? 20);
+      if (descEfectivoPct >= UMBRAL_ALERTA) {
+        ownerAlerts.tryEmit({
+          tipo:         'descuento.alto',
+          severity:     descEfectivoPct >= UMBRAL_ALERTA * 2 ? 'critical' : 'warn',
+          resourceType: 'pos-venta',
+          payload: {
+            descuentoPctEfectivo: Math.round(descEfectivoPct * 100) / 100,
+            maxDescuentoCajero,
+            umbralAlertaPct:      UMBRAL_ALERTA,
+            subtotalBruto:        Math.round(_subtotalBrutoGate * 100) / 100,
+            esCotizacion,
+          },
+          user, reqMeta,
+        });
+      }
+    }
   }
 
   /** Flow completo POST /pos/venta. */
