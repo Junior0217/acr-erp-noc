@@ -19,7 +19,7 @@ function createCotizacionesRepo(prisma) {
         skip:    offset,
         include: {
           cliente: { select: { id: true, razonSocial: true, noCliente: true } },
-          lineas:  { select: { id: true, descripcion: true, cantidad: true, precioUnitario: true, descuentoPorcentaje: true, descuentoMonto: true } },
+          lineas:  { where: { deletedAt: null }, select: { id: true, descripcion: true, cantidad: true, precioUnitario: true, descuentoPorcentaje: true, descuentoMonto: true } },
         },
       }),
     ]);
@@ -30,7 +30,7 @@ function createCotizacionesRepo(prisma) {
       where:   { id },
       include: {
         cliente: true,
-        lineas:  { include: { producto: { select: { id: true, precio: true, stockActual: true, tipoItem: true } } } },
+        lineas:  { where: { deletedAt: null }, include: { producto: { select: { id: true, precio: true, stockActual: true, tipoItem: true } } } },
       },
     });
   }
@@ -48,7 +48,7 @@ function createCotizacionesRepo(prisma) {
       where:   { id },
       include: {
         cliente: { select: { id: true, razonSocial: true, noCliente: true, rnc: true, direccion: true, tipoNcf: true } },
-        lineas:  { include: { producto: { select: { id: true, nombre: true, sku: true } } } },
+        lineas:  { where: { deletedAt: null }, include: { producto: { select: { id: true, nombre: true, sku: true } } } },
         orden:   { select: { id: true, tipoOT: true } },
       },
     });

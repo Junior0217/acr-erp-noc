@@ -302,6 +302,10 @@ model Plan {
   activo            Boolean           @default(true)
   plantillaEquipos  PlantillaEquipo[]
   servicios         Servicio[]
+  // Mejora #15: relación inversa con ItemCatalogo. Cuando un ítem del
+  // catálogo apunta a un Plan, al facturarlo el POS auto-crea un Servicio
+  // activo para el cliente (precio + plan derivados del catálogo).
+  itemsCatalogo     ItemCatalogo[]
   createdAt         DateTime          @default(now())
   updatedAt         DateTime          @updatedAt
 
@@ -580,6 +584,12 @@ model ItemCatalogo {
   // "vitrina comercial" y Producto es la "fuente fiscal" de stock.
   productoId  Int?
   producto    Producto?                @relation(fields: [productoId], references: [id], onDelete: SetNull)
+  // Mejora #15: vínculo opcional con Plan ISP. Cuando existe, al facturar
+  // este ítem en POS, el backend auto-crea un Servicio activo para el
+  // cliente con precio derivado del Plan. precioMensual y precioInstalacion
+  // heredan plan.precioMensualBase / plan.precioInstalBase. Single source.
+  planId      String?
+  plan        Plan?                    @relation(fields: [planId], references: [id], onDelete: SetNull)
   activo      Boolean                  @default(true)
   tipoItem    TipoItem                 @default(SERVICIO)
   // Si el item es bundle (kit), `esBundle=true` activa la receta. Al facturar,
@@ -785,11 +795,18 @@ model LineaFactura {
   precioUnitario      Decimal   @db.Decimal(12, 2)
   descuentoPorcentaje Decimal   @default(0) @db.Decimal(5, 2)
   descuentoMonto      Decimal   @default(0) @db.Decimal(12, 2)
+  // Mejora #6: soft-delete. Las líneas eliminadas al editar un Borrador
+  // NO se borran físicamente — quedan con deletedAt seteado para preservar
+  // audit-trail fiscal DGII (retención 10 años Norma 06-2018 art. 7).
+  // Listados y PDFs filtran deletedAt: null. Facturas Emitida/Pagada nunca
+  // tocan líneas (son inmutables).
+  deletedAt           DateTime?
   factura             Factura   @relation(fields: [facturaId], references: [id], onDelete: Cascade)
   producto            Producto? @relation(fields: [productoId], references: [id], onDelete: Restrict)
 
   @@index([facturaId])
   @@index([productoId])
+  @@index([deletedAt])
 }
 
 model ConfiguracionNCF {

@@ -399,6 +399,71 @@ function createPosService(deps) {
           ua:         String(reqMeta?.ua ?? '').slice(0, 200),
         });
       } catch (e) { console.error('[AUDIT CAJA]', e.message); }
+
+      // Mejora #15: auto-crear Servicio activo para cada item del catálogo
+      // con planId vinculado. Single source of truth — el cajero NO tiene
+      // que crear Servicio manual desde /servicios después de facturar.
+      //
+      // Reglas:
+      //   - Solo en facturas REALES (no cotizaciones).
+      //   - Solo líneas con `itemCatalogoId` cuyo ItemCatalogo tenga planId.
+      //   - Dedup por (clienteId, planId): si ya existe Servicio Activo o
+      //     Pendiente, NO se duplica (evita crear N servicios al re-facturar).
+      //   - Precio mensual + instalación heredados de plan.precioMensualBase /
+      //     plan.precioInstalBase. Estado='Pendiente' (queda al técnico
+      //     marcar Activo cuando esté instalado).
+      try {
+        const catIds = [...new Set(dto.lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))];
+        if (catIds.length > 0 && factura.clienteId) {
+          const itemsConPlan = await deps.prisma.itemCatalogo.findMany({
+            where:  { id: { in: catIds }, planId: { not: null } },
+            select: {
+              id: true, planId: true,
+              plan: { select: { id: true, sku: true, nombre: true, precioMensualBase: true, precioInstalBase: true, activo: true } },
+            },
+          });
+          for (const item of itemsConPlan) {
+            if (!item.plan?.activo) continue;
+            // Dedup: si ya existe Servicio para (cliente, plan) en estado
+            // no-Cancelado, lo skippeamos para no romper la relación 1-a-1
+            // que el módulo Servicios espera.
+            const dup = await deps.prisma.servicio.findFirst({
+              where:  {
+                clienteId: factura.clienteId,
+                planId:    item.planId,
+                estado:    { in: ['Pendiente', 'EnInstalacion', 'Activo', 'Suspendido'] },
+              },
+              select: { id: true, estado: true },
+            });
+            if (dup) {
+              auditReq('pos:servicio_dedup', _fakeReqForAudit(reqMeta, user), {
+                facturaId: factura.id, planId: item.planId,
+                servicioExistenteId: dup.id, estado: dup.estado,
+              });
+              continue;
+            }
+            const noServicio = await generarSiguienteCodigo('servicio');
+            const nuevoServicio = await deps.prisma.servicio.create({
+              data: {
+                noServicio,
+                clienteId:         factura.clienteId,
+                planId:            item.planId,
+                estado:            'Pendiente',
+                precioMensual:     Number(item.plan.precioMensualBase) || 0,
+                precioInstalacion: Number(item.plan.precioInstalBase)  || 0,
+              },
+              select: { id: true, noServicio: true, planId: true },
+            });
+            auditReq('pos:servicio_auto_creado', _fakeReqForAudit(reqMeta, user), {
+              facturaId:   factura.id,
+              servicioId:  nuevoServicio.id,
+              noServicio:  nuevoServicio.noServicio,
+              planId:      item.planId,
+              planNombre:  item.plan.nombre,
+            });
+          }
+        }
+      } catch (e) { console.error('[POS SERVICIO AUTO]', e.message); }
     }
 
     return { status: 201, body: factura };

@@ -16,10 +16,18 @@ function createFacturasRepo(prisma) {
   if (!prisma) throw new Error('createFacturasRepo: prisma required');
 
   // ─── Factura lookups ─────────────────────────────────────────────────────
+  // Soft-delete LineaFactura (#6): todos los lookups que devuelven líneas
+  // filtran `deletedAt: null` para no exponer rows borradas. Las facturas
+  // emitidas son inmutables — el campo aplica principalmente a Borradores.
   async function findFacturaWithLineasProducto(id) {
     return prisma.factura.findUnique({
       where:   { id },
-      include: { lineas: { include: { producto: { select: { id: true, tipoItem: true } } } } },
+      include: {
+        lineas: {
+          where:   { deletedAt: null },
+          include: { producto: { select: { id: true, tipoItem: true } } },
+        },
+      },
     });
   }
 

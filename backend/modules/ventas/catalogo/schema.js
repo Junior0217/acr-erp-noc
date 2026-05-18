@@ -29,6 +29,9 @@ const itemCatalogoSchema = z.object({
   costo:       z.number().min(0).optional().default(0),
   stock:       z.number().int().optional().nullable(),
   productoId:  z.number().int().positive().optional().nullable(),
+  // Mejora #15: vínculo opcional a Plan ISP. Cuando seteado + tipoItem=SERVICIO,
+  // al facturar este item el POS auto-crea un Servicio activo para el cliente.
+  planId:      z.string().uuid().optional().nullable(),
   tipoItem:    z.enum(['ARTICULO', 'SERVICIO']).optional().default('SERVICIO'),
   esBundle:    z.boolean().optional().default(false),
   activo:      z.boolean().default(true),

@@ -109,12 +109,25 @@ function ProductoSearchInput({ value, onChange, productoActual }) {
 function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
   // tipoItem default: si tipo='Servicio' o 'Recurrente' → SERVICIO. Si VentaUnica → ARTICULO.
   // El usuario puede sobreescribir explícitamente en el form.
-  const empty = { nombre: '', descripcion: null, imagenUrl: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', productoId: null, activo: true, tipoItem: 'SERVICIO', esBundle: false }
+  const empty = { nombre: '', descripcion: null, imagenUrl: '', tipo: 'Recurrente', categoria: 'WISP', precio: '', costo: '0', stock: '', productoId: null, planId: null, activo: true, tipoItem: 'SERVICIO', esBundle: false }
   const [form, setForm] = useState(
     item
-      ? { ...item, precio: String(item.precio), costo: String(item.costo ?? 0), stock: item.stock != null ? String(item.stock) : '', imagenUrl: item.imagenUrl ?? '', productoId: item.productoId ?? null, descripcion: _descParse(item.descripcion), tipoItem: item.tipoItem ?? 'SERVICIO', esBundle: !!item.esBundle }
+      ? { ...item, precio: String(item.precio), costo: String(item.costo ?? 0), stock: item.stock != null ? String(item.stock) : '', imagenUrl: item.imagenUrl ?? '', productoId: item.productoId ?? null, planId: item.planId ?? null, descripcion: _descParse(item.descripcion), tipoItem: item.tipoItem ?? 'SERVICIO', esBundle: !!item.esBundle }
       : empty
   )
+  // Mejora #15: lista de Planes ISP para vincular. Carga 1 vez al abrir.
+  const [planes, setPlanes] = useState([])
+  useEffect(() => {
+    let cancel = false
+    fetch(`${import.meta.env.VITE_API_URL || ''}/api/planes?activo=true&limit=200`, {
+      credentials: 'include',
+      headers: { Accept: 'application/json' },
+    })
+      .then(r => r.ok ? r.json() : { data: [] })
+      .then(j => { if (!cancel) setPlanes(Array.isArray(j.data) ? j.data : []) })
+      .catch(() => {})
+    return () => { cancel = true }
+  }, [])
   // El producto físico actual (para mostrar nombre/stock en el badge). Se hidrata
   // si el item ya está vinculado o se setea al seleccionar uno nuevo.
   const [productoActual, setProductoActual] = useState(item?.producto ?? null)
@@ -140,6 +153,7 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
         ...(canSeeCosts ? { costo: parseFloat(form.costo) || 0 } : {}),
         stock:       form.tipoItem === 'ARTICULO' && form.stock !== '' && !form.productoId ? parseInt(form.stock) : null,
         productoId:  form.productoId ?? null,
+        planId:      form.planId ?? null,
         activo:      form.activo,
       }
       const r = await apiFetch(item ? `/api/catalogo/${item.id}` : '/api/catalogo', {
@@ -238,6 +252,33 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
                 <span>El stock se lee del <strong>Producto físico</strong> (Inventario). Cualquier venta POS descuenta del kardex automáticamente.</span>
               ) : (
                 <span>Sin vínculo → el stock se gestiona manualmente en este item. Recomendado vincular si el ítem corresponde a algo físico para evitar drift.</span>
+              )}
+            </div>
+          </div>
+
+          {/* Mejora #15: Vínculo con Plan ISP. Si seteado, al facturar este
+              item el POS auto-crea un Servicio activo para el cliente con
+              precio derivado del Plan. Útil solo para tipoItem=SERVICIO. */}
+          <div>
+            <label className={LABEL_CLS}>Vínculo con Plan ISP (auto-crea Servicio al facturar)</label>
+            <select
+              value={form.planId ?? ''}
+              onChange={e => set('planId', e.target.value || null)}
+              className={INPUT_CLS + ' font-mono'}
+            >
+              <option value="">— Sin vínculo —</option>
+              {planes.map(p => (
+                <option key={p.id} value={p.id}>
+                  {p.sku ? `${p.sku} · ` : ''}{p.nombre} · {p.tipo} · RD$ {Number(p.precioMensualBase || 0).toLocaleString('es-DO', { minimumFractionDigits: 2 })}/mes
+                </option>
+              ))}
+            </select>
+            <div className={`mt-2 px-3 py-2 rounded-lg text-[11px] flex items-start gap-2 ${form.planId ? 'bg-blue-900/20 border border-blue-700/30 text-blue-300' : 'bg-slate-800/40 border border-slate-700/30 text-slate-500'}`}>
+              <span className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0 bg-current" />
+              {form.planId ? (
+                <span>Al facturar este ítem desde POS, se crea automáticamente un <strong>Servicio Pendiente</strong> para el cliente. Dedup por (cliente, plan).</span>
+              ) : (
+                <span>Sin vínculo a Plan ISP. Facturarlo NO genera Servicio activo en el módulo Servicios.</span>
               )}
             </div>
           </div>
