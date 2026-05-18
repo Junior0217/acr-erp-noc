@@ -679,6 +679,21 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const obligValidez  = !!empresa?.condicionesDefault?._obligatorio?.validez
   const obligEntrega  = !!empresa?.condicionesDefault?._obligatorio?.entrega
   const obligGarantia = !!empresa?.condicionesDefault?._obligatorio?.garantia
+  // Paridad con Carrito Superior: cuando empresa.condicionesDefault llega,
+  // hidratamos los inputs vacíos con los textos por defecto de MiEmpresa.
+  // Si el cajero ya escribió override, no sobrescribimos. Comparación por
+  // valor primitivo en deps evita loops de re-render.
+  const defValidez  = empresa?.condicionesDefault?.validez  ?? ''
+  const defPago     = empresa?.condicionesDefault?.pago     ?? ''
+  const defEntrega  = empresa?.condicionesDefault?.entrega  ?? ''
+  const defGarantia = empresa?.condicionesDefault?.garantia ?? ''
+  useEffect(() => {
+    if (defValidez  && !validezTexto)  setValidezTexto(defValidez)
+    if (defPago     && (formaPagoTexto === 'Contado' || !formaPagoTexto)) setFormaPagoTexto(defPago)
+    if (defEntrega  && !entregaTexto)  setEntregaTexto(defEntrega)
+    if (defGarantia && !garantiaTexto) setGarantiaTexto(defGarantia)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [defValidez, defPago, defEntrega, defGarantia])
   // Bloqueo de descuentos: por defecto LOCK. Se libera con PIN supervisor
   // y aplica a todos los usuarios (incluyendo sistema:owner). El bloqueo
   // se restaura al limpiar el carrito o al recargar el panel.
@@ -866,13 +881,15 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       setDescGlobalMonto(0)
       setShowCheckout(false)
       // Reset campos avanzados al limpiar carrito — evita que el siguiente
-      // documento herede condiciones del anterior por accidente.
+      // documento herede condiciones del anterior por accidente. Re-hidrata
+      // desde empresa.condicionesDefault (la próxima venta arranca con los
+      // mismos defaults configurados en MiEmpresa).
       setAdvancedOpen(false)
       setDiasVence(30)
-      setFormaPagoTexto('Contado')
-      setValidezTexto('')
-      setEntregaTexto('')
-      setGarantiaTexto('')
+      setFormaPagoTexto(defPago || 'Contado')
+      setValidezTexto(defValidez || '')
+      setEntregaTexto(defEntrega || '')
+      setGarantiaTexto(defGarantia || '')
       setNotasTexto('')
       setMostrarValidez(true)
       setMostrarEntrega(true)
