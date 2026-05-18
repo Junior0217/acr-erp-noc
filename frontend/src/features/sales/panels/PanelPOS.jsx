@@ -512,9 +512,10 @@ function CrossSellBanner({ cart, onAdd }) {
 }
 
 // ── CartLine ──────────────────────────────────────────────────────────────────
-// Reglas Enterprise: precioUnitario + descuento% bloqueados por defecto.
-// Cualquier override exige PIN del supervisor (Tienda → Autorizar). Owner es
-// el ÚNICO rol exento — `unlocked` se activa automático cuando isOwner=true.
+// Reglas Enterprise (Zero Trust 2026-05-18): precioUnitario + descuento%
+// bloqueados por defecto. Cualquier override exige PIN del supervisor —
+// SIN excepciones, ni siquiera para sistema:owner. `unlocked` solo se
+// activa tras autenticación exitosa con el PIN (PinAuthModal).
 function CartLine({ linea, onChange, onRemove, unlocked, onRequestUnlock }) {
   const pu  = linea.precioUnitario
   const pct = linea.descuentoPorcentaje ?? 0
@@ -714,11 +715,12 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   // canDescuento removido — descuentos ahora gate por PIN, no por permiso.
   const canCotizar  = tienePermiso('pos:cotizar')  || tienePermiso('sistema:owner')
   const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
-  const isOwner     = tienePermiso('sistema:owner')
-  // Override de candado: owner pasa siempre. Para roles no-owner, solo el
-  // toggle de PIN supervisor desbloquea precio + descuentos + textos
-  // condiciones para la sesión actual.
-  const effectiveUnlocked = descuentosUnlocked || isOwner
+  // Zero Trust (política PO 2026-05-18): NADIE bypassea el candado, ni
+  // siquiera sistema:owner. Owner también digita su PIN para cualquier
+  // override de precio / descuento / condiciones. Auditoría completa +
+  // anti-impersonación: si la sesión del owner fue robada, el atacante
+  // necesita además conocer el PIN para mutar precios.
+  const effectiveUnlocked = descuentosUnlocked
 
   // showCheckout también declarado antes de los effects que lo usan.
   const [showCheckout, setShowCheckout] = useState(false)

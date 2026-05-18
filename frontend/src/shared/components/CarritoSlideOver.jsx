@@ -2,7 +2,8 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound, Info, AlertCircle } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
 import { useEmpresa } from '../contexts/EmpresaContext'
-import { useAuth } from '../contexts/AuthContext'
+// useAuth removido: Zero Trust no necesita conocer el rol; el candado aplica
+// universalmente. La autorización se delega al PIN supervisor.
 import { apiFetch } from '../utils/api'
 import { useDebounce } from '../hooks/useDebounce'
 import { toast } from 'sonner'
@@ -207,12 +208,12 @@ export default function CarritoSlideOver() {
   // con PIN del supervisor. Aplica también al owner — sin excepciones.
   // Un PIN válido libera tanto el descuento global como el descuento por
   // línea, y vuelve a bloquearse al cerrar el slide-over (vía useEffect).
-  const { tienePermiso } = useAuth()
-  const isOwner = tienePermiso?.('sistema:owner') ?? false
-  // Owner auto-unlock. Para roles no-owner: descuentosUnlocked solo se activa
-  // tras PIN supervisor. effective* es el flag real a propagar a inputs.
-  const [descuentosUnlockedRaw, setDescuentosUnlocked] = useState(false)
-  const descuentosUnlocked = descuentosUnlockedRaw || isOwner
+  // Zero Trust (política PO 2026-05-18): el candado aplica a TODOS los
+  // roles. Owner también digita PIN para mutar precios / descuentos /
+  // condiciones. Eliminado `|| isOwner`. Auditoría inmutable + anti
+  // session-hijacking: el PIN supervisor vive en EmpresaPerfil y es
+  // independiente de las credenciales de login.
+  const [descuentosUnlocked, setDescuentosUnlocked] = useState(false)
   const [pinSupervisor, setPinSupervisor] = useState('')   // viaja al backend
   const [pinModalOpen, setPinModalOpen] = useState(false)
 
@@ -247,15 +248,10 @@ export default function CarritoSlideOver() {
   // cancela o el PIN falla, el switch debe permanecer en su valor anterior
   // (lo logramos no aplicando el cambio hasta confirmar).
   //
-  // Owner exception: si el usuario tiene sistema:owner, aplica el cambio
-  // directo sin pedir PIN (paridad con regla "owner = auto-unlocked").
+  // Zero Trust (política PO 2026-05-18): owner también pasa por aquí. Sin
+  // excepciones — la única diferencia entre owner y otro rol es quién
+  // conoce el PIN (configurado por owner en MiEmpresa).
   function requestToggleCondicion(campo, nextValue) {
-    if (isOwner) {
-      if (campo === 'notas') setIncluirNotas(nextValue)
-      else if (campo === 'itbis') updateCartMeta({ applyItbis: nextValue })
-      else setIncluirCond(prev => ({ ...prev, [campo]: nextValue }))
-      return
-    }
     setPendingCondToggle({ campo, nextValue })
     setCondPinModalOpen(true)
   }
