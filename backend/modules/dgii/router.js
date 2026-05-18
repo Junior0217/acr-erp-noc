@@ -20,6 +20,7 @@ function createDgiiRouter(deps) {
   const {
     prisma, auditReq, middlewares, helpers,
     generarSiguienteCodigo, NIVEL_PROPIETARIO_ABSOLUTO,
+    supabase, SUPABASE_BUCKET,
   } = deps;
   if (!prisma)                                        throw new Error('createDgiiRouter: prisma required');
   if (!middlewares)                                   throw new Error('createDgiiRouter: middlewares required');
@@ -35,7 +36,10 @@ function createDgiiRouter(deps) {
   const _totpStrict = requerirTOTPEstricto || requerirTOTP || ((req, res, next) => next());
 
   const repo       = createDgiiRepo(prisma);
-  const service    = createDgiiService({ repo, prisma, auditReq, generarSiguienteCodigo, helpers });
+  const service    = createDgiiService({
+    repo, prisma, auditReq, generarSiguienteCodigo, helpers,
+    supabase, SUPABASE_BUCKET,
+  });
   const controller = createDgiiController({ service, schemas: dgiiSchemas, helpers });
 
   const router = express.Router();
@@ -49,6 +53,14 @@ function createDgiiRouter(deps) {
 
   // ── Historial reportes (vista) ────────────────────────────────────────
   router.get(   '/dgii/historial',   verificarJWT, requerirPermiso('dgii:reportar'),                                          controller.listHistorial);
+
+  // ── F2 — Reporte 607 (Ventas) ────────────────────────────────────────
+  // Preview: solo lectura (devuelve JSON con primeras 500 rows + totales).
+  router.get(   '/dgii/607/preview', verificarJWT, requerirPermiso('dgii:reportar'),                                          controller.preview607);
+  // Generar: produce TXT + SHA-256 + sube a Storage + crea row audit.
+  // CRÍTICO: TOTP estricto obligatorio. Cualquier bypass viola Norma 06-2018
+  // (audit trail no repudiable) + Cyber Neo A07 + A08.
+  router.post(  '/dgii/607/generar', verificarJWT, requerirPermiso('dgii:reportar'), _totpStrict,                              controller.generar607);
 
   return router;
 }

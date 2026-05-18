@@ -32,8 +32,16 @@ function _wrap(fn) {
 
 function createDgiiController({ service, schemas, helpers }) {
   if (!service || !schemas || !helpers) throw new Error('createDgiiController: deps required');
-  const { compraSchema, compraUpdateSchema, listComprasQuerySchema } = schemas;
+  const { compraSchema, compraUpdateSchema, listComprasQuerySchema, periodoSchema } = schemas;
   const { validUUID } = helpers;
+
+  // Periodo viene en query (preview) o body (generar). Aceptar ambos.
+  const generarReporte607BodySchema = z.object({
+    periodo: periodoSchema,
+  });
+  const previewReporte607QuerySchema = z.object({
+    periodo: periodoSchema,
+  });
 
   function _badId(req, res) {
     if (!validUUID(req.params.id)) {
@@ -72,7 +80,21 @@ function createDgiiController({ service, schemas, helpers }) {
     service.listarHistorialReportes(req.query || {})
   );
 
-  return { listCompras, getCompra, createCompra, updateCompra, deleteCompra, listHistorial };
+  // ── F2 — Reporte 607 ─────────────────────────────────────────────────
+  const preview607 = _wrap(async (req) => {
+    const { periodo } = previewReporte607QuerySchema.parse(req.query);
+    return service.previewReporte607Handler(periodo);
+  });
+
+  const generar607 = _wrap(async (req) => {
+    const { periodo } = generarReporte607BodySchema.parse(req.body);
+    return service.generarTXT607(periodo, req.user, _extractReqMeta(req));
+  });
+
+  return {
+    listCompras, getCompra, createCompra, updateCompra, deleteCompra, listHistorial,
+    preview607, generar607,
+  };
 }
 
 module.exports = createDgiiController;

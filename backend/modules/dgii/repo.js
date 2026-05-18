@@ -100,6 +100,70 @@ function createDgiiRepo(prisma) {
     ]);
   }
 
+  // ── Reporte 607: Facturas/ND/NC del periodo ─────────────────────────────
+  //
+  // Filtros DGII:
+  //   - esCotizacion=false (cotizaciones NO van al 607)
+  //   - deletedAt=null
+  //   - ncf NOT NULL (sin NCF no es comprobante fiscal)
+  //   - fechaEmision en [start, end)
+  //   - estado != 'Borrador' (borradores no son fiscales)
+  //
+  // Notas Crédito (B04) e incluye facturas Anuladas dentro del periodo
+  // — el service decide el signo (negativo) por documento.
+  //
+  // SELECT explícito anti-leak: NO traemos passwordHash de cliente/empleado.
+  async function listFacturasParaReporte607(periodoStart, periodoEnd) {
+    return prisma.factura.findMany({
+      where: {
+        esCotizacion: false,
+        deletedAt:    null,
+        ncf:          { not: null },
+        fechaEmision: { gte: periodoStart, lt: periodoEnd },
+        estado:       { not: 'Borrador' },
+      },
+      orderBy: { fechaEmision: 'asc' },
+      select: {
+        id:                       true,
+        noFactura:                true,
+        ncf:                      true,
+        tipoNcf:                  true,
+        esNotaCredito:            true,
+        esNotaDebito:             true,
+        facturaOrigenId:          true,
+        estado:                   true,
+        subtotal:                 true,
+        itbis:                    true,
+        total:                    true,
+        fechaEmision:             true,
+        fechaPago:                true,
+        pagos:                    true,
+        tipoIngreso:              true,
+        fechaRetencion:           true,
+        itbisRetenidoTercero:     true,
+        itbisPercibido:           true,
+        retencionRentaTercero:    true,
+        isrPercibido:             true,
+        impuestoSelectivoConsumo: true,
+        otrosImpuestos:           true,
+        propinaLegal:             true,
+        cliente: {
+          select: { id: true, rnc: true, cedula: true, tipoNcf: true, razonSocial: true },
+        },
+        facturaOrigen: { select: { ncf: true } },
+      },
+    });
+  }
+
+  // Audit lookup: ¿ya existe un reporte de este tipo+periodo+rnc?
+  async function existeReporteEnCurso(tipo, periodo, rncEmpresa) {
+    return prisma.reporteDGIIGenerado.findFirst({
+      where:   { tipo, periodo, rncEmpresa },
+      orderBy: { generadoEn: 'desc' },
+      select:  { id: true, sha256: true, generadoEn: true, archivoUrl: true },
+    });
+  }
+
   return {
     listCompras,
     findCompraById,
@@ -111,6 +175,8 @@ function createDgiiRepo(prisma) {
     findEmpresaRnc,
     createReporteRegistro,
     listReportesHistorial,
+    listFacturasParaReporte607,
+    existeReporteEnCurso,
   };
 }
 
