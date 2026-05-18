@@ -10,6 +10,7 @@ import { apiFetch } from '@shared/utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '@shared/utils/pdf'
 import { useAuth } from '@shared/contexts/AuthContext'
 import PdfPreviewDrawer from '@shared/components/PdfPreviewDrawer'
+import PinAuthModal     from '@shared/components/PinAuthModal'
 import {
   FACTURA_ESTADOS,
   TH, PAGE_SIZE,
@@ -848,6 +849,9 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
     garantia: { incluir: false, texto: '' },
   })
   const [savingCond, setSavingCond] = useState(false)
+  // Paridad POS/Carrito: editar condiciones de un documento ya emitido también
+  // exige PIN supervisor (Zero Trust). Owner igualmente — sin excepción.
+  const [pinCondOpen, setPinCondOpen] = useState(false)
 
   // Normaliza el shape al cargar: legacy string -> { incluir: true, texto }.
   function normCond(v) {
@@ -979,8 +983,12 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
                     <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Condiciones del documento</p>
                   </div>
                   {canEdit && !editCond && (
-                    <button onClick={() => setEditCond(true)} className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-blue-400 transition-colors">
-                      <Edit3 size={11} /> Editar
+                    <button
+                      onClick={() => setPinCondOpen(true)}
+                      title="Editar condiciones · requiere PIN supervisor"
+                      className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      <Edit3 size={11} /> Editar (PIN)
                     </button>
                   )}
                 </div>
@@ -1096,6 +1104,20 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
           }}
         />
       )}
+
+      {/* PIN supervisor para editar Condiciones del documento — paridad con
+          POS y Carrito Superior. Sin excepción para owner (Zero Trust). */}
+      <PinAuthModal
+        open={pinCondOpen}
+        onClose={() => setPinCondOpen(false)}
+        titulo="Editar Condiciones del Documento"
+        descripcion="Modificar Validez, Forma de Pago, Entrega o Garantía de un documento ya emitido afecta su PDF y su valor legal. Requiere el PIN de supervisor configurado en Mi Empresa."
+        onUnlock={() => {
+          setEditCond(true)
+          setPinCondOpen(false)
+          toast.success('Condiciones desbloqueadas para esta sesión.')
+        }}
+      />
     </div>
   )
 }

@@ -13,6 +13,7 @@ import { apiFetch } from '@shared/utils/api'
 import { fetchPdfBlob, descargarBulkZip } from '@shared/utils/pdf'
 import { useCart } from '@shared/contexts/CartContext'
 import PdfPreviewDrawer from '@shared/components/PdfPreviewDrawer'
+import PinAuthModal     from '@shared/components/PinAuthModal'
 
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 const fmtDate = d => new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
@@ -177,6 +178,8 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
     garantia: { incluir: false, texto: '' },
   })
   const [savingCond, setSavingCond] = useState(false)
+  // Paridad POS/Carrito/Facturas: editar condiciones exige PIN supervisor.
+  const [pinCondOpen, setPinCondOpen] = useState(false)
 
   useEffect(() => {
     apiFetch(`/api/ventas/cotizaciones/${cot.id}/revivir`, {
@@ -378,8 +381,12 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                     <p className="text-[10px] font-bold uppercase tracking-widest text-blue-400">Condiciones del documento</p>
                   </div>
                   {!editCond && (
-                    <button onClick={() => setEditCond(true)} className="flex items-center gap-1 text-[10px] text-slate-400 hover:text-blue-400 transition-colors">
-                      <Edit3 size={11} /> Editar
+                    <button
+                      onClick={() => setPinCondOpen(true)}
+                      title="Editar condiciones · requiere PIN supervisor"
+                      className="flex items-center gap-1 text-[10px] text-amber-400 hover:text-amber-300 transition-colors"
+                    >
+                      <Edit3 size={11} /> Editar (PIN)
                     </button>
                   )}
                 </div>
@@ -467,6 +474,19 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
           </div>
         )}
       </div>
+
+      {/* PIN supervisor para editar Condiciones — paridad POS/Carrito/Facturas. */}
+      <PinAuthModal
+        open={pinCondOpen}
+        onClose={() => setPinCondOpen(false)}
+        titulo="Editar Condiciones de la Cotización"
+        descripcion="Modificar Validez, Forma de Pago, Entrega o Garantía de una cotización ya emitida afecta su PDF y la propuesta enviada al cliente. Requiere el PIN de supervisor configurado en Mi Empresa."
+        onUnlock={() => {
+          setEditCond(true)
+          setPinCondOpen(false)
+          toast.success('Condiciones desbloqueadas para esta sesión.')
+        }}
+      />
     </div>
   )
 }

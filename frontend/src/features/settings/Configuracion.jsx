@@ -735,6 +735,46 @@ function PanelMiPerfil() {
                   Regenerar
                 </button>
               </div>
+
+              {/* Bug fix: cuando regenerate devuelve códigos nuevos, mostrar
+                  inline aquí dentro de la rama "2FA activo". Antes el ternary
+                  saltaba a esta rama por twoFAEnabled=true y nunca evaluaba
+                  la rama backupCodes? abajo → toast decía "generados" pero
+                  los códigos no se veían. */}
+              {backupCodes && backupCodes.length > 0 && (
+                <div className="mt-3 rounded-lg border-2 border-amber-500/50 bg-amber-900/15 p-3 space-y-3">
+                  <p className="text-[11px] text-amber-300 font-bold uppercase tracking-wider">
+                    ⚠ Nuevos códigos — guárdalos AHORA
+                  </p>
+                  <p className="text-[10px] text-slate-300 leading-snug">
+                    Los códigos anteriores quedaron invalidados. Estos {backupCodes.length} solo
+                    se muestran <strong className="text-amber-300">UNA SOLA VEZ</strong>.
+                  </p>
+                  <div className="grid grid-cols-2 gap-1.5 bg-slate-950 border border-slate-700 rounded p-2 font-mono text-xs">
+                    {backupCodes.map((c, i) => (
+                      <div key={i} className="text-center text-slate-100 tracking-wider py-0.5">
+                        <span className="text-slate-600 mr-1.5 text-[10px]">{(i + 1).toString().padStart(2, '0')}.</span>
+                        {c}
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={copiarBackupCodes}
+                      className="flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded bg-slate-700 hover:bg-slate-600 text-slate-100 text-[11px] font-semibold transition-colors">
+                      Copiar
+                    </button>
+                    <button onClick={descargarBackupCodes}
+                      className="flex-1 flex items-center justify-center gap-1 px-2.5 py-1.5 rounded bg-blue-600 hover:bg-blue-500 text-white text-[11px] font-semibold transition-colors">
+                      Descargar .txt
+                    </button>
+                    <button onClick={() => setBackupCodes(null)}
+                      className="flex items-center justify-center gap-1 px-2.5 py-1.5 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 text-[11px] font-semibold transition-colors"
+                      title="Ya los guardé">
+                      ✓
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="border-t border-slate-700/50 pt-3">
