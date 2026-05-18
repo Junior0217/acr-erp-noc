@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { X, Trash2, Plus, Minus, ShoppingCart, FileText, CreditCard, Loader2, Search, UserCheck, Receipt, Tag, Lock, KeyRound, Info, AlertCircle } from 'lucide-react'
 import { useCart } from '../contexts/CartContext'
 import { useEmpresa } from '../contexts/EmpresaContext'
+import { useAuth } from '../contexts/AuthContext'
 import { apiFetch } from '../utils/api'
 import { useDebounce } from '../hooks/useDebounce'
 import { toast } from 'sonner'
@@ -73,7 +74,7 @@ function ClienteSearch({ clienteActual, onSelect }) {
   )
 }
 
-function LineaRow({ linea, onUpdate, onRemove, descuentosUnlocked }) {
+function LineaRow({ linea, onUpdate, onRemove, descuentosUnlocked, onRequestUnlock }) {
   const [cant, setCant] = useState(linea.cantidad)
   const [precio, setPrecio] = useState(linea.precioUnitario)
   const [dctPct, setDctPct] = useState(linea.descuentoPorcentaje)
@@ -141,15 +142,19 @@ function LineaRow({ linea, onUpdate, onRemove, descuentosUnlocked }) {
           </div>
         </div>
         <div>
-          <label className="block text-[10px] text-slate-500 mb-1">Precio Unit.</label>
+          <label className="block text-[10px] text-slate-500 mb-1 flex items-center gap-1">Precio Unit. {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}</label>
           <input type="number" min="0" step="0.01" value={precio} onChange={e => setPrecioU(e.target.value)}
-            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500" />
+            disabled={!descuentosUnlocked}
+            onClick={() => { if (!descuentosUnlocked && onRequestUnlock) onRequestUnlock() }}
+            title={!descuentosUnlocked ? 'Override precio · requiere PIN de supervisor' : ''}
+            className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
         </div>
         <div>
           <label className="block text-[10px] text-slate-500 mb-1 flex items-center gap-1">Desc. % {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}</label>
           <input type="number" min="0" max="100" step="0.01" value={dctPct}
             onChange={e => setDPct(e.target.value)}
             disabled={!descuentosUnlocked}
+            onClick={() => { if (!descuentosUnlocked && onRequestUnlock) onRequestUnlock() }}
             title={!descuentosUnlocked ? 'Bloqueado — requiere PIN de supervisor' : ''}
             className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
         </div>
@@ -158,6 +163,7 @@ function LineaRow({ linea, onUpdate, onRemove, descuentosUnlocked }) {
           <input type="number" min="0" step="0.01" value={dctMon}
             onChange={e => setDMon(e.target.value)}
             disabled={!descuentosUnlocked}
+            onClick={() => { if (!descuentosUnlocked && onRequestUnlock) onRequestUnlock() }}
             title={!descuentosUnlocked ? 'Bloqueado — requiere PIN de supervisor' : ''}
             className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
         </div>
@@ -201,7 +207,12 @@ export default function CarritoSlideOver() {
   // con PIN del supervisor. Aplica también al owner — sin excepciones.
   // Un PIN válido libera tanto el descuento global como el descuento por
   // línea, y vuelve a bloquearse al cerrar el slide-over (vía useEffect).
-  const [descuentosUnlocked, setDescuentosUnlocked] = useState(false)
+  const { tienePermiso } = useAuth()
+  const isOwner = tienePermiso?.('sistema:owner') ?? false
+  // Owner auto-unlock. Para roles no-owner: descuentosUnlocked solo se activa
+  // tras PIN supervisor. effective* es el flag real a propagar a inputs.
+  const [descuentosUnlockedRaw, setDescuentosUnlocked] = useState(false)
+  const descuentosUnlocked = descuentosUnlockedRaw || isOwner
   const [pinSupervisor, setPinSupervisor] = useState('')   // viaja al backend
   const [pinModalOpen, setPinModalOpen] = useState(false)
 
@@ -235,7 +246,16 @@ export default function CarritoSlideOver() {
   // Solicita PIN para cambiar un switch de condiciones/notas. Si el usuario
   // cancela o el PIN falla, el switch debe permanecer en su valor anterior
   // (lo logramos no aplicando el cambio hasta confirmar).
+  //
+  // Owner exception: si el usuario tiene sistema:owner, aplica el cambio
+  // directo sin pedir PIN (paridad con regla "owner = auto-unlocked").
   function requestToggleCondicion(campo, nextValue) {
+    if (isOwner) {
+      if (campo === 'notas') setIncluirNotas(nextValue)
+      else if (campo === 'itbis') updateCartMeta({ applyItbis: nextValue })
+      else setIncluirCond(prev => ({ ...prev, [campo]: nextValue }))
+      return
+    }
     setPendingCondToggle({ campo, nextValue })
     setCondPinModalOpen(true)
   }
@@ -473,8 +493,10 @@ export default function CarritoSlideOver() {
                     onChange={e => setNotasTexto(e.target.value)}
                     maxLength={2000}
                     rows={2}
-                    placeholder="Notas internas / aclaraciones para el cliente (máx. 2000 caracteres)..."
-                    className="mt-1.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors resize-none"
+                    disabled={!descuentosUnlocked}
+                    onClick={() => { if (!descuentosUnlocked) setPinModalOpen(true) }}
+                    placeholder={!descuentosUnlocked ? 'Override notas · requiere PIN supervisor' : 'Notas internas / aclaraciones para el cliente (máx. 2000 caracteres)...'}
+                    className="mt-1.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-[11px] text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 transition-colors resize-none disabled:opacity-40 disabled:cursor-not-allowed"
                   />
                 )}
               </div>
@@ -598,7 +620,7 @@ export default function CarritoSlideOver() {
             </div>
           )}
           {lineas.map(l => (
-            <LineaRow key={l.id} linea={l} onUpdate={updateItem} onRemove={removeItem} descuentosUnlocked={descuentosUnlocked} />
+            <LineaRow key={l.id} linea={l} onUpdate={updateItem} onRemove={removeItem} descuentosUnlocked={descuentosUnlocked} onRequestUnlock={() => setPinModalOpen(true)} />
           ))}
         </div>
 

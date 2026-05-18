@@ -512,7 +512,10 @@ function CrossSellBanner({ cart, onAdd }) {
 }
 
 // ── CartLine ──────────────────────────────────────────────────────────────────
-function CartLine({ linea, onChange, onRemove, descuentosUnlocked }) {
+// Reglas Enterprise: precioUnitario + descuento% bloqueados por defecto.
+// Cualquier override exige PIN del supervisor (Tienda → Autorizar). Owner es
+// el ÚNICO rol exento — `unlocked` se activa automático cuando isOwner=true.
+function CartLine({ linea, onChange, onRemove, unlocked, onRequestUnlock }) {
   const pu  = linea.precioUnitario
   const pct = linea.descuentoPorcentaje ?? 0
   const mon = linea.descuentoMonto ?? 0
@@ -532,24 +535,31 @@ function CartLine({ linea, onChange, onRemove, descuentosUnlocked }) {
           <span className="px-1 min-w-[24px] text-center text-sm font-mono text-slate-100">{linea.cantidad}</span>
           <button onClick={() => onChange({ cantidad: linea.cantidad + 1 })} className="px-2 py-1 text-slate-400 hover:text-slate-100 transition-colors"><Plus size={11} /></button>
         </div>
-        {/* price override */}
-        <div className="flex items-center gap-1 text-xs text-slate-500">
+        {/* price override — BLOQUEADO sin PIN supervisor (override precio lista) */}
+        <div
+          className="flex items-center gap-1 text-xs text-slate-500"
+          title={!unlocked ? 'Override precio · requiere PIN supervisor' : ''}
+        >
+          {!unlocked && <Lock size={10} className="text-amber-400" />}
           <span>RD$</span>
           <input
             type="number" min="0" step="0.01"
             value={pu}
             onChange={e => onChange({ precioUnitario: parseFloat(e.target.value) || 0 })}
-            className="w-20 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500"
+            disabled={!unlocked}
+            onClick={() => { if (!unlocked && onRequestUnlock) onRequestUnlock() }}
+            className="w-20 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
           />
         </div>
-        {/* discount % — BLOQUEADO sin PIN supervisor (aplica a todos, incluyendo owner) */}
-        <div className="flex items-center gap-1 text-xs text-slate-500" title={!descuentosUnlocked ? 'Bloqueado · requiere PIN supervisor' : ''}>
-          {descuentosUnlocked ? <Tag size={10} /> : <Lock size={10} className="text-amber-400" />}
+        {/* discount % — BLOQUEADO sin PIN supervisor */}
+        <div className="flex items-center gap-1 text-xs text-slate-500" title={!unlocked ? 'Bloqueado · requiere PIN supervisor' : ''}>
+          {unlocked ? <Tag size={10} /> : <Lock size={10} className="text-amber-400" />}
           <input
             type="number" min="0" max="100" step="1"
             value={pct}
             onChange={e => onChange({ descuentoPorcentaje: parseFloat(e.target.value) || 0 })}
-            disabled={!descuentosUnlocked}
+            disabled={!unlocked}
+            onClick={() => { if (!unlocked && onRequestUnlock) onRequestUnlock() }}
             className="w-12 bg-slate-800 border border-slate-700 rounded px-1.5 py-0.5 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
           />
           <span>%</span>
@@ -569,8 +579,12 @@ function CartLine({ linea, onChange, onRemove, descuentosUnlocked }) {
 function CondicionToggleBlock({
   label, texto, onTexto, mostrar, onMostrar,
   obligatorio = false, multiline = false, placeholder = '', maxLength = 500,
+  locked = false, onRequestUnlock,
 }) {
   const on = obligatorio ? true : mostrar
+  // Texto override BLOQUEADO si locked y no es obligatorio. Owner siempre
+  // pasa locked=false desde el padre, así que siempre puede editar.
+  const textoLocked = locked
   return (
     <div className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
       <div className="flex w-full items-center justify-between gap-2">
@@ -585,6 +599,7 @@ function CondicionToggleBlock({
           type="button"
           onClick={() => {
             if (obligatorio) return
+            if (locked) { onRequestUnlock?.(); return }
             onMostrar(!on)
           }}
           disabled={obligatorio}
@@ -599,15 +614,19 @@ function CondicionToggleBlock({
         <textarea
           rows={2} maxLength={maxLength} value={texto}
           onChange={e => onTexto(e.target.value)}
-          placeholder={placeholder}
-          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y"
+          placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor (clic en el switch)' : placeholder}
+          disabled={textoLocked}
+          onClick={() => { if (textoLocked) onRequestUnlock?.() }}
+          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y disabled:opacity-40 disabled:cursor-not-allowed"
         />
       ) : (
         <input
           type="text" maxLength={maxLength} value={texto}
           onChange={e => onTexto(e.target.value)}
-          placeholder={placeholder}
-          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+          placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor' : placeholder}
+          disabled={textoLocked}
+          onClick={() => { if (textoLocked) onRequestUnlock?.() }}
+          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
         />
       ))}
       {on && multiline && (
@@ -680,6 +699,11 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   // canDescuento removido — descuentos ahora gate por PIN, no por permiso.
   const canCotizar  = tienePermiso('pos:cotizar')  || tienePermiso('sistema:owner')
   const canFacturar = tienePermiso('pos:facturar') || tienePermiso('sistema:owner')
+  const isOwner     = tienePermiso('sistema:owner')
+  // Override de candado: owner pasa siempre. Para roles no-owner, solo el
+  // toggle de PIN supervisor desbloquea precio + descuentos + textos
+  // condiciones para la sesión actual.
+  const effectiveUnlocked = descuentosUnlocked || isOwner
 
   // showCheckout también declarado antes de los effects que lo usan.
   const [showCheckout, setShowCheckout] = useState(false)
@@ -710,7 +734,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       const inField = tag === 'input' || tag === 'textarea' || tag === 'select'
       if (e.key === 'F4') {
         e.preventDefault()
-        if (!descuentosUnlocked) setPinModalOpen(true)
+        if (!effectiveUnlocked) setPinModalOpen(true)
         return
       }
       if (inField) return
@@ -935,7 +959,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
               <p className="text-xs font-mono">Vacío</p>
             </div>
           ) : (Array.isArray(cart) ? cart : []).map((l, i) => (
-            <CartLine key={i} linea={l} onChange={ch => updateLine(i, ch)} onRemove={() => removeLine(i)} descuentosUnlocked={descuentosUnlocked} />
+            <CartLine key={i} linea={l} onChange={ch => updateLine(i, ch)} onRemove={() => removeLine(i)} unlocked={effectiveUnlocked} onRequestUnlock={() => setPinModalOpen(true)} />
           ))}
         </div>
 
@@ -946,25 +970,27 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
             <div className="flex items-end gap-2">
               <div className="flex-1">
                 <label className="text-[10px] text-slate-500 flex items-center gap-1">
-                  Desc. global % {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}
+                  Desc. global % {!effectiveUnlocked && <Lock size={9} className="text-amber-400" />}
                 </label>
                 <input type="number" min="0" max="100" value={descGlobalPct}
                   onChange={e => setDescGlobalPct(parseFloat(e.target.value) || 0)}
-                  disabled={!descuentosUnlocked}
+                  disabled={!effectiveUnlocked}
+                  onClick={() => { if (!effectiveUnlocked) setPinModalOpen(true) }}
                   className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
               </div>
               <div className="flex-1">
                 <label className="text-[10px] text-slate-500 flex items-center gap-1">
-                  Desc. RD$ {!descuentosUnlocked && <Lock size={9} className="text-amber-400" />}
+                  Desc. RD$ {!effectiveUnlocked && <Lock size={9} className="text-amber-400" />}
                 </label>
                 <input type="number" min="0" value={descGlobalMonto}
                   onChange={e => setDescGlobalMonto(parseFloat(e.target.value) || 0)}
-                  disabled={!descuentosUnlocked}
+                  disabled={!effectiveUnlocked}
+                  onClick={() => { if (!effectiveUnlocked) setPinModalOpen(true) }}
                   className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed" />
               </div>
-              {!descuentosUnlocked && (
+              {!effectiveUnlocked && (
                 <button onClick={() => setPinModalOpen(true)}
-                  title="Autorizar descuentos (F4)"
+                  title="Autorizar descuentos / precio / condiciones (F4)"
                   className="h-7 px-2 rounded text-[10px] font-bold bg-amber-600/20 text-amber-400 border border-amber-600/40 hover:bg-amber-600/40 transition-colors flex items-center gap-1">
                   <KeyRound size={10} /> F4
                 </button>
@@ -1022,6 +1048,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   mostrar={mostrarValidez}
                   onMostrar={setMostrarValidez}
                   obligatorio={obligValidez}
+                  locked={!effectiveUnlocked}
+                  onRequestUnlock={() => setPinModalOpen(true)}
                   placeholder="Ej: Esta cotización es válida por 15 días."
                 />
                 {/* Entrega */}
@@ -1032,6 +1060,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   mostrar={mostrarEntrega}
                   onMostrar={setMostrarEntrega}
                   obligatorio={obligEntrega}
+                  locked={!effectiveUnlocked}
+                  onRequestUnlock={() => setPinModalOpen(true)}
                   placeholder="Ej: Entrega en 3-5 días laborables tras confirmación."
                 />
                 {/* Garantía */}
@@ -1042,6 +1072,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   mostrar={mostrarGarantia}
                   onMostrar={setMostrarGarantia}
                   obligatorio={obligGarantia}
+                  locked={!effectiveUnlocked}
+                  onRequestUnlock={() => setPinModalOpen(true)}
                   placeholder="Ej: 30 días contra defectos de fabricación."
                 />
                 {/* Notas — sin _obligatorio (notas son siempre opcionales DGII) */}
@@ -1052,6 +1084,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   mostrar={mostrarNotas}
                   onMostrar={setMostrarNotas}
                   obligatorio={false}
+                  locked={!effectiveUnlocked}
+                  onRequestUnlock={() => setPinModalOpen(true)}
                   multiline
                   maxLength={2000}
                   placeholder="Notas internas o aclaraciones para el cliente."

@@ -5,7 +5,8 @@ import {
   Wrench, Package, Layers, Link2, Unlink, Image as ImageIcon,
 } from 'lucide-react'
 import { apiFetch } from '@shared/utils/api'
-import ImageDropzone from '@shared/components/ImageDropzone'
+// ImageDropzone removido: la foto vive solo en Inventario → Producto (single
+// source of truth). Catálogo lee imagenUrl pero no la edita.
 import EditorDescripcion from '@shared/components/EditorDescripcion'
 
 // Parse descripcion legacy/JSON para el editor estructurado.
@@ -197,14 +198,31 @@ function ItemModal({ item, canSeeCosts, onClose, onSaved }) {
             </div>
           </div>
 
-          <ImageDropzone
-            url={form.imagenUrl}
-            onChange={u => set('imagenUrl', u)}
-            kind="itemCatalogo"
-            label="Imagen del item (vitrina comercial)"
-            desc="Arrastra una foto · si está vinculado a un producto, se usa la imagen del producto físico"
-            height={160}
-          />
+          {/* Imagen del Catálogo: SOURCE OF TRUTH = Inventario (Producto.imagenUrl).
+              Single source of truth: la foto vive en el Producto físico (o en el
+              registro de Servicios). Aquí mostramos solo preview de lo que se
+              renderiza al cliente. Para SUBIR/CAMBIAR una imagen:
+                · Item con productoId → editar en Inventario → Producto.
+                · Item sin productoId (servicio puro) → editar en Servicios.
+              Antes había un ImageDropzone aquí que permitía colocar una foto
+              distinta a la del Producto → drift visual (Inventario decía "X" y
+              Catálogo decía "Y"). Eliminado por política de single source. */}
+          <div className="rounded-lg border border-slate-700/40 bg-slate-900/30 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-semibold text-slate-200">Imagen del Item</p>
+                <p className="text-[10px] text-slate-500 mt-0.5 leading-snug">
+                  La foto vive en <strong>Inventario → Producto</strong> (o Servicios).
+                  El Catálogo solo la lee — no la edita.
+                </p>
+              </div>
+              {form.imagenUrl ? (
+                <img src={form.imagenUrl} alt="Preview" className="h-16 w-16 object-cover rounded border border-slate-700" />
+              ) : (
+                <span className="text-[10px] text-slate-600 italic">— sin imagen —</span>
+              )}
+            </div>
+          </div>
 
           {/* Vínculo con producto físico (sincroniza stock + imagen del inventario) */}
           <div>

@@ -512,21 +512,51 @@ const NCF_CATALOGO = [
   { tipoNcf: 'Gubernamental',    prefijo: 'B15', tipoDescripcion: 'Gubernamental'              },
 ]
 
+// Secuencias INTERNAS (no fiscales). Cualquier nuevo prefijo aquí NO debe
+// confundirse con un NCF DGII (B##/E##): los NCF se gestionan exclusivamente
+// en NCFSection con el catálogo cerrado NCF_CATALOGO.
 const SEQ_ENTIDADES = [
-  { key: 'factura',    label: 'Facturas',     desc: 'Documentos fiscales emitidos a clientes.' },
-  { key: 'cotizacion', label: 'Cotizaciones', desc: 'Propuestas comerciales pre-venta.' },
-  { key: 'cliente',    label: 'Clientes',     desc: 'Número de cliente único (no fiscal).' },
-  { key: 'producto',   label: 'Artículos',    desc: 'SKUs auto-generados (inventario).' },
-  { key: 'servicio',   label: 'Servicios',    desc: 'Contratos/suscripciones de servicio.' },
-  { key: 'plan',       label: 'Planes ISP',   desc: 'SKU del plan (WISP/CCTV/Mixto).' },
-  { key: 'rma',        label: 'Tickets RMA',  desc: 'Reparación y servicio técnico en taller.' },
+  { key: 'factura',      label: 'Facturas',      desc: 'Documentos fiscales emitidos a clientes (prefijo interno FAC).' },
+  { key: 'cotizacion',   label: 'Cotizaciones',  desc: 'Propuestas comerciales pre-venta.' },
+  { key: 'cliente',      label: 'Clientes',      desc: 'Número de cliente único (no fiscal).' },
+  { key: 'producto',     label: 'Artículos',     desc: 'SKUs auto-generados (inventario).' },
+  { key: 'servicio',     label: 'Servicios',     desc: 'Contratos/suscripciones de servicio.' },
+  { key: 'plan',         label: 'Planes ISP',    desc: 'SKU del plan (WISP/CCTV/Mixto).' },
+  { key: 'rma',          label: 'Tickets RMA',   desc: 'Reparación y servicio técnico en taller.' },
+  { key: 'ordenTrabajo', label: 'Órdenes de Trabajo', desc: 'OT — visitas técnicas / instalaciones / mantenimientos.' },
 ]
+
+// Whitelist DGII estricta. NCFSection ignora cualquier registro de
+// ConfiguracionNCF cuyo prefijo NO empiece con B/E o no esté en este catálogo.
+// Previene que prefijos internos (COT, OT, FAC) se filtren a la lista fiscal
+// si alguien guardó por error en la tabla equivocada.
+const NCF_PREFIJOS_VALIDOS = new Set(['B01', 'B02', 'B03', 'B04', 'B14', 'B15'])
 
 function TabSecuenciasNCF({ canEdit }) {
   return (
     <div className="space-y-6">
-      <SecuenciasSection canEdit={canEdit} />
-      <NCFSection         canEdit={canEdit} />
+      {/* Bloque A — secuencias INTERNAS (operativas, no fiscales) */}
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-bold text-emerald-400 uppercase tracking-widest bg-emerald-900/20 border border-emerald-700/40 rounded px-1.5 py-0.5">Bloque A</span>
+          <h2 className="text-sm font-bold text-slate-200">Secuencias Internas</h2>
+          <span className="text-[10px] text-slate-500">FAC · COT · CLI · ART · SVC · PLN · RMA · OT</span>
+        </div>
+        <SecuenciasSection canEdit={canEdit} />
+      </div>
+
+      {/* Divisor fuerte para separar visualmente lo operativo de lo fiscal */}
+      <div className="border-t-2 border-dashed border-slate-700/40" aria-hidden="true" />
+
+      {/* Bloque B — NCF FISCALES DGII (cerrado a B01/B02/B03/B04/B14/B15) */}
+      <div>
+        <div className="flex items-center gap-2 mb-2">
+          <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest bg-indigo-900/20 border border-indigo-700/40 rounded px-1.5 py-0.5">Bloque B</span>
+          <h2 className="text-sm font-bold text-slate-200">NCF Fiscales DGII</h2>
+          <span className="text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B14 · B15</span>
+        </div>
+        <NCFSection canEdit={canEdit} />
+      </div>
     </div>
   )
 }
@@ -716,7 +746,12 @@ function NCFSection({ canEdit }) {
     try {
       const r = await apiFetch('/api/ncf-config')
       const j = r.ok ? await r.json() : { data: [] }
-      const data = j.data ?? []
+      // Filtro estricto: solo rows con prefijo B##/E## válidos del catálogo
+      // DGII. Cualquier secuencia interna (COT, OT, FAC, etc.) que se haya
+      // guardado por error en ConfiguracionNCF se ignora — esa lista vive
+      // en EmpresaPerfil.secuenciasConfig, no aquí.
+      const rawData = j.data ?? []
+      const data = rawData.filter(c => NCF_PREFIJOS_VALIDOS.has(String(c.prefijo).toUpperCase()))
       setConfigs(data)
       const init = {}
       const vistas = new Set()
