@@ -49,7 +49,17 @@ function createNcfAdminService(deps) {
     return { status: 200, body: config };
   }
 
-  return { NcfAdminError, listarConfiguraciones, upsertConfiguracion };
+  async function consolidarDuplicados(catalogoCanonico, user, reqMeta) {
+    const result = await repo.consolidarDuplicadosPorPrefijo(catalogoCanonico);
+    auditReq('empresa:ncf_consolidar_duplicados', _fakeReqForAudit(reqMeta, user), {
+      eliminados:  result.eliminados.length,
+      renombrados: result.renombrados.length,
+      ganadores:   result.ganadores.length,
+    });
+    return { status: 200, body: result };
+  }
+
+  return { NcfAdminError, listarConfiguraciones, upsertConfiguracion, consolidarDuplicados };
 }
 
 module.exports = createNcfAdminService;

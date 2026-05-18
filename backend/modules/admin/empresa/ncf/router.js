@@ -34,8 +34,10 @@ function createNcfAdminRouter(deps) {
   const controller = createNcfAdminCtrl({ service, schemas: ncfSchemas });
 
   const router = express.Router();
-  router.get('/ncf-config',  verificarJWT, requerirPermiso('factura:ver'),    controller.listar);
-  router.post('/ncf-config', verificarJWT, requerirPermiso('sistema:admin'), controller.upsert);
+  router.get('/ncf-config',             verificarJWT, requerirPermiso('factura:ver'),    controller.listar);
+  router.post('/ncf-config',            verificarJWT, requerirPermiso('sistema:admin'), controller.upsert);
+  // Consolidación: cleanup destructivo (deletes rows). sistema:owner only.
+  router.post('/ncf-config/consolidar', verificarJWT, requerirPermiso('sistema:owner'), controller.consolidar);
   return router;
 }
 

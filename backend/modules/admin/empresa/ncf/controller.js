@@ -49,7 +49,7 @@ function _wrap(fn) {
 function createNcfAdminController({ service, schemas }) {
   if (!service) throw new Error('createNcfAdminController: service required');
   if (!schemas) throw new Error('createNcfAdminController: schemas required');
-  const { ncfConfigSchema } = schemas;
+  const { ncfConfigSchema, NCF_CATALOGO_DGII } = schemas;
 
   const listar = _wrap(async () => service.listarConfiguraciones());
 
@@ -59,7 +59,19 @@ function createNcfAdminController({ service, schemas }) {
     return service.upsertConfiguracion(data, req.user, reqMeta);
   });
 
-  return { listar, upsert };
+  // POST /ncf-config/consolidar → owner-only. Limpia duplicados por prefijo
+  // y re-canoniza tipoNcf usando el catálogo cerrado DGII. Idempotente.
+  const consolidar = _wrap(async (req) => {
+    const reqMeta = _extractReqMeta(req);
+    // Reconstruye el catálogo { prefijo: { tipoNcf, tipoDescripcion } }
+    const catalogoMap = {};
+    for (const [prefijo, tipoNcf] of Object.entries(NCF_CATALOGO_DGII)) {
+      catalogoMap[prefijo] = { tipoNcf, tipoDescripcion: tipoNcf };
+    }
+    return service.consolidarDuplicados(catalogoMap, req.user, reqMeta);
+  });
+
+  return { listar, upsert, consolidar };
 }
 
 module.exports = createNcfAdminController;

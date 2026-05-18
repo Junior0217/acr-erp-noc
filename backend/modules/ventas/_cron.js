@@ -149,5 +149,49 @@ cron.schedule('*/5 * * * *', () => pdfService.prerenderPdfsBatch().catch(e => co
 })
 
 
+// ─── Mejora #17 — Alerta diaria de rangos NCF próximos a agotarse ───────────
+// 8:00 AM hora SDQ. Recorre ConfiguracionNCF y registra warning en AuditLog
+// para cada NCF cuya secuenciaActual / limite >= 0.85. El owner ve el alert
+// en el dashboard (NCF alerts ya implementado) — este cron deja TRAIL del
+// día específico en que la alerta se disparó, para defensa fiscal.
+async function alertarRangosNCF() {
+  try {
+    const configs = await prisma.configuracionNCF.findMany({ where: { activo: true } })
+    const alertas = []
+    for (const c of configs) {
+      const lim = Number(c.limite) || 0
+      const act = Number(c.secuenciaActual) || 0
+      if (lim <= 0) continue
+      const pct = act / lim
+      if (pct >= 0.85) {
+        alertas.push({
+          tipoNcf:   c.tipoNcf,
+          prefijo:   c.prefijo,
+          restantes: lim - act,
+          pct:       Math.round(pct * 100),
+        })
+      }
+    }
+    if (alertas.length === 0) {
+      console.log('[NCF CRON] OK — ningún rango por encima del 85%.')
+      return
+    }
+    console.warn(`[NCF CRON] ${alertas.length} rango(s) sobre 85%:`, alertas.map(a => `${a.prefijo}=${a.pct}%`).join(', '))
+    // AuditLog directo (sin req — es cron, no HTTP). Persiste el evento
+    // para reportes de compliance.
+    try {
+      await prisma.auditLog.create({
+        data: {
+          accion:    'ncf:rango_warning',
+          metadata:  { alertas },
+        },
+      })
+    } catch (e) { console.error('[NCF CRON audit]', e.message) }
+  } catch (e) {
+    console.error('[NCF CRON]', e.message)
+  }
+}
+cron.schedule('0 8 * * *', alertarRangosNCF, { timezone: 'America/Santo_Domingo' })
+
 
 };

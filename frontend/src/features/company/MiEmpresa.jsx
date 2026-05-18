@@ -761,26 +761,50 @@ function NCFSection({ canEdit }) {
     try {
       const r = await apiFetch('/api/ncf-config')
       const j = r.ok ? await r.json() : { data: [] }
-      // Filtro estricto: solo rows con prefijo B##/E## válidos del catálogo
-      // DGII. Cualquier secuencia interna (COT, OT, FAC, etc.) que se haya
-      // guardado por error en ConfiguracionNCF se ignora — esa lista vive
-      // en EmpresaPerfil.secuenciasConfig, no aquí.
-      const rawData = j.data ?? []
-      const data = rawData.filter(c => NCF_PREFIJOS_VALIDOS.has(String(c.prefijo).toUpperCase()))
-      setConfigs(data)
-      const init = {}
-      const vistas = new Set()
-      for (const c of data) {
-        init[c.tipoNcf] = { ...c, vencimiento: c.vencimiento ? c.vencimiento.slice(0, 10) : '' }
-        vistas.add(c.tipoNcf)
-      }
-      for (const n of NCF_CATALOGO) {
-        if (vistas.has(n.tipoNcf)) continue
-        init[n.tipoNcf] = {
-          prefijo: n.prefijo, tipoNcf: n.tipoNcf, tipoDescripcion: n.tipoDescripcion,
-          secuenciaActual: 0, limite: 99999999, vencimiento: '', activo: true,
+      // Filtro estricto: solo rows con prefijo B##/E## válidos. Cualquier
+      // secuencia interna (COT, OT, FAC) guardada por error en
+      // ConfiguracionNCF se ignora — esa lista vive en EmpresaPerfil.
+      const rawData = (j.data ?? []).filter(c => NCF_PREFIJOS_VALIDOS.has(String(c.prefijo).toUpperCase()))
+
+      // Dedup por prefijo (single source of truth): si el backend devuelve
+      // 2 filas con el mismo B01 (ej. tipoNcf='Fiscal' legacy + 'Crédito
+      // Fiscal' canónico), nos quedamos con la que MÁS HA AVANZADO en
+      // secuenciaActual. Eso preserva los NCFs ya consumidos y descarta
+      // las plantillas vacías leftover de cambios de catálogo. El backend
+      // debe re-canonizar el tipoNcf via endpoint /consolidar (admin).
+      const byPrefijo = new Map()
+      for (const row of rawData) {
+        const pref = String(row.prefijo).toUpperCase()
+        const cur  = byPrefijo.get(pref)
+        if (!cur || (row.secuenciaActual ?? 0) > (cur.secuenciaActual ?? 0)) {
+          byPrefijo.set(pref, row)
         }
       }
+
+      // Re-key por prefijo (no por tipoNcf) y forzar el tipoNcf+descripción
+      // canónicos del catálogo. Así "Fiscal" legacy se muestra como "Crédito
+      // Fiscal" sin tocar la BD hasta que el owner guarde.
+      const catMap = Object.fromEntries(NCF_CATALOGO.map(n => [n.prefijo, n]))
+      const init   = {}
+      for (const pref of NCF_PREFIJOS_VALIDOS) {
+        const canon = catMap[pref]
+        const db    = byPrefijo.get(pref)
+        const key   = canon?.tipoNcf ?? db?.tipoNcf ?? pref
+        if (db) {
+          init[key] = {
+            ...db,
+            tipoNcf:         canon?.tipoNcf ?? db.tipoNcf,
+            tipoDescripcion: canon?.tipoDescripcion ?? db.tipoDescripcion,
+            vencimiento:     db.vencimiento ? db.vencimiento.slice(0, 10) : '',
+          }
+        } else {
+          init[key] = {
+            prefijo: pref, tipoNcf: canon.tipoNcf, tipoDescripcion: canon.tipoDescripcion,
+            secuenciaActual: 0, limite: 99999999, vencimiento: '', activo: true,
+          }
+        }
+      }
+      setConfigs(Array.from(byPrefijo.values()))
       setForms(init)
     } catch {} finally { setLoading(false) }
   }, [])
@@ -845,12 +869,33 @@ function NCFSection({ canEdit }) {
 
   if (loading) return <div className="flex justify-center py-12"><Loader2 size={20} className="animate-spin text-emerald-500" /></div>
 
+  async function consolidar() {
+    if (!window.confirm('Consolidar duplicados por prefijo: borra rows duplicadas conservando la de mayor secuenciaActual + renombra tipoNcf legacy al canónico DGII. Idempotente pero IRREVERSIBLE. ¿Continuar?')) return
+    setLoading(true)
+    try {
+      const r = await apiFetch('/api/ncf-config/consolidar', { method: 'POST' })
+      const j = await r.json().catch(() => ({}))
+      if (r.ok) {
+        toast.success(`Consolidación OK · ${j.eliminados?.length ?? 0} eliminados · ${j.renombrados?.length ?? 0} renombrados.`)
+        fetchConfigs()
+      } else { toast.error(j.error ?? 'Error en la consolidación.') }
+    } catch { toast.error('Error de red en la consolidación.') }
+    finally  { setLoading(false) }
+  }
+
   return (
     <section className="bg-slate-800/40 border border-emerald-500/30 rounded-xl p-5">
-      <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-700/50">
+      <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-700/50 flex-wrap">
         <Hash size={15} className="text-emerald-400" />
         <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Rangos NCF (DGII)</h3>
-        <span className="ml-auto text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B11 · B12 · B13 · B14 · B15 · B16 · B17</span>
+        <span className="text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B11 · B12 · B13 · B14 · B15 · B16 · B17</span>
+        {canEdit && (
+          <button type="button" onClick={consolidar}
+            title="Consolidar duplicados por prefijo + re-canonizar tipoNcf legacy (owner-only)"
+            className="ml-auto px-2.5 py-1 rounded-lg bg-amber-600/15 hover:bg-amber-600/25 border border-amber-600/30 text-amber-300 text-[10px] font-bold transition-all flex items-center gap-1">
+            <RefreshCw size={10} /> Consolidar duplicados
+          </button>
+        )}
       </div>
       <p className="text-xs text-slate-500 mb-4">
         Configura los prefijos y secuencias para cada tipo de NCF según tus rangos autorizados por la DGII.
@@ -867,8 +912,8 @@ function NCFSection({ canEdit }) {
           const excede = sec > lim
           return (
             <div key={f.tipoNcf} className="bg-slate-900/30 border border-slate-700/40 rounded-lg p-3 space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="text-xs font-mono font-bold text-slate-300 bg-slate-800 px-2 py-0.5 rounded border border-slate-700">{f.prefijo}</span>
                   <span className="text-xs text-slate-400">{f.tipoDescripcion ?? f.tipoNcf}</span>
                   {noPersistido && (
@@ -877,6 +922,17 @@ function NCFSection({ canEdit }) {
                       <Plus size={9} /> nuevo
                     </span>
                   )}
+                  {/* Preview "Próximo": NCFs DGII tienen formato B## + 8 dígitos
+                      (11 chars total). Mismo patrón visual que SecuenciasSection
+                      pero con padding fijo de 8 — la DGII NO admite paddings
+                      distintos en NCF. */}
+                  <span title="Próximo NCF que se consumirá al emitir"
+                    className="flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-900/20 border border-emerald-700/30">
+                    <CheckCircle size={9} className="text-emerald-400" />
+                    <span className="text-[9.5px] font-mono text-emerald-300">
+                      {f.prefijo}{String((Number(f.secuenciaActual) || 0) + 1).padStart(8, '0')}
+                    </span>
+                  </span>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] text-slate-600 font-mono">Activo</span>

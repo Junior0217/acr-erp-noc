@@ -20,10 +20,12 @@ class CatalogoError extends Error {
 }
 
 function createCatalogoService(deps) {
-  const { repo, auditReq, generarSiguienteCodigo, CODIGO_PREFIJO } = deps;
+  const { repo, auditReq, generarSiguienteCodigo, CODIGO_PREFIJO, prisma } = deps;
   if (!repo)                                          throw new Error('createCatalogoService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createCatalogoService: auditReq required');
   if (typeof generarSiguienteCodigo !== 'function')   throw new Error('createCatalogoService: generarSiguienteCodigo required');
+  // prisma opcional — solo necesario para auto-link de ItemCatalogo → Producto
+  // por SKU. Si no está, se omite el lookup (no rompe).
 
   function _fakeReqForAudit(reqMeta, user) {
     return {
@@ -157,8 +159,24 @@ function createCatalogoService(deps) {
   async function crearItemCatalogo(dto, user, reqMeta) {
     if (dto.descripcion !== undefined) dto.descripcion = descripcionToRaw(dto.descripcion);
     const codigo = await _generarCodigoCatalogo(dto.tipo);
+    // Mejora #14: auto-link ItemCatalogo → Producto cuando el `codigo`
+    // generado coincide con un Producto.sku existente. Single source of
+    // truth: el item hereda imagenUrl + stock del producto físico sin que
+    // el user tenga que vincular manualmente.
+    if (!dto.productoId && codigo && prisma?.producto?.findUnique) {
+      try {
+        const match = await prisma.producto.findUnique({
+          where:  { sku: codigo },
+          select: { id: true },
+        });
+        if (match) dto.productoId = match.id;
+      } catch {}
+    }
     const item = await repo.createItemCatalogo({ ...dto, codigo });
-    auditReq('catalogo:crear', _fakeReqForAudit(reqMeta, user), { id: item.id, codigo, tipo: dto.tipo, tipoItem: dto.tipoItem });
+    auditReq('catalogo:crear', _fakeReqForAudit(reqMeta, user), {
+      id: item.id, codigo, tipo: dto.tipo, tipoItem: dto.tipoItem,
+      autoLinkedProductoId: dto.productoId ?? null,
+    });
     return { status: 201, body: item };
   }
 

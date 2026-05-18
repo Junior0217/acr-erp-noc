@@ -96,6 +96,49 @@ function createNcfService(deps) {
     return prisma.configuracionNCF.findMany({ orderBy: { tipoNcf: 'asc' } });
   }
 
+  // Consolida duplicados por prefijo. Cuando el catálogo DGII cambia el
+  // tipoNcf canónico (ej. 'Fiscal' → 'Crédito Fiscal'), pueden quedar dos
+  // filas con el MISMO prefijo pero distinto tipoNcf. Conservamos la fila
+  // con secuenciaActual más alta (la que ya emitió NCFs) y borramos las
+  // demás. La fila ganadora hereda el tipoNcf canónico + descripción.
+  //
+  // Idempotente: re-ejecutar no hace daño. Solo afecta filas duplicadas
+  // por prefijo.
+  async function consolidarDuplicadosPorPrefijo(catalogoCanonico) {
+    const todas = await prisma.configuracionNCF.findMany();
+    const porPrefijo = new Map();
+    for (const row of todas) {
+      const pref = String(row.prefijo).toUpperCase();
+      const cur = porPrefijo.get(pref);
+      if (!cur || (row.secuenciaActual ?? 0) > (cur.secuenciaActual ?? 0)) {
+        porPrefijo.set(pref, row);
+      }
+    }
+    // Para cada prefijo, identifica ganador y eliminados.
+    const operaciones = { ganadores: [], eliminados: [], renombrados: [] };
+    await prisma.$transaction(async (tx) => {
+      for (const [pref, ganador] of porPrefijo.entries()) {
+        const canon = catalogoCanonico?.[pref];
+        // Borrar duplicados (todos los rows con mismo prefijo excepto el ganador)
+        const duplicados = todas.filter(r => String(r.prefijo).toUpperCase() === pref && r.id !== ganador.id);
+        for (const d of duplicados) {
+          await tx.configuracionNCF.delete({ where: { id: d.id } });
+          operaciones.eliminados.push({ prefijo: pref, tipoNcf: d.tipoNcf, secActual: d.secuenciaActual });
+        }
+        // Re-canonizar tipoNcf + descripción del ganador si el catálogo lo define.
+        if (canon && (ganador.tipoNcf !== canon.tipoNcf || ganador.tipoDescripcion !== canon.tipoDescripcion)) {
+          await tx.configuracionNCF.update({
+            where: { id: ganador.id },
+            data:  { tipoNcf: canon.tipoNcf, tipoDescripcion: canon.tipoDescripcion },
+          });
+          operaciones.renombrados.push({ prefijo: pref, antes: ganador.tipoNcf, despues: canon.tipoNcf });
+        }
+        operaciones.ganadores.push({ prefijo: pref, tipoNcf: canon?.tipoNcf ?? ganador.tipoNcf, secActual: ganador.secuenciaActual });
+      }
+    });
+    return operaciones;
+  }
+
   /**
    * Upsert público para el endpoint admin /ncf-config. Permite que el owner
    * cree/edite configuraciones (prefijo, limite, vencimiento, activo) sin
@@ -125,6 +168,7 @@ function createNcfService(deps) {
     nextNcfSequence,
     listConfiguraciones,
     upsertConfiguracion,
+    consolidarDuplicadosPorPrefijo,
   };
 }
 

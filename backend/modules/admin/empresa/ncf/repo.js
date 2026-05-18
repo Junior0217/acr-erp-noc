@@ -25,7 +25,14 @@ function createNcfRepo({ ncfService }) {
     return ncfService.upsertConfiguracion(data);
   }
 
-  return { listConfiguraciones, upsertConfiguracion };
+  async function consolidarDuplicadosPorPrefijo(catalogo) {
+    if (typeof ncfService.consolidarDuplicadosPorPrefijo !== 'function') {
+      throw new Error('ncfService.consolidarDuplicadosPorPrefijo no disponible');
+    }
+    return ncfService.consolidarDuplicadosPorPrefijo(catalogo);
+  }
+
+  return { listConfiguraciones, upsertConfiguracion, consolidarDuplicadosPorPrefijo };
 }
 
 module.exports = createNcfRepo;

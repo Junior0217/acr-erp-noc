@@ -54,11 +54,23 @@ function createPosRouter(deps) {
     message: { valid: false, error: 'Demasiados intentos de PIN. Espera 5 minutos.' },
   });
 
+  // Mejora #2: Rate-limit por cajero en venta POS. Bucket por req.user.sub
+  // → si un user (sesión comprometida) intenta loop de facturas falsas, se
+  // capa a 60/min. El billingLimiter global sigue activo como red secundaria.
+  // skipSuccessfulRequests=false: cuenta TODOS los intentos (un atacante
+  // exitoso es peor que uno fallido).
+  const posVentaPorCajero = rateLimit({
+    windowMs: 60 * 1000,
+    max:      60,
+    keyGenerator: (req) => req.user?.sub ? `pos:${req.user.sub}` : reqFingerprint(req),
+    message: { error: 'Demasiadas ventas por minuto. Espera unos segundos.', code: 'POS_PER_USER_RL' },
+  });
+
   const router = express.Router();
 
-  router.post('/pos/verificar-pin', verificarJWT, pinVerifyLimiter,                       controller.verifyPin);
-  router.post('/pos/venta',         verificarJWT, billingLimiter,                         controller.postVenta);
-  router.post('/facturas/manual',   verificarJWT, billingLimiter, requerirPermiso('factura:emitir'), controller.postFacturaManual);
+  router.post('/pos/verificar-pin', verificarJWT, pinVerifyLimiter,                                            controller.verifyPin);
+  router.post('/pos/venta',         verificarJWT, billingLimiter, posVentaPorCajero,                           controller.postVenta);
+  router.post('/facturas/manual',   verificarJWT, billingLimiter, posVentaPorCajero, requerirPermiso('factura:emitir'), controller.postFacturaManual);
 
   return router;
 }

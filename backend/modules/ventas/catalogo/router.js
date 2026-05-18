@@ -28,7 +28,7 @@ function createCatalogoRouter(deps) {
   });
 
   const repo       = createCatalogoRepo(prisma);
-  const service    = createCatalogoService({ repo, auditReq, generarSiguienteCodigo, CODIGO_PREFIJO: catalogoSchemas.CODIGO_PREFIJO });
+  const service    = createCatalogoService({ repo, auditReq, generarSiguienteCodigo, CODIGO_PREFIJO: catalogoSchemas.CODIGO_PREFIJO, prisma });
   const controller = createCatalogoController({ service, schemas: catalogoSchemas, prisma, helpers });
 
   const router = express.Router();
