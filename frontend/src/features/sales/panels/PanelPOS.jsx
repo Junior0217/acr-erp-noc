@@ -560,6 +560,63 @@ function CartLine({ linea, onChange, onRemove, descuentosUnlocked }) {
   )
 }
 
+// ─── CondicionToggleBlock ────────────────────────────────────────────────────
+// Bloque reusable para Validez / Entrega / Garantía / Notas en avanzados:
+//   - Header: label + badge ("En PDF" | "Oculto" | "Forzado") + switch
+//   - Body: input (o textarea si multiline) con override de texto
+//   - obligatorio=true: switch locked ON con icono candado (configurado por
+//     owner en MiEmpresa → backend también lo enforcea)
+function CondicionToggleBlock({
+  label, texto, onTexto, mostrar, onMostrar,
+  obligatorio = false, multiline = false, placeholder = '', maxLength = 500,
+}) {
+  const on = obligatorio ? true : mostrar
+  return (
+    <div className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
+      <div className="flex w-full items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="truncate text-[11px] font-medium text-slate-200">{label}</span>
+          {obligatorio && <Lock size={9} className="flex-shrink-0 text-amber-400" />}
+          <span className={`flex-shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${on ? 'bg-blue-600/20 text-blue-300 border-blue-600/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
+            {obligatorio ? 'Forzado' : (on ? 'En PDF' : 'Oculto')}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            if (obligatorio) return
+            onMostrar(!on)
+          }}
+          disabled={obligatorio}
+          aria-pressed={on}
+          aria-label={`Toggle ${label}`}
+          className={`relative inline-flex h-4 w-8 flex-shrink-0 rounded-full transition-colors ${on ? 'bg-blue-600' : 'bg-slate-700'} ${obligatorio ? 'opacity-60 cursor-not-allowed' : ''}`}
+        >
+          <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0'}`} />
+        </button>
+      </div>
+      {on && (multiline ? (
+        <textarea
+          rows={2} maxLength={maxLength} value={texto}
+          onChange={e => onTexto(e.target.value)}
+          placeholder={placeholder}
+          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y"
+        />
+      ) : (
+        <input
+          type="text" maxLength={maxLength} value={texto}
+          onChange={e => onTexto(e.target.value)}
+          placeholder={placeholder}
+          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+        />
+      ))}
+      {on && multiline && (
+        <span className="text-[9px] text-slate-600">{(texto?.length ?? 0)}/{maxLength}</span>
+      )}
+    </div>
+  )
+}
+
 // ── PanelPOS ──────────────────────────────────────────────────────────────────
 export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaCreada }) {
   const { tienePermiso } = useAuth()
@@ -578,6 +635,13 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   // Estos campos viajan al backend como condicionesOverride + notasOverride
   // y se imprimen en el pie del PDF. Por defecto colapsado para no saturar
   // la pantalla del cajero express; abre solo si el cajero los necesita.
+  //
+  // Cada bloque (validez/entrega/garantia/notas) tiene 2 partes:
+  //   1) Toggle `mostrar*` → controla si el campo se IMPRIME en el PDF.
+  //   2) Texto override → si vacío, el backend usa default de MiEmpresa.
+  //
+  // OBLIGATORIO: si el owner marcó la condición como _obligatorio en
+  // MiEmpresa → el switch queda LOCKED en ON y el backend también lo enforcea.
   const [advancedOpen, setAdvancedOpen] = useState(false)
   const [diasVence, setDiasVence]       = useState(30)
   const [formaPagoTexto, setFormaPagoTexto] = useState('Contado')
@@ -585,6 +649,17 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const [entregaTexto, setEntregaTexto] = useState('')
   const [garantiaTexto, setGarantiaTexto] = useState('')
   const [notasTexto, setNotasTexto]     = useState('')
+  // Toggles visibilidad PDF — default ON para condiciones (heredan empresa)
+  // y OFF para notas (no van al PDF a menos que el cajero las habilite).
+  const [mostrarValidez,  setMostrarValidez]  = useState(true)
+  const [mostrarEntrega,  setMostrarEntrega]  = useState(true)
+  const [mostrarGarantia, setMostrarGarantia] = useState(true)
+  const [mostrarNotas,    setMostrarNotas]    = useState(false)
+  // Flags de obligatoriedad heredados de EmpresaPerfil.condicionesDefault._obligatorio.
+  // Si owner los marcó, el toggle se fuerza ON y queda bloqueado.
+  const obligValidez  = !!empresa?.condicionesDefault?._obligatorio?.validez
+  const obligEntrega  = !!empresa?.condicionesDefault?._obligatorio?.entrega
+  const obligGarantia = !!empresa?.condicionesDefault?._obligatorio?.garantia
   // Bloqueo de descuentos: por defecto LOCK. Se libera con PIN supervisor
   // y aplica a todos los usuarios (incluyendo sistema:owner). El bloqueo
   // se restaura al limpiar el carrito o al recargar el panel.
@@ -704,15 +779,31 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
     setSubmitting(true)
     try {
       const pinFinal = pinSupervisor || pinSupervisorState || null
-      // Construye condicionesOverride solo si el cajero abrió la sección de
-      // avanzados y escribió algo. Si quedó vacío, no enviamos override y el
-      // backend usa el default de EmpresaPerfil.condicionesDefault.
-      const condicionesOverride = advancedOpen ? {
-        ...(validezTexto.trim()  ? { validez:  { incluir: true, texto: validezTexto.trim().slice(0, 500) } } : {}),
-        ...(formaPagoTexto.trim()? { pago:     { incluir: true, texto: formaPagoTexto.trim().slice(0, 500) } } : {}),
-        ...(entregaTexto.trim()  ? { entrega:  { incluir: true, texto: entregaTexto.trim().slice(0, 500) } } : {}),
-        ...(garantiaTexto.trim() ? { garantia: { incluir: true, texto: garantiaTexto.trim().slice(0, 500) } } : {}),
-      } : null
+      // Construye condicionesOverride solo si el cajero tocó algo en la
+      // sección avanzada. Reglas (paridad con Carrito Superior):
+      //   - Si el toggle quedó OFF (no obligatorio) → enviamos
+      //     { incluir: false, texto: null } para que el backend OMITA la fila.
+      //   - Si quedó ON y el cajero escribió override → enviamos { incluir: true, texto }.
+      //   - Si quedó ON y NO escribió override → omitimos la clave para que el
+      //     backend caiga al default de MiEmpresa (mergeCondiciones).
+      //   - Obligatorios: el owner forzó ON desde MiEmpresa; el backend ignora
+      //     cualquier intento de apagar (defense-in-depth) — pero por UX,
+      //     tampoco lo mandamos como apagado.
+      let condicionesOverride = null
+      if (advancedOpen) {
+        condicionesOverride = {}
+        // Validez
+        if (!obligValidez && !mostrarValidez) condicionesOverride.validez = { incluir: false, texto: null }
+        else if (mostrarValidez && validezTexto.trim()) condicionesOverride.validez = { incluir: true, texto: validezTexto.trim().slice(0, 500) }
+        // Pago (sin toggle de visibilidad — siempre ON si tiene texto)
+        if (formaPagoTexto.trim()) condicionesOverride.pago = { incluir: true, texto: formaPagoTexto.trim().slice(0, 500) }
+        // Entrega
+        if (!obligEntrega && !mostrarEntrega) condicionesOverride.entrega = { incluir: false, texto: null }
+        else if (mostrarEntrega && entregaTexto.trim()) condicionesOverride.entrega = { incluir: true, texto: entregaTexto.trim().slice(0, 500) }
+        // Garantía
+        if (!obligGarantia && !mostrarGarantia) condicionesOverride.garantia = { incluir: false, texto: null }
+        else if (mostrarGarantia && garantiaTexto.trim()) condicionesOverride.garantia = { incluir: true, texto: garantiaTexto.trim().slice(0, 500) }
+      }
 
       const body = {
         clienteId:            cliente.id,
@@ -723,7 +814,9 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         descuentoGlobalMonto: descGlobalMonto,
         diasVence:            Math.min(Math.max(parseInt(diasVence, 10) || 30, 0), 365),
         ...(condicionesOverride && Object.keys(condicionesOverride).length > 0 ? { condicionesOverride } : {}),
-        ...(notasTexto.trim() ? { notasOverride: notasTexto.trim().slice(0, 2000) } : {}),
+        // notasOverride: si toggle OFF → '' (backend persiste null + PDF oculta).
+        // Si ON + tiene texto → texto trimmed. Si ON sin texto → '' (idéntico al carrito).
+        notasOverride: (mostrarNotas && notasTexto.trim()) ? notasTexto.trim().slice(0, 2000) : '',
         ...(pinFinal ? { pinSupervisor: pinFinal } : {}),
         ...(pagos ? { pagos } : {}),
         lineas: (Array.isArray(cart) ? cart : []).map(l => ({
@@ -757,6 +850,10 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       setEntregaTexto('')
       setGarantiaTexto('')
       setNotasTexto('')
+      setMostrarValidez(true)
+      setMostrarEntrega(true)
+      setMostrarGarantia(true)
+      setMostrarNotas(false)
       return { ok: true }
     } finally { setSubmitting(false) }
   }
@@ -917,43 +1014,48 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                     </select>
                   </label>
                 </div>
-                <label className="text-[10px] text-slate-500 block">
-                  Validez (texto en PDF)
-                  <input
-                    type="text" maxLength={500} value={validezTexto}
-                    onChange={e => setValidezTexto(e.target.value)}
-                    placeholder="Ej: Esta cotización es válida por 15 días."
-                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
-                  />
-                </label>
-                <label className="text-[10px] text-slate-500 block">
-                  Tiempo de Entrega
-                  <input
-                    type="text" maxLength={500} value={entregaTexto}
-                    onChange={e => setEntregaTexto(e.target.value)}
-                    placeholder="Ej: Entrega en 3-5 días laborables tras confirmación."
-                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
-                  />
-                </label>
-                <label className="text-[10px] text-slate-500 block">
-                  Garantía
-                  <input
-                    type="text" maxLength={500} value={garantiaTexto}
-                    onChange={e => setGarantiaTexto(e.target.value)}
-                    placeholder="Ej: 30 días contra defectos de fabricación."
-                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
-                  />
-                </label>
-                <label className="text-[10px] text-slate-500 block">
-                  Notas / Aclaraciones
-                  <textarea
-                    rows={2} maxLength={2000} value={notasTexto}
-                    onChange={e => setNotasTexto(e.target.value)}
-                    placeholder="Notas internas o aclaraciones para el cliente."
-                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y"
-                  />
-                  <span className="text-[9px] text-slate-600">{notasTexto.length}/2000</span>
-                </label>
+                {/* Validez */}
+                <CondicionToggleBlock
+                  label="Validez"
+                  texto={validezTexto}
+                  onTexto={setValidezTexto}
+                  mostrar={mostrarValidez}
+                  onMostrar={setMostrarValidez}
+                  obligatorio={obligValidez}
+                  placeholder="Ej: Esta cotización es válida por 15 días."
+                />
+                {/* Entrega */}
+                <CondicionToggleBlock
+                  label="Tiempo de Entrega"
+                  texto={entregaTexto}
+                  onTexto={setEntregaTexto}
+                  mostrar={mostrarEntrega}
+                  onMostrar={setMostrarEntrega}
+                  obligatorio={obligEntrega}
+                  placeholder="Ej: Entrega en 3-5 días laborables tras confirmación."
+                />
+                {/* Garantía */}
+                <CondicionToggleBlock
+                  label="Garantía"
+                  texto={garantiaTexto}
+                  onTexto={setGarantiaTexto}
+                  mostrar={mostrarGarantia}
+                  onMostrar={setMostrarGarantia}
+                  obligatorio={obligGarantia}
+                  placeholder="Ej: 30 días contra defectos de fabricación."
+                />
+                {/* Notas — sin _obligatorio (notas son siempre opcionales DGII) */}
+                <CondicionToggleBlock
+                  label="Notas / Aclaraciones"
+                  texto={notasTexto}
+                  onTexto={setNotasTexto}
+                  mostrar={mostrarNotas}
+                  onMostrar={setMostrarNotas}
+                  obligatorio={false}
+                  multiline
+                  maxLength={2000}
+                  placeholder="Notas internas o aclaraciones para el cliente."
+                />
               </div>
             </details>
 
