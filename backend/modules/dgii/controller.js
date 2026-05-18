@@ -91,9 +91,22 @@ function createDgiiController({ service, schemas, helpers }) {
     return service.generarTXT607(periodo, req.user, _extractReqMeta(req));
   });
 
+  // ── F3 — Reporte 606 ─────────────────────────────────────────────────
+  // Reusan el mismo periodoSchema — solo cambia el endpoint.
+  const preview606 = _wrap(async (req) => {
+    const { periodo } = previewReporte607QuerySchema.parse(req.query);
+    return service.previewReporte606Handler(periodo);
+  });
+
+  const generar606 = _wrap(async (req) => {
+    const { periodo } = generarReporte607BodySchema.parse(req.body);
+    return service.generarTXT606(periodo, req.user, _extractReqMeta(req));
+  });
+
   return {
     listCompras, getCompra, createCompra, updateCompra, deleteCompra, listHistorial,
     preview607, generar607,
+    preview606, generar606,
   };
 }
 

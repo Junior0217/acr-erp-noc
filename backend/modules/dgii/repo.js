@@ -100,6 +100,51 @@ function createDgiiRepo(prisma) {
     ]);
   }
 
+  // ── Reporte 606: Compras del periodo ────────────────────────────────────
+  //
+  // Filtros DGII:
+  //   - deletedAt=null (soft-deleted no van al 606 vigente; quedan archivadas
+  //     10 años por art. 7 Norma 06-2018 pero no se reportan).
+  //   - fechaComprobante en [start, end).
+  //
+  // SELECT explícito anti-leak: NO traemos passwordHash del empleado registrante.
+  async function listComprasParaReporte606(periodoStart, periodoEnd) {
+    return prisma.compra.findMany({
+      where: {
+        deletedAt:        null,
+        fechaComprobante: { gte: periodoStart, lt: periodoEnd },
+      },
+      orderBy: { fechaComprobante: 'asc' },
+      select: {
+        id:                       true,
+        noCompra:                 true,
+        ncfProveedor:             true,
+        ncfModificado:            true,
+        tipoBienServicio:         true,
+        fechaComprobante:         true,
+        fechaPago:                true,
+        formaPago:                true,
+        montoServicios:           true,
+        montoBienes:              true,
+        itbisFacturado:           true,
+        itbisRetenido:            true,
+        itbisProporcionalidad:    true,
+        itbisLlevadoCosto:        true,
+        itbisPorAdelantar:        true,
+        itbisPercibido:           true,
+        tipoRetencionIsr:         true,
+        montoRetencionRenta:      true,
+        isrPercibido:             true,
+        impuestoSelectivoConsumo: true,
+        otrosImpuestos:           true,
+        propinaLegal:             true,
+        suplidor: {
+          select: { id: true, rnc: true, cedula: true, razonSocial: true },
+        },
+      },
+    });
+  }
+
   // ── Reporte 607: Facturas/ND/NC del periodo ─────────────────────────────
   //
   // Filtros DGII:
@@ -176,6 +221,7 @@ function createDgiiRepo(prisma) {
     createReporteRegistro,
     listReportesHistorial,
     listFacturasParaReporte607,
+    listComprasParaReporte606,
     existeReporteEnCurso,
   };
 }

@@ -87,6 +87,23 @@ function _desglosePagos(pagosJson, totalFallback) {
   return buckets;
 }
 
+// Identidad fiscal del suplidor para el 606.
+//   1) RNC válido (dígito verificador OK) → TipoID=1.
+//   2) Cédula 11 dígitos → TipoID=2.
+//   3) NI uno ni otro → throw (no se puede reportar al 606 sin id).
+// Retorna { id: string, tipo: '1'|'2' }.
+function _identidadFiscalSuplidor606(suplidor, validarRncRD) {
+  if (!suplidor) {
+    throw new DgiiError(409, 'COMPRA_SIN_SUP', 'Compra con suplidor borrado — corrige antes de generar 606.');
+  }
+  const rnc = (suplidor.rnc ?? '').replace(/\D/g, '');
+  const ced = (suplidor.cedula ?? '').replace(/\D/g, '');
+  if (rnc.length === 9 && validarRncRD(rnc))  return { id: rnc, tipo: '1' };
+  if (ced.length === 11)                      return { id: ced, tipo: '2' };
+  throw new DgiiError(409, 'SUP_SIN_ID_FISCAL',
+    `Suplidor "${suplidor.razonSocial}" sin RNC válido ni cédula. DGII exige uno para 606.`);
+}
+
 // Identidad fiscal del cliente para el 607:
 //   tipoNcf='Crédito Fiscal' (B01) → exige RNC; TipoID=1
 //   tipoNcf='Consumidor Final' (B02) → RNC/Cédula vacíos OK; TipoID vacío
@@ -520,6 +537,218 @@ function createDgiiService(deps) {
     };
   }
 
+  // ── Reporte 606 (Compras a Proveedores) ─────────────────────────────────
+  //
+  // Norma DGII 06-2018: 23 campos pipe-delimited por compra.
+  // Reglas (PRD §5.1):
+  //   - Solo compras con NCF válido (B##/E##). Tickets sin NCF NO van (gasto
+  //     no deducible).
+  //   - Suplidor debe tener RNC válido o cédula 11 dígitos — si no, error
+  //     accionable: "Corrige el suplidor en CRM antes de generar".
+  //   - tipoBienServicio: catálogo 01-11 (Norma 06-2018 §2.1).
+  //   - tipoRetencionIsr: catálogo 01-07. Vacío si no se retuvo ISR.
+  //   - formaPago: catálogo 01-07.
+  //   - Compras soft-deleted NO van al 606 vigente (queda audit 10 años).
+  function _mapCompraA606Row(c) {
+    const { id: supId, tipo: supTipoId } = _identidadFiscalSuplidor606(
+      c.suplidor, validarRncRD,
+    );
+
+    const montoServicios = Number(c.montoServicios) || 0;
+    const montoBienes    = Number(c.montoBienes)    || 0;
+    const totalMonto     = montoServicios + montoBienes;
+
+    // Fields 1..23 (PRD §5.1):
+    const row = [
+      supId,                                                       // 1  RNC/Cédula Proveedor
+      supTipoId,                                                   // 2  TipoID (1/2)
+      String(c.tipoBienServicio || '').padStart(2, '0'),           // 3  TipoBienServicio (01-11)
+      String(c.ncfProveedor || '').toUpperCase(),                  // 4  NCF
+      String(c.ncfModificado || '').toUpperCase(),                 // 5  NCF Modificado
+      _date(c.fechaComprobante),                                   // 6  Fecha Comprobante
+      _date(c.fechaPago),                                          // 7  Fecha Pago
+      _money(montoServicios),                                      // 8  Monto Facturado Servicios
+      _money(montoBienes),                                         // 9  Monto Facturado Bienes
+      _money(totalMonto),                                          // 10 Total Monto Facturado
+      _money(c.itbisFacturado),                                    // 11 ITBIS Facturado
+      _money(c.itbisRetenido),                                     // 12 ITBIS Retenido
+      _money(c.itbisProporcionalidad),                             // 13 ITBIS sujeto a Proporcionalidad
+      _money(c.itbisLlevadoCosto),                                 // 14 ITBIS Llevado al Costo
+      _money(c.itbisPorAdelantar),                                 // 15 ITBIS por Adelantar
+      _money(c.itbisPercibido),                                    // 16 ITBIS Percibido en Compras
+      String(c.tipoRetencionIsr || ''),                            // 17 Tipo Retención ISR (01-07, vacío si N/A)
+      _money(c.montoRetencionRenta),                               // 18 Monto Retención Renta
+      _money(c.isrPercibido),                                      // 19 ISR Percibido en Compras
+      _money(c.impuestoSelectivoConsumo),                          // 20 Imp. Selectivo Consumo
+      _money(c.otrosImpuestos),                                    // 21 Otros Impuestos/Tasas
+      _money(c.propinaLegal),                                      // 22 Propina Legal
+      String(c.formaPago || '').padStart(2, '0'),                  // 23 Forma de Pago (01-07)
+    ];
+
+    return {
+      txt: row.join('|'),
+      compraId: c.id,
+      noCompra: c.noCompra,
+      ncf:      c.ncfProveedor,
+      totalMonto,
+      itbisFacturado:  Number(c.itbisFacturado) || 0,
+      itbisRetenido:   Number(c.itbisRetenido)  || 0,
+      isrRetenido:     Number(c.montoRetencionRenta) || 0,
+    };
+  }
+
+  async function previewReporte606(periodo) {
+    const { start, end } = _validarPeriodo(periodo);
+    const empresa = await repo.findEmpresaRnc();
+    if (!empresa?.rnc || !validarRncRD(empresa.rnc)) {
+      throw new DgiiError(409, 'EMPRESA_RNC_INVALID',
+        'Configura un RNC válido en Mi Empresa antes de generar el 606.');
+    }
+    const rncEmpresa = empresa.rnc.replace(/\D/g, '');
+    const compras = await repo.listComprasParaReporte606(start, end);
+
+    // Pre-validar todos los rows antes de generar — si falla uno, falla todo
+    // (DGII rechaza archivos con un solo registro malformado).
+    const rows = compras.map(c => _mapCompraA606Row(c));
+    const header = `606|${rncEmpresa}|${periodo}|${rows.length}`;
+
+    const totalMonto      = rows.reduce((s, r) => s + r.totalMonto, 0);
+    const totalItbis      = rows.reduce((s, r) => s + r.itbisFacturado, 0);
+    const totalRetItbis   = rows.reduce((s, r) => s + r.itbisRetenido, 0);
+    const totalRetIsr     = rows.reduce((s, r) => s + r.isrRetenido, 0);
+
+    return {
+      header,
+      rows,
+      cantidadRegistros:    rows.length,
+      totalMonto:           Math.round(totalMonto * 100) / 100,
+      totalItbis:           Math.round(totalItbis * 100) / 100,
+      totalItbisRetenido:   Math.round(totalRetItbis * 100) / 100,
+      totalIsrRetenido:     Math.round(totalRetIsr * 100) / 100,
+      periodo,
+      rncEmpresa,
+    };
+  }
+
+  async function previewReporte606Handler(periodo) {
+    const preview = await previewReporte606(periodo);
+    return {
+      status: 200,
+      body: {
+        header:              preview.header,
+        cantidadRegistros:   preview.cantidadRegistros,
+        totalMonto:          preview.totalMonto,
+        totalItbis:          preview.totalItbis,
+        totalItbisRetenido:  preview.totalItbisRetenido,
+        totalIsrRetenido:    preview.totalIsrRetenido,
+        periodo:             preview.periodo,
+        rncEmpresa:          preview.rncEmpresa,
+        rows: preview.rows.slice(0, 500).map(r => ({
+          compraId:        r.compraId,
+          noCompra:        r.noCompra,
+          ncf:             r.ncf,
+          totalMonto:      r.totalMonto,
+          itbisFacturado:  r.itbisFacturado,
+          itbisRetenido:   r.itbisRetenido,
+          isrRetenido:     r.isrRetenido,
+          txt:             r.txt,
+        })),
+        truncated: preview.rows.length > 500,
+      },
+    };
+  }
+
+  async function generarTXT606(periodo, user, reqMeta) {
+    const empresa = await repo.findEmpresaRnc();
+    if (!empresa?.rnc) throw new DgiiError(409, 'EMPRESA_RNC_INVALID', 'Configura RNC en Mi Empresa.');
+    const rncEmpresa = empresa.rnc.replace(/\D/g, '');
+
+    // Lock concurrencia (tipo:periodo:rnc) — reusa el Map del 607.
+    const lockKey = `606:${periodo}:${rncEmpresa}`;
+    if (_locksGeneracion.has(lockKey)) {
+      throw new DgiiError(409, 'GENERACION_EN_PROGRESO',
+        'Ya hay una generación de 606 en curso para este periodo.');
+    }
+    const promise = (async () => {
+      const preview = await previewReporte606(periodo);
+      const lineas = [preview.header, ...preview.rows.map(r => r.txt)];
+      const txt    = lineas.join('\r\n') + '\r\n';
+      const buffer = Buffer.from(txt, 'utf8');
+      const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
+
+      // Path Storage — derivado 100% server-side (anti path traversal).
+      const timestamp = Date.now();
+      const shaPrefix = sha256.slice(0, 8);
+      const path = `fiscal/reportes/${rncEmpresa}/${periodo}/606-${timestamp}-${shaPrefix}.txt`;
+
+      let archivoUrl = null;
+      if (supabase && SUPABASE_BUCKET) {
+        try {
+          const { error } = await supabase.storage.from(SUPABASE_BUCKET).upload(path, buffer, {
+            contentType: 'text/plain; charset=utf-8',
+            cacheControl: '0',
+            upsert:       false,
+          });
+          if (error) {
+            console.error('[DGII 606 upload]', error.message);
+          } else {
+            const { data: pub } = supabase.storage.from(SUPABASE_BUCKET).getPublicUrl(path);
+            archivoUrl = pub?.publicUrl ?? null;
+          }
+        } catch (e) {
+          console.error('[DGII 606 upload EXCEPTION]', e.message);
+        }
+      }
+
+      const registro = await repo.createReporteRegistro({
+        tipo:              '606',
+        periodo,
+        rncEmpresa,
+        cantidadRegistros: preview.cantidadRegistros,
+        totalMonto:        preview.totalMonto,
+        totalItbis:        preview.totalItbis,
+        sha256,
+        archivoUrl,
+        empleadoId:        user?.sub ?? null,
+        ipGeneracion:      reqMeta?.ip ?? null,
+        userAgent:         reqMeta?.ua ?? null,
+      });
+
+      auditReq('dgii:606_generado', _fakeReqForAudit(reqMeta, user), {
+        registroId:         registro.id,
+        periodo,
+        cantidadRegistros:  preview.cantidadRegistros,
+        totalMonto:         preview.totalMonto,
+        totalItbis:         preview.totalItbis,
+        totalItbisRetenido: preview.totalItbisRetenido,
+        totalIsrRetenido:   preview.totalIsrRetenido,
+        sha256:             sha256.slice(0, 16) + '…',
+        rncEmpresaMasked:   enmascararRnc(rncEmpresa),
+      });
+
+      return {
+        status: 201,
+        body: {
+          registroId:         registro.id,
+          periodo,
+          rncEmpresa,
+          cantidadRegistros:  preview.cantidadRegistros,
+          totalMonto:         preview.totalMonto,
+          totalItbis:         preview.totalItbis,
+          totalItbisRetenido: preview.totalItbisRetenido,
+          totalIsrRetenido:   preview.totalIsrRetenido,
+          sha256,
+          archivoUrl,
+          filename:           `DGII_F_606_${rncEmpresa}_${periodo}.TXT`,
+          generadoEn:         registro.generadoEn,
+        },
+      };
+    })().finally(() => _locksGeneracion.delete(lockKey));
+
+    _locksGeneracion.set(lockKey, promise);
+    return promise;
+  }
+
   // ── Historial Reportes (placeholder F2/F3) ──────────────────────────────
   async function listarHistorialReportes(query) {
     const take    = Math.min(Math.max(parseInt(query.limit, 10) || 50, 1), 200);
@@ -550,6 +779,10 @@ function createDgiiService(deps) {
     previewReporte607,
     previewReporte607Handler,
     generarTXT607,
+    // F3 — 606
+    previewReporte606,
+    previewReporte606Handler,
+    generarTXT606,
   };
 }
 

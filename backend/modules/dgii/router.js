@@ -62,6 +62,11 @@ function createDgiiRouter(deps) {
   // (audit trail no repudiable) + Cyber Neo A07 + A08.
   router.post(  '/dgii/607/generar', verificarJWT, requerirPermiso('dgii:reportar'), _totpStrict,                              controller.generar607);
 
+  // ── F3 — Reporte 606 (Compras) ───────────────────────────────────────
+  router.get(   '/dgii/606/preview', verificarJWT, requerirPermiso('dgii:reportar'),                                          controller.preview606);
+  // CRÍTICO: TOTP estricto obligatorio (idem 607).
+  router.post(  '/dgii/606/generar', verificarJWT, requerirPermiso('dgii:reportar'), _totpStrict,                              controller.generar606);
+
   return router;
 }
 
