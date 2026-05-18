@@ -106,12 +106,15 @@ function createDgiiRepo(prisma) {
   //   - deletedAt=null (soft-deleted no van al 606 vigente; quedan archivadas
   //     10 años por art. 7 Norma 06-2018 pero no se reportan).
   //   - fechaComprobante en [start, end).
+  //   - esGastoInformal=false — los gastos informales (caja chica, sin NCF)
+  //     NUNCA se reportan a DGII. Norma 06-2018: solo gastos con NCF válido.
   //
   // SELECT explícito anti-leak: NO traemos passwordHash del empleado registrante.
   async function listComprasParaReporte606(periodoStart, periodoEnd) {
     return prisma.compra.findMany({
       where: {
         deletedAt:        null,
+        esGastoInformal:  false,
         fechaComprobante: { gte: periodoStart, lt: periodoEnd },
       },
       orderBy: { fechaComprobante: 'asc' },

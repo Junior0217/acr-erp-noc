@@ -211,14 +211,33 @@ function createDgiiService(deps) {
   }
 
   // ── Crear Compra ────────────────────────────────────────────────────────
+  // Soporta dos modos:
+  //   1) Fiscal (default, esGastoInformal=false): exige suplidor con RNC/cédula
+  //      válidos + NCF formato B/E + 10 dig + dup-check por (suplidor, NCF).
+  //   2) Informal (esGastoInformal=true): NO valida identidad fiscal, NO checa
+  //      NCF, NO bloquea por dup. Estas compras NUNCA van al 606.
   async function crearCompra(data, user, reqMeta) {
-    const suplidor = await repo.findSuplidorById(data.suplidorId);
-    _validarIdentidadFiscalSuplidor(suplidor);
+    let suplidorMasked = null;
 
-    const dup = await repo.findCompraByNcf(data.suplidorId, data.ncfProveedor);
-    if (dup) {
-      throw new DgiiError(409, 'NCF_DUP',
-        `Ya existe compra ${dup.noCompra} con NCF ${data.ncfProveedor} de este suplidor.`);
+    if (!data.esGastoInformal) {
+      // Modo fiscal — validaciones estrictas.
+      const suplidor = await repo.findSuplidorById(data.suplidorId);
+      _validarIdentidadFiscalSuplidor(suplidor);
+      suplidorMasked = enmascararRnc(suplidor.rnc ?? suplidor.cedula);
+
+      const dup = await repo.findCompraByNcf(data.suplidorId, data.ncfProveedor);
+      if (dup) {
+        throw new DgiiError(409, 'NCF_DUP',
+          `Ya existe compra ${dup.noCompra} con NCF ${data.ncfProveedor} de este suplidor.`);
+      }
+    } else {
+      // Modo informal — limpia campos fiscales para evitar ambiguedad downstream.
+      data = {
+        ...data,
+        suplidorId:    data.suplidorId ?? null,
+        ncfProveedor:  null,
+        ncfModificado: null,
+      };
     }
 
     try {
@@ -230,13 +249,15 @@ function createDgiiService(deps) {
           empleadoId: user?.sub ?? null,
         });
       });
-      auditReq('dgii:compra_creada', _fakeReqForAudit(reqMeta, user), {
-        compraId:    compra.id,
-        noCompra:    compra.noCompra,
-        suplidorRnc: enmascararRnc(suplidor.rnc ?? suplidor.cedula),
-        ncf:         data.ncfProveedor,
-        monto:       Number(data.montoServicios) + Number(data.montoBienes) + Number(data.itbisFacturado),
-      });
+      auditReq(data.esGastoInformal ? 'dgii:gasto_informal_creado' : 'dgii:compra_creada',
+        _fakeReqForAudit(reqMeta, user), {
+          compraId:    compra.id,
+          noCompra:    compra.noCompra,
+          esInformal:  !!data.esGastoInformal,
+          suplidorRnc: suplidorMasked,
+          ncf:         data.ncfProveedor ?? null,
+          monto:       Number(data.montoServicios) + Number(data.montoBienes) + Number(data.itbisFacturado),
+        });
       return { status: 201, body: compra };
     } catch (e) {
       if (e.code === 'P2002') throw new DgiiError(409, 'DUP', 'noCompra duplicado (reintentar).');

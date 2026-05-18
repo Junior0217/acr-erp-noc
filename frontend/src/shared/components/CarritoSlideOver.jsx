@@ -187,7 +187,13 @@ const CONDICIONES_META = [
 ]
 
 export default function CarritoSlideOver() {
-  const { carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout } = useCart()
+  const {
+    carrito, open, setOpen, loading, updateItem, removeItem, clearCart, updateCartMeta, checkout,
+    // posCart: carrito local del POS (localStorage). Mostramos aquí solo para
+    // visibilidad — el cajero debe ir a /ventas → POS para emitir desde él.
+    // Antes el badge contaba estos items pero el drawer estaba vacío → bug UX.
+    posCart, posItemsCount,
+  } = useCart()
   const { empresa } = useEmpresa()
   const [descTipo, setDescTipo]         = useState('pct')
   const [descValor, setDescValor]       = useState(0)
@@ -545,7 +551,46 @@ export default function CarritoSlideOver() {
         />
 
         <div className="flex-1 overflow-y-auto">
-          {lineas.length === 0 && (
+          {/* Banner POS Cart — visibilidad de items del carrito POS (localStorage)
+              que el cajero agregó desde el panel POS. El checkout NO ocurre acá:
+              el link "Ir al POS" lleva al cajero al panel donde puede emitir.
+              Antes el badge contaba estos items pero el drawer estaba vacío. */}
+          {Array.isArray(posCart) && posCart.length > 0 && (
+            <div className="border-b border-slate-800 bg-orange-950/20">
+              <div className="px-4 py-2.5 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <ShoppingCart size={14} className="text-orange-400" />
+                  <span className="text-xs font-bold text-orange-300 uppercase tracking-wider">
+                    Carrito POS · {posItemsCount} {posItemsCount === 1 ? 'ítem' : 'ítems'}
+                  </span>
+                </div>
+                <a
+                  href="/ventas?tab=pos"
+                  onClick={() => setOpen(false)}
+                  className="text-[10px] px-2 py-1 rounded bg-orange-600 hover:bg-orange-500 text-white font-bold"
+                >
+                  Ir al POS →
+                </a>
+              </div>
+              <div className="px-4 pb-2 space-y-1">
+                {posCart.map((l, i) => (
+                  <div key={i} className="flex items-center justify-between text-xs gap-2 bg-slate-900/40 rounded px-2 py-1">
+                    <span className="text-slate-300 truncate flex-1" title={l.nombre}>
+                      {l.cantidad}× <span className="text-slate-200">{l.nombre}</span>
+                    </span>
+                    <span className="font-mono text-slate-400 tabular-nums">
+                      RD$ {fmt((l.precioUnitario ?? 0) * l.cantidad)}
+                    </span>
+                  </div>
+                ))}
+                <p className="text-[10px] text-slate-500 italic pt-1">
+                  Estos ítems solo se cobran desde el panel POS (no aquí).
+                </p>
+              </div>
+            </div>
+          )}
+
+          {lineas.length === 0 && (!Array.isArray(posCart) || posCart.length === 0) && (
             <div className="flex flex-col items-center justify-center h-full gap-3 text-slate-600">
               <ShoppingCart size={32} />
               <p className="text-sm">Carrito vacío</p>

@@ -66,6 +66,7 @@ const TIPO_RETENCION_ISR = [
 ]
 
 const EMPTY_FORM = {
+  esGastoInformal: false,
   suplidorId: '',
   ncfProveedor: '',
   ncfModificado: '',
@@ -264,9 +265,13 @@ function FormularioCompra({ open, onClose, onSaved, initial }) {
 
   function validar() {
     const e = {}
-    if (!form.suplidorId) e.suplidorId = 'Selecciona un suplidor.'
-    if (!/^[BE]\d{10}$/.test(String(form.ncfProveedor).toUpperCase())) {
-      e.ncfProveedor = 'NCF debe ser B/E + 10 dígitos.'
+    // Modo fiscal exige suplidor + NCF. Modo informal los hace opcionales
+    // (mismo mirror de la regla del backend: esGastoInformal=true ⇒ libres).
+    if (!form.esGastoInformal) {
+      if (!form.suplidorId) e.suplidorId = 'Selecciona un suplidor.'
+      if (!/^[BE]\d{10}$/.test(String(form.ncfProveedor ?? '').toUpperCase())) {
+        e.ncfProveedor = 'NCF debe ser B/E + 10 dígitos.'
+      }
     }
     if (form.ncfModificado && !/^[BE]\d{10}$/.test(String(form.ncfModificado).toUpperCase())) {
       e.ncfModificado = 'NCF Modificado inválido.'
@@ -288,9 +293,13 @@ function FormularioCompra({ open, onClose, onSaved, initial }) {
         : `/api/dgii/compras`
       const payload = {
         ...form,
-        ncfProveedor:  form.ncfProveedor.toUpperCase(),
-        ncfModificado: form.ncfModificado ? form.ncfModificado.toUpperCase() : null,
-        fechaPago:     form.fechaPago || null,
+        // Si es informal, el backend ignora suplidorId/NCF — lo enviamos null
+        // explícitamente para evitar persistir basura cuando el toggle se
+        // activó después de tipear algo en esos campos.
+        suplidorId:       form.esGastoInformal ? null : form.suplidorId,
+        ncfProveedor:     form.esGastoInformal ? null : (form.ncfProveedor || '').toUpperCase(),
+        ncfModificado:    form.esGastoInformal ? null : (form.ncfModificado ? form.ncfModificado.toUpperCase() : null),
+        fechaPago:        form.fechaPago || null,
         tipoRetencionIsr: form.tipoRetencionIsr || null,
       }
       const r = await apiFetch(url, {
@@ -326,11 +335,34 @@ function FormularioCompra({ open, onClose, onSaved, initial }) {
         </div>
 
         <div className="p-5 space-y-5">
+          {/* Toggle Gasto Informal */}
+          <div className={`border rounded-lg p-3 flex items-start gap-3 ${form.esGastoInformal ? 'border-amber-700/50 bg-amber-900/15' : 'border-slate-700 bg-slate-900/40'}`}>
+            <input
+              id="gasto-informal"
+              type="checkbox"
+              checked={!!form.esGastoInformal}
+              onChange={e => setField('esGastoInformal', e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-amber-500 cursor-pointer"
+            />
+            <label htmlFor="gasto-informal" className="cursor-pointer flex-1">
+              <p className="text-sm font-semibold text-slate-100">
+                {form.esGastoInformal ? '🛑 Gasto Informal (NO se reporta a DGII)' : 'Gasto Informal (sin NCF)'}
+              </p>
+              <p className="text-[11px] text-slate-400 mt-0.5 leading-relaxed">
+                Marca esto para gastos sin comprobante fiscal (caja chica, propinas,
+                viáticos, gastos cash). El reporte <strong>606 excluye</strong> estos
+                registros — solo entran al flujo de caja interno.
+              </p>
+            </label>
+          </div>
+
           {/* Sección 1: Identificación fiscal */}
-          <section className="space-y-3">
-            <h3 className="text-xs uppercase tracking-wider text-slate-500 font-semibold">Identificación del Comprobante</h3>
+          <section className={`space-y-3 ${form.esGastoInformal ? 'opacity-50 pointer-events-none' : ''}`}>
+            <h3 className="text-xs uppercase tracking-wider text-slate-500 font-semibold">
+              Identificación del Comprobante {form.esGastoInformal && <span className="text-amber-400">(deshabilitado · gasto informal)</span>}
+            </h3>
             <div>
-              <label className="text-xs text-slate-400 block mb-1.5">Suplidor *</label>
+              <label className="text-xs text-slate-400 block mb-1.5">Suplidor {form.esGastoInformal ? '(opcional)' : '*'}</label>
               <SuplidorPicker
                 value={form.suplidorId}
                 onChange={v => setField('suplidorId', v)}
@@ -339,7 +371,7 @@ function FormularioCompra({ open, onClose, onSaved, initial }) {
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <FieldText
-                label="NCF del Proveedor *"
+                label={`NCF del Proveedor ${form.esGastoInformal ? '(opcional)' : '*'}`}
                 value={form.ncfProveedor}
                 onChange={v => setField('ncfProveedor', v.toUpperCase().replace(/[^BE0-9]/g, '').slice(0, 11))}
                 placeholder="B0100000001"
@@ -719,11 +751,16 @@ export default function Compras() {
                   <tr key={c.id} className="border-t border-slate-800 hover:bg-slate-800/40">
                     <td className="px-3 py-2 text-slate-300 font-mono text-xs">{c.noCompra}</td>
                     <td className="px-3 py-2 text-slate-400 text-xs">{formatFechaCorta(c.fechaComprobante)}</td>
-                    <td className="px-3 py-2 text-slate-200 font-mono text-xs">{c.ncfProveedor}</td>
+                    <td className="px-3 py-2 text-slate-200 font-mono text-xs">{c.ncfProveedor || <span className="text-slate-600 italic">— sin NCF —</span>}</td>
                     <td className="px-3 py-2 text-slate-200">
-                      <p className="truncate max-w-[200px]">{c.suplidor?.razonSocial ?? '—'}</p>
+                      <p className="truncate max-w-[200px] flex items-center gap-1.5">
+                        {c.suplidor?.razonSocial ?? <span className="italic text-slate-500">Sin suplidor</span>}
+                        {c.esGastoInformal && (
+                          <span className="text-[9px] px-1 py-0.5 bg-amber-900/40 text-amber-300 border border-amber-700/40 rounded uppercase tracking-wider">informal</span>
+                        )}
+                      </p>
                       <p className="text-[10px] text-slate-500 font-mono">
-                        {c.suplidor?.rnc || c.suplidor?.cedula || ''}
+                        {c.suplidor?.rnc || c.suplidor?.cedula || (c.esGastoInformal ? 'no aplica' : '')}
                       </p>
                     </td>
                     <td className="px-3 py-2 text-slate-400 font-mono text-xs">{c.tipoBienServicio}</td>

@@ -574,6 +574,17 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const [descGlobalMonto, setDescGlobalMonto] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [lastFacturaId, setLastFacturaId] = useState(null)
+  // ─── Condiciones comerciales avanzadas (paridad con Carrito Superior) ───
+  // Estos campos viajan al backend como condicionesOverride + notasOverride
+  // y se imprimen en el pie del PDF. Por defecto colapsado para no saturar
+  // la pantalla del cajero express; abre solo si el cajero los necesita.
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [diasVence, setDiasVence]       = useState(30)
+  const [formaPagoTexto, setFormaPagoTexto] = useState('Contado')
+  const [validezTexto, setValidezTexto] = useState('')
+  const [entregaTexto, setEntregaTexto] = useState('')
+  const [garantiaTexto, setGarantiaTexto] = useState('')
+  const [notasTexto, setNotasTexto]     = useState('')
   // Bloqueo de descuentos: por defecto LOCK. Se libera con PIN supervisor
   // y aplica a todos los usuarios (incluyendo sistema:owner). El bloqueo
   // se restaura al limpiar el carrito o al recargar el panel.
@@ -693,6 +704,16 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
     setSubmitting(true)
     try {
       const pinFinal = pinSupervisor || pinSupervisorState || null
+      // Construye condicionesOverride solo si el cajero abrió la sección de
+      // avanzados y escribió algo. Si quedó vacío, no enviamos override y el
+      // backend usa el default de EmpresaPerfil.condicionesDefault.
+      const condicionesOverride = advancedOpen ? {
+        ...(validezTexto.trim()  ? { validez:  { incluir: true, texto: validezTexto.trim().slice(0, 500) } } : {}),
+        ...(formaPagoTexto.trim()? { pago:     { incluir: true, texto: formaPagoTexto.trim().slice(0, 500) } } : {}),
+        ...(entregaTexto.trim()  ? { entrega:  { incluir: true, texto: entregaTexto.trim().slice(0, 500) } } : {}),
+        ...(garantiaTexto.trim() ? { garantia: { incluir: true, texto: garantiaTexto.trim().slice(0, 500) } } : {}),
+      } : null
+
       const body = {
         clienteId:            cliente.id,
         // tipoNcf eliminado del UI: backend deriva de cliente.tipoNcf.
@@ -700,6 +721,9 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         esCotizacion,
         descuentoGlobalPct:   descGlobalPct,
         descuentoGlobalMonto: descGlobalMonto,
+        diasVence:            Math.min(Math.max(parseInt(diasVence, 10) || 30, 0), 365),
+        ...(condicionesOverride && Object.keys(condicionesOverride).length > 0 ? { condicionesOverride } : {}),
+        ...(notasTexto.trim() ? { notasOverride: notasTexto.trim().slice(0, 2000) } : {}),
         ...(pinFinal ? { pinSupervisor: pinFinal } : {}),
         ...(pagos ? { pagos } : {}),
         lineas: (Array.isArray(cart) ? cart : []).map(l => ({
@@ -724,6 +748,15 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       setDescGlobalPct(0)
       setDescGlobalMonto(0)
       setShowCheckout(false)
+      // Reset campos avanzados al limpiar carrito — evita que el siguiente
+      // documento herede condiciones del anterior por accidente.
+      setAdvancedOpen(false)
+      setDiasVence(30)
+      setFormaPagoTexto('Contado')
+      setValidezTexto('')
+      setEntregaTexto('')
+      setGarantiaTexto('')
+      setNotasTexto('')
       return { ok: true }
     } finally { setSubmitting(false) }
   }
@@ -847,6 +880,83 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                 <span className={`block w-4 h-4 rounded-full bg-white transition-transform mx-0.5 ${applyItbis ? 'translate-x-4' : 'translate-x-0'}`} />
               </button>
             </div>
+
+            {/* Condiciones avanzadas (paridad con Carrito Superior) */}
+            <details
+              open={advancedOpen}
+              onToggle={e => setAdvancedOpen(e.currentTarget.open)}
+              className="rounded border border-slate-700/50 bg-slate-900/40"
+            >
+              <summary className="cursor-pointer select-none px-2 py-1.5 text-[11px] uppercase tracking-wider text-slate-400 hover:text-slate-200">
+                Condiciones · Notas · Vencimiento
+              </summary>
+              <div className="p-2 space-y-2 border-t border-slate-700/50">
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="text-[10px] text-slate-500 block">
+                    Días vence
+                    <input
+                      type="number" min="0" max="365" value={diasVence}
+                      onChange={e => setDiasVence(parseInt(e.target.value, 10) || 0)}
+                      className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500"
+                    />
+                  </label>
+                  <label className="text-[10px] text-slate-500 block">
+                    Forma de Pago
+                    <select
+                      value={formaPagoTexto}
+                      onChange={e => setFormaPagoTexto(e.target.value)}
+                      className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                    >
+                      <option value="Contado">Contado</option>
+                      <option value="Transferencia bancaria">Transferencia bancaria</option>
+                      <option value="Tarjeta de crédito/débito">Tarjeta crédito/débito</option>
+                      <option value="Cheque">Cheque</option>
+                      <option value="Crédito 15 días">Crédito 15 días</option>
+                      <option value="Crédito 30 días">Crédito 30 días</option>
+                      <option value="Mixto">Mixto</option>
+                    </select>
+                  </label>
+                </div>
+                <label className="text-[10px] text-slate-500 block">
+                  Validez (texto en PDF)
+                  <input
+                    type="text" maxLength={500} value={validezTexto}
+                    onChange={e => setValidezTexto(e.target.value)}
+                    placeholder="Ej: Esta cotización es válida por 15 días."
+                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                  />
+                </label>
+                <label className="text-[10px] text-slate-500 block">
+                  Tiempo de Entrega
+                  <input
+                    type="text" maxLength={500} value={entregaTexto}
+                    onChange={e => setEntregaTexto(e.target.value)}
+                    placeholder="Ej: Entrega en 3-5 días laborables tras confirmación."
+                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                  />
+                </label>
+                <label className="text-[10px] text-slate-500 block">
+                  Garantía
+                  <input
+                    type="text" maxLength={500} value={garantiaTexto}
+                    onChange={e => setGarantiaTexto(e.target.value)}
+                    placeholder="Ej: 30 días contra defectos de fabricación."
+                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                  />
+                </label>
+                <label className="text-[10px] text-slate-500 block">
+                  Notas / Aclaraciones
+                  <textarea
+                    rows={2} maxLength={2000} value={notasTexto}
+                    onChange={e => setNotasTexto(e.target.value)}
+                    placeholder="Notas internas o aclaraciones para el cliente."
+                    className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y"
+                  />
+                  <span className="text-[9px] text-slate-600">{notasTexto.length}/2000</span>
+                </label>
+              </div>
+            </details>
+
             {/* Selector "Tipo NCF" eliminado: el comprobante se infiere
                 exclusivamente del cliente seleccionado (cliente.tipoNcf). */}
             <div className="space-y-0.5 text-xs font-mono">
