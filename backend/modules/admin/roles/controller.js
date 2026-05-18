@@ -80,7 +80,14 @@ function createRolesController({ service, schemas, sharedSchemas }) {
     return service.matarSesiones(id, req.user, _extractReqMeta(req));
   });
 
-  return { list, create, update, remove, changePassword, block, killSessions };
+  // M1.1: GET /admin/sessions
+  const listSessions = _wrap(async () => service.listarSesiones());
+  // M1.1: DELETE /admin/sessions/token/:jti
+  const killSessionByJti = _wrap(async (req) => {
+    return service.matarSesionPorJti(req.params.jti, req.user, _extractReqMeta(req));
+  });
+
+  return { list, create, update, remove, changePassword, block, killSessions, listSessions, killSessionByJti };
 }
 
 module.exports = createRolesController;

@@ -141,6 +141,23 @@ function createRolesService(deps) {
     return { status: 204, body: null };
   }
 
+  // M1.1: listado de sesiones activas. Read-only — no audita (sería ruido).
+  async function listarSesiones() {
+    const data = await repo.listSessions();
+    return { status: 200, body: { data } };
+  }
+
+  async function matarSesionPorJti(jti, user, reqMeta) {
+    if (!jti || typeof jti !== 'string' || jti.length < 4) {
+      throw new RolesError(400, 'BAD_JTI', 'JTI inválido.');
+    }
+    const result = await repo.deleteSessionByJti(jti);
+    auditReq('admin:session_killed_by_jti', _fakeReqForAudit(reqMeta, user), {
+      jti: jti.slice(0, 8) + '…', count: result.count,
+    });
+    return { status: 204, body: null };
+  }
+
   return {
     RolesError,
     listarRoles,
@@ -150,6 +167,8 @@ function createRolesService(deps) {
     cambiarPassword,
     bloquearEmpleado,
     matarSesiones,
+    listarSesiones,
+    matarSesionPorJti,
   };
 }
 

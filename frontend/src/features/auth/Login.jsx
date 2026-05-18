@@ -39,6 +39,10 @@ export default function Login() {
   const [tempToken,  setTempToken]  = useState(null)
   const [loading,    setLoading]    = useState(false)
   const [error,      setError]      = useState('')
+  // M1.3: toggle TOTP (6 dig) vs Backup Code (alfanumérico ≥10 chars).
+  // Backend `/auth/2fa/verify` detecta el tipo por longitud + rate-limita
+  // con bucket distinto (backupCodeLimiter).
+  const [useBackup,  setUseBackup]  = useState(false)
   const { login, verifyTOTP }     = useAuth()
   const navigate                  = useNavigate()
 
@@ -49,7 +53,10 @@ export default function Login() {
     setLoading(true); setError('')
     try {
       if (is2FAStep) {
-        await verifyTOTP(tempToken, totp)
+        // Backup codes vienen con guiones (ABCD-EFGH-1234). Limpiamos antes
+        // de mandar — backend acepta ambos formatos.
+        const codigo = useBackup ? totp.replace(/[-\s]/g, '').toUpperCase() : totp
+        await verifyTOTP(tempToken, codigo)
         navigate('/', { replace: true })
       } else {
         const result = await login(email, password, rememberMe)
@@ -68,6 +75,12 @@ export default function Login() {
 
   function cancelar2FA() {
     setTempToken(null)
+    setTotp('')
+    setUseBackup(false)
+    setError('')
+  }
+  function toggleBackupMode() {
+    setUseBackup(b => !b)
     setTotp('')
     setError('')
   }
@@ -97,25 +110,44 @@ export default function Login() {
                 <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-cyan-600/15 border border-cyan-600/30 mb-3">
                   <KeyRound size={22} className="text-cyan-400" />
                 </div>
-                <p className="text-sm font-semibold text-slate-200">Verificación en 2 pasos</p>
-                <p className="text-xs text-slate-500 mt-1">Ingresa el código de tu app autenticadora</p>
+                <p className="text-sm font-semibold text-slate-200">
+                  {useBackup ? 'Código de Respaldo' : 'Verificación en 2 pasos'}
+                </p>
+                <p className="text-xs text-slate-500 mt-1">
+                  {useBackup
+                    ? 'Ingresa uno de tus códigos de respaldo (cada uno se usa una sola vez).'
+                    : 'Ingresa el código de tu app autenticadora.'}
+                </p>
               </div>
 
               <div>
                 <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-1.5 font-mono">
-                  PIN de 6 Dígitos
+                  {useBackup ? 'Código de Respaldo (≥10 chars)' : 'PIN de 6 Dígitos'}
                 </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]{6}"
-                  maxLength={6}
-                  value={totp}
-                  onChange={e => setTotp(e.target.value.replace(/\D/g, '').slice(0, 6))}
-                  autoFocus
-                  placeholder="000000"
-                  className="w-full bg-slate-900/80 border border-slate-700/50 rounded-lg px-4 py-3 text-center text-2xl tracking-[0.5em] text-slate-100 placeholder-slate-700 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-all font-mono"
-                />
+                {useBackup ? (
+                  <input
+                    type="text"
+                    maxLength={32}
+                    value={totp}
+                    onChange={e => setTotp(e.target.value.toUpperCase().slice(0, 32))}
+                    autoFocus
+                    placeholder="ABCD-EFGH-1234"
+                    autoComplete="off" autoCapitalize="off" autoCorrect="off" spellCheck={false}
+                    className="w-full bg-slate-900/80 border border-amber-700/40 rounded-lg px-4 py-3 text-center text-lg tracking-widest text-slate-100 placeholder-slate-700 focus:outline-none focus:border-amber-500/60 focus:ring-1 focus:ring-amber-500/20 transition-all font-mono"
+                  />
+                ) : (
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    pattern="[0-9]{6}"
+                    maxLength={6}
+                    value={totp}
+                    onChange={e => setTotp(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                    autoFocus
+                    placeholder="000000"
+                    className="w-full bg-slate-900/80 border border-slate-700/50 rounded-lg px-4 py-3 text-center text-2xl tracking-[0.5em] text-slate-100 placeholder-slate-700 focus:outline-none focus:border-cyan-500/50 focus:ring-1 focus:ring-cyan-500/20 transition-all font-mono"
+                  />
+                )}
               </div>
 
               {error && (
@@ -125,10 +157,22 @@ export default function Login() {
                 </div>
               )}
 
-              <button type="submit" disabled={loading || totp.length !== 6}
+              {/* Disable submit hasta que cumpla minimums por modo. */}
+              <button type="submit"
+                disabled={loading || (useBackup
+                  ? totp.replace(/[-\s]/g, '').length < 10
+                  : totp.length !== 6)}
                 className="w-full py-3 rounded-lg bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white text-sm font-bold font-mono tracking-widest uppercase transition-all disabled:opacity-40 flex items-center justify-center gap-2">
                 {loading ? <Loader2 size={14} className="animate-spin" /> : <KeyRound size={14} />}
-                {loading ? '···' : 'Verificar PIN'}
+                {loading ? '···' : useBackup ? 'Validar Código Respaldo' : 'Verificar PIN'}
+              </button>
+
+              {/* M1.3: toggle backup code. Aparece debajo del input + del submit. */}
+              <button type="button" onClick={toggleBackupMode}
+                className="w-full text-xs text-amber-400/80 hover:text-amber-300 font-mono transition-colors py-1 underline-offset-2 hover:underline">
+                {useBackup
+                  ? '← Volver a usar PIN del autenticador'
+                  : '🔑 ¿Perdiste tu teléfono? Usar Código de Respaldo'}
               </button>
               <button type="button" onClick={cancelar2FA}
                 className="w-full text-xs text-slate-600 hover:text-slate-400 font-mono transition-colors py-1">

@@ -382,6 +382,17 @@ function createPosService(deps) {
             continue;
           }
           await repo.crearKardexSalida(pid, cant);
+          // M4: emit SSE para refrescar badges del POS en otros cajeros.
+          // row.stockActual ya viene del UPDATE-RETURNING (valor real post-deduct).
+          if (deps.stockHub?.emit) {
+            try {
+              deps.stockHub.emit({
+                productoId:  pid,
+                stockActual: Number(row.stockActual),
+                motivo:      `venta:${factura.noFactura}`,
+              });
+            } catch {}
+          }
         }
       } catch (e) { console.error('[POS STOCK]', e.message); }
     }

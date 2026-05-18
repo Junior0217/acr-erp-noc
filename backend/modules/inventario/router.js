@@ -19,7 +19,7 @@ const inventarioSchemas          = require('./schema');
 function createInventarioRouter(deps) {
   const {
     prisma, middlewares, auditReq, schemas: sharedSchemas,
-    generarSiguienteCodigo,
+    generarSiguienteCodigo, stockHub,
   } = deps;
   if (!prisma)                                       throw new Error('createInventarioRouter: prisma required');
   if (!middlewares)                                  throw new Error('createInventarioRouter: middlewares required');
@@ -61,6 +61,16 @@ function createInventarioRouter(deps) {
   // ─── Reserva temporal POS (#16) ───────────────────────────────────────────
   // Cualquier cajero con pos:facturar puede reservar; el cron libera al expirar.
   router.post('/inventario/reservas',       verificarJWT, requerirPermiso('pos:facturar'), controller.crearReserva);
+
+  // ─── SSE stock stream (#13) ───────────────────────────────────────────────
+  // El POS suscribe a este canal y actualiza badges de stock en vivo cada
+  // vez que otro cajero (u otro proceso) altera el inventario. Cyber Neo:
+  // exige verificarJWT — los eventos llevan productoId + stockActual (no PII).
+  if (stockHub) {
+    router.get('/inventario/stock/stream', verificarJWT, requerirPermiso('inventario:ver'), (req, res) => {
+      stockHub.registerClient(req, res);
+    });
+  }
 
   return router;
 }

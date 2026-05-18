@@ -172,6 +172,10 @@ const { _canonicalizarLog, appendAuditLog, auditReq } = createAuditService({ pri
 const { SECUENCIA_DEFAULTS, generarSiguienteCodigo }  = createSequencesService({ prisma });
 const _ncfService = createNcfService({ prisma });
 const _bomService = createBomExpansionSvc({ prisma });
+// M4: SSE stock hub singleton — un proceso, un hub. POS service emite tras
+// deducir stock; el router de inventario expone /stock/stream que suscribe.
+const createStockStreamHub = require('./shared/services/stock-stream.service');
+const _stockHub = createStockStreamHub();
 const { _normStr, _normMoney, _normDateYMD, facturaVerifyHash, persistirVerifyHash }
   = createVerifyHashService({ prisma });
 
@@ -291,8 +295,10 @@ const corsOptions = {
   // empleado, generar 606/607, offboard). Sin él en allowedHeaders, el
   // navegador aborta el preflight OPTIONS antes de mandar el POST real.
   // x-portal-csrf + pct-csrf: doble-submit cookie del portal cliente.
-  allowedHeaders:  ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token', 'x-totp', 'x-portal-csrf', 'pct-csrf'],
-  exposedHeaders:  ['X-CSRF-Token', 'X-App-Version', 'X-Boot-At'],
+  // idempotency-key: M2 — anti doble-emit POS. X-Idempotent exposed para que
+  // el frontend identifique respuestas cacheadas (no es factura nueva).
+  allowedHeaders:  ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token', 'x-totp', 'x-portal-csrf', 'pct-csrf', 'idempotency-key', 'Idempotency-Key'],
+  exposedHeaders:  ['X-CSRF-Token', 'X-App-Version', 'X-Boot-At', 'X-Idempotent'],
   credentials: true,
   optionsSuccessStatus: 200,
 };
@@ -919,6 +925,7 @@ const _routerDeps = {
   ncfService:       _ncfService,
   // BOM expansion centralizado (Fase 2.4) — pos + ordenes lo consumen.
   bomService:       _bomService,
+  stockHub:         _stockHub,
   renderPdfDoc,
   generarPdfDocumento,
   persistirVerifyHash,

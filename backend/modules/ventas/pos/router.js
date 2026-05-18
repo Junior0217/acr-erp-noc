@@ -22,7 +22,7 @@ const posSchemas           = require('./schema');
 function createPosRouter(deps) {
   const {
     prisma, middlewares, auditReq, helpers, limiters,
-    generarSiguienteCodigo, persistirVerifyHash, bomService,
+    generarSiguienteCodigo, persistirVerifyHash, bomService, stockHub,
   } = deps;
   if (!prisma)                                       throw new Error('createPosRouter: prisma required');
   if (!middlewares)                                  throw new Error('createPosRouter: middlewares required');
@@ -39,7 +39,7 @@ function createPosRouter(deps) {
 
   const repo       = createPosRepo(prisma);
   const service    = createPosService({ repo, auditReq, generarSiguienteCodigo, persistirVerifyHash, bomService });
-  const controller = createPosController({ service, schemas: posSchemas, prisma });
+  const controller = createPosController({ service, schemas: posSchemas, prisma, stockHub });
 
   // pinVerifyLimiter LOCAL: 10 intentos por usuario (o fingerprint hash) en
   // 5 min. skipSuccessfulRequests=true → PIN correcto en flow del cajero no

@@ -284,6 +284,31 @@ function CatalogSearch({ onAdd }) {
     return () => clearTimeout(t)
   }, [q, cargar])
 
+  // Mejora #13: SSE stream — actualiza stockActual de los items en vivo.
+  // EventSource lleva cookies de sesión automáticamente (mismo origen).
+  // Reconnect nativo de EventSource cubre disconnects pasajeros.
+  useEffect(() => {
+    const base = import.meta.env.VITE_API_URL || ''
+    let es
+    try {
+      es = new EventSource(`${base}/api/inventario/stock/stream`, { withCredentials: true })
+    } catch { return }
+    es.addEventListener('stock-update', (ev) => {
+      try {
+        const { productoId, stockActual } = JSON.parse(ev.data || '{}')
+        if (productoId == null) return
+        setItems(prev => prev.map(it => {
+          // Match por it.productoId (item linkeado) o it.id si es Producto directo.
+          if (it.productoId === productoId) return { ...it, stockActual, stock: stockActual }
+          if (it.kind === 'producto' && Number(it.id) === Number(productoId)) return { ...it, stockActual, stock: stockActual }
+          return it
+        }))
+      } catch {}
+    })
+    es.onerror = () => { /* EventSource reintenta solo; silencio para no spamear consola */ }
+    return () => { try { es.close() } catch {} }
+  }, [])
+
   const matchTab = it => tab === 'articulos' ? (it.tipo === 'Recurrente' || it.tipo === 'VentaUnica')
                        : tab === 'servicios' ? it.tipo === 'Servicio'
                        : true
@@ -1036,13 +1061,31 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
           descuentoMonto:      l.descuentoMonto ?? 0,
         })),
       }
-      const r = await apiFetch('/api/pos/venta', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      // M2: Idempotency-Key. Genera UUID al hacer click "Cobrar/Cotizar".
+      // Si la red duplica o el cajero re-clickea dentro de 5min, el backend
+      // devuelve la MISMA factura sin re-emitir + X-Idempotent: 1 header.
+      const idempotencyKey = (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : `idem-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`
+      const r = await apiFetch('/api/pos/venta', {
+        method: 'POST',
+        headers: {
+          'Content-Type':    'application/json',
+          'Idempotency-Key': idempotencyKey,
+        },
+        body: JSON.stringify(body),
+      })
       const j = await r.json()
       if (!r.ok) {
         if (j.code === 'PIN_REQUIRED') { toast.error('PIN supervisor inválido o faltante.'); return { needPin: true } }
         toast.error(j.error ?? 'Error.'); return
       }
-      toast.success(esCotizacion ? `Cotización ${j.noFactura} guardada.` : `Factura ${j.noFactura} emitida.`)
+      const wasIdempotent = r.headers?.get?.('X-Idempotent') === '1'
+      if (wasIdempotent) {
+        toast.info(`Solicitud duplicada — factura ${j.noFactura} ya estaba emitida (cache idempotency).`, { duration: 3500 })
+      } else {
+        toast.success(esCotizacion ? `Cotización ${j.noFactura} guardada.` : `Factura ${j.noFactura} emitida.`)
+      }
       if (!esCotizacion) setLastFacturaId(j.id)
       posClear()
       setCliente(null)
@@ -1089,9 +1132,12 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         </button>
       </div>
     )}
-    <div className="flex gap-4 flex-1 min-h-0">
+    {/* Mejora #8: responsive. < md = stacked vertical (catálogo arriba,
+        carrito abajo). md+ = side-by-side. Catálogo siempre flex-1, carrito
+        en mobile tiene altura mínima 60vh para que sea operable. */}
+    <div className="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
       {/* Left — Catálogo + sugerencias (cross-sell pegado a la base) */}
-      <div className="flex-1 min-w-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl flex flex-col overflow-hidden">
+      <div className="flex-1 min-w-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl flex flex-col overflow-hidden md:max-h-full max-h-[55vh]">
         <div className="flex-1 min-h-0 p-4 flex flex-col gap-3">
           <p className="text-xs font-bold text-slate-500 uppercase tracking-widest">Catálogo</p>
           <div className="flex-1 min-h-0">
@@ -1120,7 +1166,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
             if (item) { addItem(item, 1) }
           } catch {}
         }}
-        className="w-80 lg:w-96 xl:w-[26rem] 2xl:w-[30rem] flex-shrink-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3 transition-all data-[drag-hover=true]:border-blue-500 data-[drag-hover=true]:bg-blue-900/20 data-[drag-hover=true]:ring-2 data-[drag-hover=true]:ring-blue-500/30">
+        className="w-full md:w-80 lg:w-96 xl:w-[26rem] 2xl:w-[30rem] md:flex-shrink-0 min-h-[40vh] md:min-h-0 bg-slate-800/30 border border-slate-700/50 rounded-2xl p-4 flex flex-col gap-3 transition-all data-[drag-hover=true]:border-blue-500 data-[drag-hover=true]:bg-blue-900/20 data-[drag-hover=true]:ring-2 data-[drag-hover=true]:ring-blue-500/30">
         <p className="text-xs font-bold text-slate-500 uppercase tracking-widest flex items-center gap-2">
           Carrito
           <span className="text-[9px] font-normal text-slate-600 normal-case tracking-normal">(arrastra desde el catálogo o clic)</span>

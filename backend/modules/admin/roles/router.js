@@ -49,6 +49,12 @@ function createRolesRouter(deps) {
                                                  _protPropietario,                                       controller.changePassword);
   router.patch( '/admin/empleados/:id/bloquear', verificarJWT, requerirPermiso('sistema:admin'),
                                                  _protPropietario,                                       controller.block);
+  // M1.1: list active sessions + kill por JTI individual.
+  router.get(   '/admin/sessions',               verificarJWT, requerirPermiso('sistema:admin'),
+                                                 controller.listSessions);
+  router.delete('/admin/sessions/token/:jti',    verificarJWT, requerirPermiso('sistema:admin'),
+                                                 _propietarioAbsoluto, _totpStrict,
+                                                 controller.killSessionByJti);
   // SILENT FIX: kill-sessions exige NIVEL_PROPIETARIO_ABSOLUTO (destructiva).
   router.delete('/admin/sessions/:empleadoId',   verificarJWT, requerirPermiso('sistema:admin'),
                                                  _protPropietario, _propietarioAbsoluto,                 controller.killSessions);

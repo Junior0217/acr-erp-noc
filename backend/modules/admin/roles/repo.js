@@ -67,6 +67,25 @@ function createRolesRepo(prisma) {
     return prisma.sessionToken.deleteMany({ where: { empleadoId } });
   }
 
+  // M1.1: listado de sesiones activas (no expiradas). SELECT sin tokens
+  // secretos — solo metadata para auditar/cerrar. Empleado join compacto.
+  async function listSessions() {
+    return prisma.sessionToken.findMany({
+      where:   { expiresAt: { gt: new Date() } },
+      orderBy: { createdAt: 'desc' },
+      take:    500,
+      select: {
+        id: true, jti: true, userAgent: true, ip: true, deviceHash: true,
+        createdAt: true, expiresAt: true,
+        empleado: { select: { id: true, nombre: true, email: true } },
+      },
+    });
+  }
+
+  async function deleteSessionByJti(jti) {
+    return prisma.sessionToken.deleteMany({ where: { jti } });
+  }
+
   async function setEmpleadoBloqueado(id, bloqueado) {
     return prisma.empleado.update({ where: { id }, data: { bloqueado } });
   }
@@ -82,6 +101,8 @@ function createRolesRepo(prisma) {
     updateEmpleadoPasswordHash,
     deleteSessions,
     setEmpleadoBloqueado,
+    listSessions,
+    deleteSessionByJti,
   };
 }
 
