@@ -27,7 +27,15 @@ function _wrap(fn) {
       }
     } catch (err) {
       if (err instanceof z.ZodError) {
-        return res.status(400).json({ error: err.issues?.[0]?.message ?? 'Datos inválidos.' });
+        // Reglas duras (prefijo fiscal + coherencia tipo) marcan code en
+        // params.fiscalCode para que el frontend muestre el toast correcto
+        // sin parsear texto. Ej: PREFIJO_FISCAL_INVALIDO, NCF_TIPO_MISMATCH.
+        const issue = err.issues?.[0];
+        const code  = issue?.params?.fiscalCode;
+        return res.status(400).json({
+          error: issue?.message ?? 'Datos inválidos.',
+          ...(code ? { code } : {}),
+        });
       }
       if (err instanceof NcfAdminError) {
         return res.status(err.status).json({ error: err.message, code: err.code });

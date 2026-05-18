@@ -153,6 +153,9 @@ const servicioSchema = z.object({
   direccionInstalacion: nullStr(300),
   latitud:              nullStr(20),
   longitud:             nullStr(20),
+  // Single source of truth multimedia: el servicio puro lleva su imagenUrl
+  // (consumida por PanelCatalogo cuando es servicio sin productoId).
+  imagenUrl:            nullStr(500),
 });
 
 const servicioUpdateSchema = servicioSchema.omit({ clienteId: true }).partial();

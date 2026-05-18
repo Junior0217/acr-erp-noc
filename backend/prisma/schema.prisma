@@ -423,6 +423,10 @@ model Servicio {
   direccionInstalacion String?
   latitud              String?
   longitud             String?
+  // Centralización de multimedia (single source of truth): la imagen vive
+  // aquí cuando el ítem de Catálogo es un servicio puro (sin productoId).
+  // El PanelCatalogo lee este campo en vez de duplicar el archivo.
+  imagenUrl            String?
   cliente              Cliente            @relation(fields: [clienteId], references: [id], onDelete: Cascade)
   plan                 Plan               @relation(fields: [planId], references: [id], onDelete: Restrict)
   ordenes              OrdenInstalacion[]

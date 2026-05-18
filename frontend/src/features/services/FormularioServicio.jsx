@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { X, Loader2, Search } from 'lucide-react'
+import ImageDropzone from '@shared/components/ImageDropzone'
 
 const API = import.meta.env.VITE_API_URL || ''
 const ESTADOS = ['Pendiente','EnInstalacion','Activo','Suspendido','Cancelado']
@@ -21,6 +22,9 @@ export default function FormularioServicio({ servicio, onClose, onSaved }) {
     direccionInstalacion: servicio?.direccionInstalacion ?? '',
     latitud:              servicio?.latitud ?? '',
     longitud:             servicio?.longitud ?? '',
+    // Multimedia centralizada — single source of truth para servicios puros
+    // (sin productoId). PanelCatalogo lee este campo cuando renderiza el ítem.
+    imagenUrl:            servicio?.imagenUrl ?? '',
   })
   const [clienteSearch, setClienteSearch] = useState(servicio?.cliente?.razonSocial ?? '')
   const [clienteSeleccionado, setClienteSeleccionado] = useState(servicio?.cliente ?? null)
@@ -83,6 +87,7 @@ export default function FormularioServicio({ servicio, onClose, onSaved }) {
         direccionInstalacion: form.direccionInstalacion || null,
         latitud:              form.latitud || null,
         longitud:             form.longitud || null,
+        imagenUrl:            form.imagenUrl || null,
       }
       const url = servicio ? `${API}/api/servicios/${servicio.id}` : `${API}/api/servicios`
       const method = servicio ? 'PUT' : 'POST'
@@ -192,6 +197,23 @@ export default function FormularioServicio({ servicio, onClose, onSaved }) {
               <label className={LABEL}>Longitud</label>
               <input className={INPUT} value={form.longitud} onChange={e => set('longitud', e.target.value)} placeholder="-69.9312" />
             </div>
+          </div>
+
+          {/* Multimedia — single source of truth. La imagen que se renderiza
+              en el Catálogo de Ventas para servicios puros nace EXCLUSIVAMENTE
+              aquí. Antes vivía en ItemCatalogo (mutable desde Catálogo) → drift.
+              Pipeline: dropzone → /api/configuracion/empresa/upload con kind=
+              servicio → Supabase bucket → URL whitelisted (esAssetUrlSegura). */}
+          <div>
+            <label className={LABEL}>Imagen del Servicio (vitrina comercial)</label>
+            <ImageDropzone
+              url={form.imagenUrl}
+              onChange={u => set('imagenUrl', u)}
+              kind="servicio"
+              label="Imagen del servicio"
+              desc="Arrastra una foto · se usa como vitrina del servicio en el Catálogo de Ventas."
+              height={160}
+            />
           </div>
         </div>
 
