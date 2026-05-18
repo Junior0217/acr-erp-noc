@@ -101,4 +101,7 @@ module.exports = [
   { key: 'vault:ver',                  module: 'Bóveda PAM',    label: 'Ver Bóveda',            desc: 'Listar credenciales sin descifrar',              color: 'red'     },
   { key: 'vault:editar',               module: 'Bóveda PAM',    label: 'Crear/Eliminar',        desc: 'Crear y eliminar credenciales cifradas',         color: 'red'     },
   { key: 'vault:reveal',               module: 'Bóveda PAM',    label: 'Revelar Password',      desc: 'Descifrar password (2FA + cooldown 30s + audit)',color: 'red'     },
+
+  // ── DGII / Fiscal (alta sensibilidad — requiere TOTP estricto + owner) ────────
+  { key: 'dgii:reportar',              module: 'DGII Fiscal',   label: 'Generar 606/607',       desc: 'Generar y descargar reportes DGII Norma 06-2018 (TOTP + Owner)', color: 'red' },
 ]

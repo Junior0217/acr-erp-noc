@@ -136,6 +136,9 @@ model Empleado {
   timelineEvents      ActivoTimeline[]
   facturas            Factura[]
   webauthnCredentials WebAuthnCredential[]
+  // DGII Fase 3 — relaciones inversas
+  compras             Compra[]
+  reportesDgii        ReporteDGIIGenerado[]
 
   @@index([nombre])
   @@index([deletedAt])
@@ -500,6 +503,8 @@ model Suplidor {
   diasCredito       Int       @default(0)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
+  // DGII Fase 3 — compras (feed del 606)
+  compras           Compra[]
 
   @@index([rnc])
   @@index([activo])
@@ -654,10 +659,10 @@ model LineaOrdenTrabajo {
 }
 
 model Factura {
-  id                String         @id @default(uuid())
-  noFactura         String         @unique
-  clienteId         String
-  ordenId           String?
+  id                       String         @id @default(uuid())
+  noFactura                String         @unique
+  clienteId                String
+  ordenId                  String?
   // ─── Nota de Crédito DGII B04 ────────────────────────────────────────────
   // facturaOrigenId: self-relation. Cuando esta fila ES una nota de crédito,
   // apunta a la Factura que está modificando (la "factura origen"). El PDF
@@ -665,71 +670,88 @@ model Factura {
   // factura origen queda con estado=Anulada (full reversal). Permitimos N
   // notasCredito por factura origen (DGII admite notas parciales) — no es
   // unique a propósito.
-  facturaOrigenId         String?
-  facturaOrigen           Factura?       @relation("NotaCreditoOrigen", fields: [facturaOrigenId], references: [id], onDelete: SetNull)
-  notasCredito            Factura[]      @relation("NotaCreditoOrigen")
-  esNotaCredito           Boolean        @default(false)
+  facturaOrigenId          String?
+  facturaOrigen            Factura?       @relation("NotaCreditoOrigen", fields: [facturaOrigenId], references: [id], onDelete: SetNull)
+  notasCredito             Factura[]      @relation("NotaCreditoOrigen")
+  esNotaCredito            Boolean        @default(false)
   // Nota de Débito (DGII B03): cobro adicional contra una factura emitida
   // (penalidades, intereses por mora, ajustes de precio al alza). NO restaura
   // inventario y NO anula la factura origen — solo se vincula vía
   // facturaOrigenId y registra el monto a cobrar.
-  esNotaDebito            Boolean        @default(false)
+  esNotaDebito             Boolean        @default(false)
   // Motivo libre exigido al emitir NC (B04) o ND (B03). Min 10 chars en backend.
   // Renombrado desde motivoNotaCredito para servir a ambos comprobantes
   // modificatorios (single source of truth en el PDF "Motivo: ...").
-  motivoNotaModificatoria String?
-  estado            EstadoFactura  @default(Borrador)
-  subtotal          Decimal        @db.Decimal(12, 2)
-  itbis             Decimal        @default(0) @db.Decimal(12, 2)
-  total             Decimal        @db.Decimal(12, 2)
-  ncf               String?
-  tipoNcf           String         @default("Consumidor Final")
-  fechaEmision      DateTime       @default(now())
-  fechaVence        DateTime?
-  fechaPago         DateTime?
-  notas             String?
+  motivoNotaModificatoria  String?
+  estado                   EstadoFactura  @default(Borrador)
+  subtotal                 Decimal        @db.Decimal(12, 2)
+  itbis                    Decimal        @default(0) @db.Decimal(12, 2)
+  total                    Decimal        @db.Decimal(12, 2)
+  ncf                      String?
+  tipoNcf                  String         @default("Consumidor Final")
+  fechaEmision             DateTime       @default(now())
+  fechaVence               DateTime?
+  fechaPago                DateTime?
+  notas                    String?
   // Override de condiciones comerciales por documento (opcional).
   // Si null/empty, el PDF usa EmpresaPerfil.condicionesDefault.
   // Shape: { validez, pago, entrega, garantia }
-  condiciones       Json?
+  condiciones              Json?
   // URL pública del PDF cacheado en Supabase Storage. Null = nunca generado o
   // invalidado (factura editada). Cuando existe, /pdf hace redirect 302 — cero CPU.
-  pdfUrl            String?
+  pdfUrl                   String?
   // Desglose de cobro mixto. Shape: [{ metodo: 'Efectivo'|'Transferencia'|'Tarjeta'|'Cheque', monto: number, refer: string? }]
   // Suma debe igualar total (validado en POST). Null = no se desglosó (factura legacy).
-  pagos             Json?
+  pagos                    Json?
+  // ─── DGII Fase 3 — campos requeridos para el reporte 607 ──────────────────
+  // tipoIngreso: catálogo DGII 01-08 (01=Operaciones, 02=Financieros, 03=Extra-
+  // ordinarios, 04=Arrendamientos, 05=VentaActivos, 06=Otros, 07=ServiciosProf,
+  // 08=Comisiones). Default 01 cubre 95% de las ventas ACR (servicios ISP/CCTV).
+  tipoIngreso              String         @default("01")
+  // Solo se llena cuando el cliente retiene impuestos al pagar (régimen DGII
+  // "Agente de Retención") — se reporta la fecha en que aplicó la retención.
+  fechaRetencion           DateTime?
+  // Cuando un cliente retiene ITBIS o ISR al pagar, se almacena el monto en
+  // estos campos. Default 0 — facturas legacy quedan en cero sin romper.
+  itbisRetenidoTercero     Decimal        @default(0) @db.Decimal(12, 2)
+  itbisPercibido           Decimal        @default(0) @db.Decimal(12, 2)
+  retencionRentaTercero    Decimal        @default(0) @db.Decimal(12, 2)
+  isrPercibido             Decimal        @default(0) @db.Decimal(12, 2)
+  impuestoSelectivoConsumo Decimal        @default(0) @db.Decimal(12, 2)
+  otrosImpuestos           Decimal        @default(0) @db.Decimal(12, 2)
+  propinaLegal             Decimal        @default(0) @db.Decimal(12, 2)
   // Snapshot fiscal inmutable: foto del estado de la factura al momento de
   // emitirse (empresa.razonSocial, empresa.rnc, empresa.assets, cliente.*,
   // items con SKU/precio/descripcion del momento). Si la empresa cambia de
   // logo o nombre años después, los PDFs antiguos siguen mostrando los datos
   // que existían al emitirse. Cumplimiento DGII a largo plazo.
   // Null para cotizaciones (no fiscal) y facturas pre-rollout.
-  snapshot          Json?
-  esCotizacion      Boolean        @default(false)
+  snapshot                 Json?
+  esCotizacion             Boolean        @default(false)
   // Etapa del pipeline Kanban para cotizaciones:
   // Borrador → Enviada → Negociacion → Aceptada → Convertida → Perdida
   // Facturas reales (esCotizacion=false) lo mantienen en 'Convertida'.
-  etapaPipeline     String         @default("Borrador")
-  deletedAt         DateTime?
+  etapaPipeline            String         @default("Borrador")
+  deletedAt                DateTime?
   // Empleado que originó el documento. Necesario para RBAC Kanban
   // (cajero solo mueve cotizaciones propias) y trazabilidad fiscal.
-  empleadoId        Int?
+  empleadoId               Int?
   // HMAC del contenido factura (rendered PDF) — permite verificación O(log n)
   // por hash indexado en lugar de buscar por noFactura ambiguo. Para validación
   // QR del PDF impreso o portal cliente.
-  verifyHash        String?
+  verifyHash               String?
   // Contador de intentos de render PDF fallidos. Cron lo usa para backoff
   // exponencial y abort a partir del 5to fallo (evita romper batch entero).
-  pdfRenderAttempts Int            @default(0)
+  pdfRenderAttempts        Int            @default(0)
   // M8: timestamp de la última invalidación del cache PDF. El cron compara este
   // valor pre/post render — si cambia mid-flight, descarta el render obsoleto.
-  pdfInvalidatedAt  DateTime?
-  cliente           Cliente        @relation(fields: [clienteId], references: [id], onDelete: Restrict)
-  orden             OrdenTrabajo?  @relation(fields: [ordenId], references: [id], onDelete: SetNull)
-  empleado          Empleado?      @relation(fields: [empleadoId], references: [id], onDelete: SetNull)
-  lineas            LineaFactura[]
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
+  pdfInvalidatedAt         DateTime?
+  cliente                  Cliente        @relation(fields: [clienteId], references: [id], onDelete: Restrict)
+  orden                    OrdenTrabajo?  @relation(fields: [ordenId], references: [id], onDelete: SetNull)
+  empleado                 Empleado?      @relation(fields: [empleadoId], references: [id], onDelete: SetNull)
+  lineas                   LineaFactura[]
+  createdAt                DateTime       @default(now())
+  updatedAt                DateTime       @updatedAt
 
   @@index([clienteId])
   @@index([ordenId])
@@ -1134,4 +1156,104 @@ model ProductoBundle {
 
   @@unique([padreId, hijoId])
   @@index([padreId])
+}
+
+// ─── DGII Fase 3 — Compras (feed del reporte 606) ─────────────────────────────
+//
+// Una `Compra` representa una factura/NCF emitido por un proveedor (Suplidor)
+// y registra todos los impuestos retenidos y categorías de gasto exigidas
+// por la Norma DGII 06-2018 para el formato 606.
+//
+// Reglas:
+//   - rnc/cedula viene del Suplidor — NO se duplica acá.
+//   - ncfProveedor es OBLIGATORIO formato B##/E## + 10 dígitos (validado Zod).
+//   - tipoBienServicio: catálogo 01-11 DGII (servicios, bienes, activos, etc.).
+//   - formaPago: catálogo 01-07 DGII (efectivo, cheque, tarjeta, crédito...).
+//   - Soft delete (deletedAt) — no se borra físicamente; el 606 ignora rows
+//     con deletedAt != null pero la fila persiste 10 años por retención legal.
+//   - Si ncfModificado != null, esta compra es una NC/ND emitida por el
+//     proveedor que modifica el NCF apuntado (raro pero posible).
+model Compra {
+  id                       String    @id @default(uuid())
+  noCompra                 String    @unique
+  suplidorId               String
+  // NCF emitido POR el proveedor (no por ACR). 11 chars: 1 letra + 10 dígitos.
+  ncfProveedor             String
+  // Solo se llena si el comprobante es ND/NC del proveedor modificando un
+  // NCF anterior — entonces apunta al NCF original.
+  ncfModificado            String?
+  // Catálogo DGII 01-11. Ver PRD §5.1.1 para mapping ACR.
+  tipoBienServicio         String
+  fechaComprobante         DateTime
+  fechaPago                DateTime?
+  // Catálogo DGII 01-07. Ver PRD §5.1.2.
+  formaPago                String
+  // Desglose obligatorio para el 606. Default 0 en todos los campos opcionales
+  // para no romper compras legacy ni forzar al user a llenar todo.
+  montoServicios           Decimal   @default(0) @db.Decimal(12, 2)
+  montoBienes              Decimal   @default(0) @db.Decimal(12, 2)
+  itbisFacturado           Decimal   @default(0) @db.Decimal(12, 2)
+  itbisRetenido            Decimal   @default(0) @db.Decimal(12, 2)
+  itbisProporcionalidad    Decimal   @default(0) @db.Decimal(12, 2)
+  itbisLlevadoCosto        Decimal   @default(0) @db.Decimal(12, 2)
+  itbisPorAdelantar        Decimal   @default(0) @db.Decimal(12, 2)
+  itbisPercibido           Decimal   @default(0) @db.Decimal(12, 2)
+  // Catálogo DGII 01-07. Solo aplica si se retuvo ISR (ej. profesionales).
+  tipoRetencionIsr         String?
+  montoRetencionRenta      Decimal   @default(0) @db.Decimal(12, 2)
+  isrPercibido             Decimal   @default(0) @db.Decimal(12, 2)
+  impuestoSelectivoConsumo Decimal   @default(0) @db.Decimal(12, 2)
+  otrosImpuestos           Decimal   @default(0) @db.Decimal(12, 2)
+  propinaLegal             Decimal   @default(0) @db.Decimal(12, 2)
+  notas                    String?
+  empleadoId               Int?
+  deletedAt                DateTime?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  suplidor                 Suplidor  @relation(fields: [suplidorId], references: [id], onDelete: Restrict)
+  empleado                 Empleado? @relation(fields: [empleadoId], references: [id], onDelete: SetNull)
+
+  @@index([suplidorId])
+  @@index([ncfProveedor])
+  @@index([fechaComprobante])
+  @@index([deletedAt])
+  @@index([suplidorId, fechaComprobante])
+  @@index([tipoBienServicio])
+}
+
+// ─── DGII Fase 3 — Audit trail de reportes generados ─────────────────────────
+//
+// Cada generación de 606/607 deja una fila inmutable acá. SHA-256 del archivo
+// generado permite probar a la DGII (o auditor) que el archivo entregado es
+// idéntico al que el sistema produjo. archivoUrl apunta al bucket privado en
+// Supabase Storage con retención 10 años (Norma DGII 06-2018 art. 7).
+//
+// La columna unique (tipo, periodo, rncEmpresa) permite re-generaciones (cada
+// una nueva fila con SHA distinto pero MISMA periodo) — el unique se levantó
+// porque la realidad es que un mes puede tener varias versiones (correcciones
+// post-cierre). Audit-trail decide cuál fue el "oficialmente enviado".
+model ReporteDGIIGenerado {
+  id                String   @id @default(uuid())
+  tipo              String // "606" | "607"
+  periodo           String // "YYYYMM"
+  rncEmpresa        String
+  cantidadRegistros Int
+  totalMonto        Decimal  @db.Decimal(14, 2)
+  totalItbis        Decimal  @db.Decimal(14, 2)
+  // Hash SHA-256 del contenido TXT (hex 64 chars). Cyber-Neo: prueba de
+  // integridad inmutable post-facto.
+  sha256            String
+  // Path Supabase Storage `dgii/<rnc>/<periodo>/<tipo>-<timestamp>.txt`.
+  archivoUrl        String?
+  empleadoId        Int
+  ipGeneracion      String?
+  userAgent         String?
+  generadoEn        DateTime @default(now())
+  empleado          Empleado @relation(fields: [empleadoId], references: [id], onDelete: Restrict)
+
+  @@index([tipo])
+  @@index([periodo])
+  @@index([generadoEn])
+  @@index([tipo, periodo])
+  @@index([rncEmpresa])
 }

@@ -51,6 +51,54 @@ function validarCedulaRD(cedulaRaw) {
   return check === parseInt(d[10], 10);
 }
 
+// DGII Fase 3 — Validador RNC (Registro Nacional del Contribuyente).
+//
+// Formato RD: 9 dígitos = 8 dígitos numéricos + 1 dígito verificador (mod 11).
+// Algoritmo oficial DGII (canónico):
+//   1) Multiplicar c1..c8 por pesos [7,9,8,6,5,4,3,2] y sumar.
+//   2) mod = suma mod 11.
+//   3) dv esperado:
+//        mod == 0 → 2  (cero es reservado, DGII salta a 2)
+//        mod == 1 → 1
+//        else     → 11 - mod
+//   4) dv == c9.
+//
+// Acepta el RNC con guiones/espacios — los limpia antes de validar.
+// Rechaza secuencias triviales (000000000, 111111111, etc.).
+function validarRncRD(rncRaw) {
+  if (typeof rncRaw !== 'string') return false;
+  const d = rncRaw.replace(/\D/g, '');
+  if (d.length !== 9) return false;
+  if (/^(\d)\1{8}$/.test(d)) return false;
+  const weights = [7, 9, 8, 6, 5, 4, 3, 2];
+  let sum = 0;
+  for (let i = 0; i < 8; i++) sum += parseInt(d[i], 10) * weights[i];
+  const mod = sum % 11;
+  let dv;
+  if (mod === 0) dv = 2;
+  else if (mod === 1) dv = 1;
+  else dv = 11 - mod;
+  return dv === parseInt(d[8], 10);
+}
+
+// DGII Fase 3 — Enmascarador para logs/auditReq. Deja últimos 4 dígitos.
+// Ej: "130000123" -> "*****0123". Anti-PII en AuditLog.
+function enmascararRnc(rncRaw) {
+  if (typeof rncRaw !== 'string') return null;
+  const d = rncRaw.replace(/\D/g, '');
+  if (d.length < 5) return '*'.repeat(d.length);
+  return '*'.repeat(d.length - 4) + d.slice(-4);
+}
+
+// DGII Fase 3 — Validador formato NCF/e-CF.
+// NCF físico: B + 10 dígitos (B01 = Crédito Fiscal, B02 = Consumidor Final,
+// B03 = Nota Débito, B04 = Nota Crédito, B14 = Régimen Especial).
+// e-CF:       E + 10 dígitos.
+function validarNcfDgii(ncfRaw) {
+  if (typeof ncfRaw !== 'string') return false;
+  return /^[BE]\d{10}$/.test(ncfRaw.trim().toUpperCase());
+}
+
 const emptyStr = z.literal('');
 const nullStr  = (max = 20) => z.string().max(max).or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v);
 const optIdent = (max = 20) => z.string().min(1).max(max).or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v);
@@ -236,6 +284,9 @@ module.exports = {
   sendErr,
   sendOk,
   validarCedulaRD,
+  validarRncRD,
+  enmascararRnc,
+  validarNcfDgii,
   emptyStr,
   nullStr,
   optIdent,
