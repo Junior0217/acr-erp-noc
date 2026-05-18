@@ -17,7 +17,6 @@ import Login from '@features/auth/Login'
 // ─── LAZY (split por ruta para reducir bundle inicial) ────────────────────────
 const Dashboard       = lazy(() => import('@features/dashboard/Dashboard'))
 const Ventas          = lazy(() => import('@features/sales/Ventas'))
-const Compras         = lazy(() => import('@features/purchases/Compras'))
 const Inventario      = lazy(() => import('@features/inventory/Inventario'))
 const Contabilidad    = lazy(() => import('@features/accounting/Contabilidad'))
 const RRHH            = lazy(() => import('@features/hr/RRHH'))
@@ -95,7 +94,6 @@ function AppRoutes() {
         <Route path="/" element={<AdminLayout />}>
           <Route index            element={<Suspense fallback={<PageLoader />}><Dashboard /></Suspense>} />
           <Route path="ventas"    element={<Suspense fallback={<PageLoader />}><Ventas /></Suspense>} />
-          <Route path="compras"   element={<Suspense fallback={<PageLoader />}><Compras /></Suspense>} />
           <Route path="inventario" element={<Suspense fallback={<PageLoader />}><Inventario /></Suspense>} />
           <Route path="contabilidad" element={<Suspense fallback={<PageLoader />}><Contabilidad /></Suspense>} />
           <Route path="rrhh"      element={<Suspense fallback={<PageLoader />}><RRHH /></Suspense>} />

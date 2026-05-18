@@ -287,7 +287,11 @@ const corsOptions = {
     cb(new Error(`CORS: origen no permitido → ${origin}`))
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders:  ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token'],
+  // x-totp: header obligatorio para acciones destructivas/fiscales (delete
+  // empleado, generar 606/607, offboard). Sin él en allowedHeaders, el
+  // navegador aborta el preflight OPTIONS antes de mandar el POST real.
+  // x-portal-csrf + pct-csrf: doble-submit cookie del portal cliente.
+  allowedHeaders:  ['Content-Type', 'Authorization', 'Accept', 'X-CSRF-Token', 'x-totp', 'x-portal-csrf', 'pct-csrf'],
   exposedHeaders:  ['X-CSRF-Token', 'X-App-Version', 'X-Boot-At'],
   credentials: true,
   optionsSuccessStatus: 200,

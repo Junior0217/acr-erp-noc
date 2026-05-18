@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import {
-  LayoutDashboard, ShoppingCart, PackageSearch, Boxes, BookOpen,
+  LayoutDashboard, ShoppingCart, Boxes, BookOpen,
   Users, Handshake, Globe, BarChart2, Settings, Menu, X, ChevronRight,
   Wrench, AlertTriangle, ClipboardList, LogOut, ShieldCheck, Loader2,
   Building2, FileText,
@@ -192,7 +192,6 @@ function useNocAlerts() {
 const navItems = [
   { to: '/',             label: 'Dashboard',     icon: LayoutDashboard, sub: null,                        permiso: 'dashboard:ver'  },
   { to: '/ventas',       label: 'Ventas',         icon: ShoppingCart,    sub: 'Catálogo Universal · POS · Facturas', permiso: null             },
-  { to: '/compras',      label: 'Compras',        icon: PackageSearch,   sub: 'Órdenes · Proveedores',       permiso: null             },
   { to: '/inventario',   label: 'Inventario',     icon: Boxes,           sub: 'Solo artículos físicos · Kardex', permiso: 'inventario:ver' },
   { to: '/contabilidad', label: 'Contabilidad',   icon: BookOpen,        sub: 'Cuentas · Balances',         permiso: null             },
   { to: '/rrhh',         label: 'RRHH',           icon: Users,           sub: 'Técnicos · Nómina',          permiso: 'rrhh:ver'       },
