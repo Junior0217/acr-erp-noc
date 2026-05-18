@@ -88,13 +88,16 @@ async function buildFacturaPDFBuffer(factura) {
 // y reciben códigos distintos (no race). Defaults se aplican si la entidad no
 // existe aún en secuenciasConfig — un INSERT diferido no hace falta.
 const SECUENCIA_DEFAULTS = {
-  factura:     { prefijo: 'FAC', actual: 0, padding: 6 },
-  cotizacion:  { prefijo: 'COT', actual: 0, padding: 6 },
-  producto:    { prefijo: 'ART', actual: 0, padding: 6 },
-  servicio:    { prefijo: 'SVC', actual: 0, padding: 6 },
-  cliente:     { prefijo: 'CLI', actual: 0, padding: 6 },
-  rma:         { prefijo: 'RMA', actual: 0, padding: 5 },
-  plan:        { prefijo: 'PLN', actual: 0, padding: 6 },
+  factura:      { prefijo: 'FAC', actual: 0, padding: 6 },
+  cotizacion:   { prefijo: 'COT', actual: 0, padding: 6 },
+  producto:     { prefijo: 'ART', actual: 0, padding: 6 },
+  servicio:     { prefijo: 'SVC', actual: 0, padding: 6 },
+  cliente:      { prefijo: 'CLI', actual: 0, padding: 6 },
+  rma:          { prefijo: 'RMA', actual: 0, padding: 5 },
+  plan:         { prefijo: 'PLN', actual: 0, padding: 6 },
+  // OT + compras añadidos para paridad con shared/services/sequences.service.js.
+  ordenTrabajo: { prefijo: 'OT',  actual: 0, padding: 6 },
+  compra:       { prefijo: 'CMP', actual: 0, padding: 6 },
   // Secuenciador interno para el "noFactura" de Notas de Crédito (NC-000001).
   // El NCF B04 sigue su PROPIA secuencia DGII en ConfiguracionNCF — son
   // numeradores independientes (no confundir interno vs fiscal).

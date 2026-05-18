@@ -503,13 +503,25 @@ function AssetUploader({ kind, label, desc, Icon, url, canEdit, onUpdated }) {
    Absorbe PanelSecuencias + PanelNCF en una sola vista. Range guard:
    secuenciaActual NUNCA debe exceder limite (ni siquiera durante edición). */
 
+// Catálogo NCF DGII completo (Norma General 06-2018 + 05-2019). Cada entrada
+// genera un row en MiEmpresa → Bloque B aunque el owner aún no haya
+// configurado rangos — viene en "modo no persistido" hasta que guarda.
+//
+// IMPORTANTE: `tipoNcf` debe coincidir 1:1 con el catálogo del backend en
+// modules/admin/empresa/ncf/schema.js → NCF_CATALOGO_DGII. Cualquier drift
+// dispara NCF_TIPO_MISMATCH (400).
 const NCF_CATALOGO = [
-  { tipoNcf: 'Fiscal',           prefijo: 'B01', tipoDescripcion: 'Crédito Fiscal'             },
-  { tipoNcf: 'Consumidor Final', prefijo: 'B02', tipoDescripcion: 'Consumidor Final'           },
-  { tipoNcf: 'Nota de Débito',   prefijo: 'B03', tipoDescripcion: 'Notas de Débito (DGII B03)' },
-  { tipoNcf: 'Nota de Crédito',  prefijo: 'B04', tipoDescripcion: 'Notas de Crédito (DGII B04)' },
-  { tipoNcf: 'Régimen Especial', prefijo: 'B14', tipoDescripcion: 'Régimen Especial'           },
-  { tipoNcf: 'Gubernamental',    prefijo: 'B15', tipoDescripcion: 'Gubernamental'              },
+  { tipoNcf: 'Crédito Fiscal',             prefijo: 'B01', tipoDescripcion: 'Factura crédito fiscal — empresa con RNC (deducible ITBIS).' },
+  { tipoNcf: 'Consumidor Final',           prefijo: 'B02', tipoDescripcion: 'Factura consumidor final — persona física (no deducible).' },
+  { tipoNcf: 'Nota de Débito',             prefijo: 'B03', tipoDescripcion: 'Cargo adicional contra una factura emitida (intereses, ajustes).' },
+  { tipoNcf: 'Nota de Crédito',            prefijo: 'B04', tipoDescripcion: 'Anulación o devolución parcial/total de una factura emitida.' },
+  { tipoNcf: 'Comprobantes Compras',       prefijo: 'B11', tipoDescripcion: 'Compras a proveedor informal sin RNC (gasto deducible).' },
+  { tipoNcf: 'Registro Único de Ingresos', prefijo: 'B12', tipoDescripcion: 'Otros ingresos no facturables (donaciones, indemnizaciones).' },
+  { tipoNcf: 'Gastos Menores',             prefijo: 'B13', tipoDescripcion: 'Gastos sin comprobante del proveedor (caja chica deducible).' },
+  { tipoNcf: 'Régimen Especial',           prefijo: 'B14', tipoDescripcion: 'Ventas exoneradas — Zonas Francas / diplomáticos.' },
+  { tipoNcf: 'Gubernamental',              prefijo: 'B15', tipoDescripcion: 'Ventas al Estado dominicano y entidades públicas.' },
+  { tipoNcf: 'Exportaciones',              prefijo: 'B16', tipoDescripcion: 'Ventas al exterior (exentas de ITBIS, tasa 0%).' },
+  { tipoNcf: 'Pagos al Exterior',          prefijo: 'B17', tipoDescripcion: 'Retención ISR a no-residentes (servicios del exterior).' },
 ]
 
 // Secuencias INTERNAS (no fiscales). Cualquier nuevo prefijo aquí NO debe
@@ -530,7 +542,10 @@ const SEQ_ENTIDADES = [
 // ConfiguracionNCF cuyo prefijo NO empiece con B/E o no esté en este catálogo.
 // Previene que prefijos internos (COT, OT, FAC) se filtren a la lista fiscal
 // si alguien guardó por error en la tabla equivocada.
-const NCF_PREFIJOS_VALIDOS = new Set(['B01', 'B02', 'B03', 'B04', 'B14', 'B15'])
+const NCF_PREFIJOS_VALIDOS = new Set([
+  'B01', 'B02', 'B03', 'B04',
+  'B11', 'B12', 'B13', 'B14', 'B15', 'B16', 'B17',
+])
 
 function TabSecuenciasNCF({ canEdit }) {
   return (
@@ -553,7 +568,7 @@ function TabSecuenciasNCF({ canEdit }) {
         <div className="flex items-center gap-2 mb-2">
           <span className="text-[10px] font-bold text-indigo-300 uppercase tracking-widest bg-indigo-900/20 border border-indigo-700/40 rounded px-1.5 py-0.5">Bloque B</span>
           <h2 className="text-sm font-bold text-slate-200">NCF Fiscales DGII</h2>
-          <span className="text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B14 · B15</span>
+          <span className="text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B11 · B12 · B13 · B14 · B15 · B16 · B17</span>
         </div>
         <NCFSection canEdit={canEdit} />
       </div>
@@ -835,7 +850,7 @@ function NCFSection({ canEdit }) {
       <div className="flex items-center gap-2 mb-3 pb-2 border-b border-slate-700/50">
         <Hash size={15} className="text-emerald-400" />
         <h3 className="text-xs font-bold text-emerald-400 uppercase tracking-widest">Rangos NCF (DGII)</h3>
-        <span className="ml-auto text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B14 · B15</span>
+        <span className="ml-auto text-[10px] text-slate-500">B01 · B02 · B03 · B04 · B11 · B12 · B13 · B14 · B15 · B16 · B17</span>
       </div>
       <p className="text-xs text-slate-500 mb-4">
         Configura los prefijos y secuencias para cada tipo de NCF según tus rangos autorizados por la DGII.

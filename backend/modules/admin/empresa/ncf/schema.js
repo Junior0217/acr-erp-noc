@@ -25,15 +25,33 @@
 
 const { z } = require('zod');
 
-// Catálogo cerrado DGII (Norma General 06-2018). Cualquier inserción con
-// prefijo fuera de esta whitelist es rechazada antes de tocar la BD.
+// Catálogo cerrado DGII (Norma General 06-2018 + 05-2019). Cualquier inserción
+// con prefijo fuera de esta whitelist es rechazada antes de tocar la BD.
+//
+// NCF físicos (preimpresos):
+//   B01 — Crédito Fiscal     (factura a empresa con RNC, deducible ITBIS)
+//   B02 — Consumidor Final   (factura a persona, NO deducible)
+//   B03 — Nota de Débito     (cargo adicional contra factura emitida)
+//   B04 — Nota de Crédito    (anulación parcial/total de factura)
+//   B11 — Comprobantes Compras (proveedor informal sin RNC)
+//   B12 — Registro Único de Ingresos (otros ingresos no facturables)
+//   B13 — Gastos Menores     (gastos sin comprobante del proveedor)
+//   B14 — Régimen Especial   (exonerados — Zonas Francas / diplomáticos)
+//   B15 — Gubernamental      (ventas al Estado dominicano)
+//   B16 — Exportaciones      (ventas al exterior, exentas de ITBIS)
+//   B17 — Pagos al Exterior  (retención ISR a no-residentes)
 const NCF_CATALOGO_DGII = {
-  B01: 'Fiscal',
+  B01: 'Crédito Fiscal',
   B02: 'Consumidor Final',
   B03: 'Nota de Débito',
   B04: 'Nota de Crédito',
+  B11: 'Comprobantes Compras',
+  B12: 'Registro Único de Ingresos',
+  B13: 'Gastos Menores',
   B14: 'Régimen Especial',
   B15: 'Gubernamental',
+  B16: 'Exportaciones',
+  B17: 'Pagos al Exterior',
 };
 const NCF_PREFIJOS_VALIDOS = Object.keys(NCF_CATALOGO_DGII);
 const NCF_TIPOS_VALIDOS    = Object.values(NCF_CATALOGO_DGII);

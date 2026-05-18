@@ -12,15 +12,20 @@
  */
 
 const SECUENCIA_DEFAULTS = {
-  factura:     { prefijo: 'FAC', actual: 0, padding: 6 },
-  cotizacion:  { prefijo: 'COT', actual: 0, padding: 6 },
-  producto:    { prefijo: 'ART', actual: 0, padding: 6 },
-  servicio:    { prefijo: 'SVC', actual: 0, padding: 6 },
-  cliente:     { prefijo: 'CLI', actual: 0, padding: 6 },
-  rma:         { prefijo: 'RMA', actual: 0, padding: 5 },
-  plan:        { prefijo: 'PLN', actual: 0, padding: 6 },
-  notaCredito: { prefijo: 'NC',  actual: 0, padding: 6 },
-  notaDebito:  { prefijo: 'ND',  actual: 0, padding: 6 },
+  factura:      { prefijo: 'FAC', actual: 0, padding: 6 },
+  cotizacion:   { prefijo: 'COT', actual: 0, padding: 6 },
+  producto:     { prefijo: 'ART', actual: 0, padding: 6 },
+  servicio:     { prefijo: 'SVC', actual: 0, padding: 6 },
+  cliente:      { prefijo: 'CLI', actual: 0, padding: 6 },
+  rma:          { prefijo: 'RMA', actual: 0, padding: 5 },
+  plan:         { prefijo: 'PLN', actual: 0, padding: 6 },
+  notaCredito:  { prefijo: 'NC',  actual: 0, padding: 6 },
+  notaDebito:   { prefijo: 'ND',  actual: 0, padding: 6 },
+  // OT — visitas técnicas / instalaciones / mantenimientos. Faltaba en defaults
+  // así que el preview /api/configuracion/secuencias/preview/ordenTrabajo
+  // devolvía 400 → frontend mostraba "?-000001" en MiEmpresa.
+  ordenTrabajo: { prefijo: 'OT',  actual: 0, padding: 6 },
+  compra:       { prefijo: 'CMP', actual: 0, padding: 6 },
 };
 
 function createSequencesService({ prisma }) {
