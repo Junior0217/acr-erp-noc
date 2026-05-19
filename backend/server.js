@@ -1033,6 +1033,20 @@ async function applyPendingMigrations() {
     console.log('[MIGRATE] skip (NODE_ENV != production)');
     return;
   }
+  if (process.env.SKIP_BOOT_MIGRATE === '1') {
+    console.log('[MIGRATE] skip (SKIP_BOOT_MIGRATE=1)');
+    return;
+  }
+  // Requiere DIRECT_URL para evitar pgbouncer prepared-statement issues.
+  // Si NO existe, prisma cae al DATABASE_URL pooler y falla. Mejor abortar
+  // CON LOG y dejar el server arrancar de todos modos — schema drift es
+  // problema separado que se ataca con migration manual via pooler.
+  if (!process.env.DIRECT_URL) {
+    console.warn('[MIGRATE] DIRECT_URL no configurada en env. Migration NO se aplica.');
+    console.warn('[MIGRATE] Configurar en Render Dashboard → Environment:');
+    console.warn('[MIGRATE]   DIRECT_URL=postgresql://...db.<project>.supabase.co:5432/postgres?sslmode=require');
+    return;
+  }
   const { execSync } = require('child_process');
   try {
     console.log('[MIGRATE] prisma migrate deploy iniciando...');
@@ -1045,8 +1059,13 @@ async function applyPendingMigrations() {
     console.log(out);
     console.log('[MIGRATE] OK');
   } catch (e) {
-    console.error('[MIGRATE FATAL]', e.stdout?.toString() ?? '', e.stderr?.toString() ?? '', e.message);
-    process.exit(1);
+    // NO process.exit — server debe arrancar aunque migrations fallen.
+    // Schema drift se reportara via /api/health/migrations para que el
+    // operador resuelva manualmente.
+    console.error('[MIGRATE FAILED — server arrancara igual]');
+    console.error('stdout:', e.stdout?.toString() ?? '');
+    console.error('stderr:', e.stderr?.toString() ?? '');
+    console.error('msg:',    e.message);
   }
 }
 
