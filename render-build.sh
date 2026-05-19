@@ -28,13 +28,14 @@ echo
 
 # Frozen-lockfile: NO modifica pnpm-lock.yaml. Si el lock no coincide con
 # package.json, FALLA → previene drift silencioso en producción.
+# Filter --prod NO: Prisma + scripts del backend pueden requerir devDeps
+# transitivos. Si querés reducir tamaño en Render: agregar `--prod` cuando
+# confirmes que ninguna dep dev del backend se necesita en runtime.
 echo "→ pnpm install --frozen-lockfile (workspace recursive)..."
 pnpm install --frozen-lockfile
 
-# Build frontend → genera /frontend/dist consumido por backend Express
-# o servido por Render como static site (según deploy config).
-echo "→ Build frontend..."
-pnpm --filter frontend build
+# Frontend bundle NO se construye acá: Vercel lo sirve. Render solo expone
+# el API Express. Build cross-cliente eliminado para desacoplar deploys.
 
 # Prisma generate explícito (idempotente; backend.postinstall ya lo corre,
 # pero declararlo acá hace el flow legible y resistente a cambios).
