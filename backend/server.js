@@ -1022,7 +1022,36 @@ app.use('/api', createDgiiRouter(_routerDeps));
 // Vive en backend/jobs/cron.js · cierra sobre prisma inyectado.
 startCronJobs({ prisma });
 
+// Ejecuta `prisma migrate deploy` al boot — DESACOPLADO del build cmd de
+// Render. Razón: hoy Render Dashboard tiene build cmd legacy "npm install
+// && npx prisma generate" que NO corre migrate deploy. Mi render.yaml es
+// ignorado porque el servicio fue creado en modo Manual, no Blueprint.
+// Como fallback robusto: la APP misma aplica migrations al boot, idempotente.
+// Si una migration falla → process.exit(1) → Render hace rollback automático.
+async function applyPendingMigrations() {
+  if (process.env.NODE_ENV !== 'production') {
+    console.log('[MIGRATE] skip (NODE_ENV != production)');
+    return;
+  }
+  const { execSync } = require('child_process');
+  try {
+    console.log('[MIGRATE] prisma migrate deploy iniciando...');
+    const out = execSync('npx prisma migrate deploy', {
+      cwd: __dirname,
+      stdio: 'pipe',
+      env:   { ...process.env },
+      timeout: 120000, // 2 min hard cap
+    }).toString();
+    console.log(out);
+    console.log('[MIGRATE] OK');
+  } catch (e) {
+    console.error('[MIGRATE FATAL]', e.stdout?.toString() ?? '', e.stderr?.toString() ?? '', e.message);
+    process.exit(1);
+  }
+}
+
 async function startServer() {
+  await applyPendingMigrations();
   try {
     await prisma.$connect();
     console.log('[DB] Prisma connected to Supabase successfully.');
