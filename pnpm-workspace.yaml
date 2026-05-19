@@ -1,0 +1,25 @@
+packages:
+  - 'backend'
+  - 'frontend'
+
+# pnpm 11 — allowBuilds: allowlist explícita de paquetes con scripts de
+# instalación (postinstall/preinstall/install) PERMITIDOS. Cualquier paquete
+# fuera de esta lista queda con scripts BLOQUEADOS por default.
+#
+# Protección directa contra ataques supply-chain (TanStack hack Nov 2025,
+# Shai-Hulud worm 2025, chalk/debug/color-name hijack Sep 2025). Si un
+# transitivo es comprometido y tiene postinstall malicioso → pnpm lo ignora.
+#
+# Para añadir uno nuevo:
+#   1. Verificar qué hace (npmjs.com/package/<name>?activeTab=code)
+#   2. Si es legítimo (binarios nativos / codegen), poner true acá
+#   3. Commit explícito con razón
+#   4. Si NO confías en él, ponerlo en false explícito (mejor que omitir)
+allowBuilds:
+  '@prisma/client': true       # Prisma genera client TypeScript en postinstall
+  '@prisma/engines': true      # Descarga binarios engine para query/migrate
+  prisma: true                 # CLI Prisma
+  sharp: true                  # Binarios nativos libvips para procesamiento img
+  puppeteer-core: true         # No descarga Chromium (lo provee @sparticuz)
+  '@sparticuz/chromium': true  # Chromium serverless precompilado
+  esbuild: true                # Binarios nativos del bundler (transitivo vite)

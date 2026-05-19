@@ -2,12 +2,15 @@ services:
   - type: web
     name: acr-erp-backend
     runtime: node
-    rootDir: backend
-    # @sparticuz/chromium se descarga como dep normal (npm install) — no requiere
-    # `npx puppeteer browsers install` ni caché especial. Esto resuelve el bug
-    # `The browser folder exists but the executable is missing` que rompía deploys.
-    buildCommand: npm install && npx prisma generate
-    startCommand: node server.js
+    # rootDir raíz del monorepo (era 'backend' antes de pnpm). pnpm install
+    # con --filter erp-acr-backend resuelve workspace + locks centralizados.
+    rootDir: .
+    # buildCommand delegado a render-build.sh para mantener el detalle de
+    # pasos (corepack enable, pnpm install --frozen-lockfile, prisma generate,
+    # prisma migrate deploy, frontend build) versionado y auditable.
+    # Migración npm → pnpm 11 hardening supply-chain (Nov 2025).
+    buildCommand: bash render-build.sh
+    startCommand: pnpm --filter erp-acr-backend exec node server.js
     envVars:
       - key: NODE_ENV
         value: production
