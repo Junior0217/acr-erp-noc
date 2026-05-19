@@ -77,7 +77,7 @@ backend/modules/<dominio>/
 8. **REGLA SUPREMA:** Cualquier refactor que toque server.js o backend/modules/* DEBE migrar el código tocado al nuevo molde. Prohibido seguir agregando lógica al monolito legacy. Si un handler vive aún inline en server.js, su próxima edición exige extraerlo a su módulo correspondiente.
 
 ## CONTEXTO DE LA EMPRESA
-- **Rubro:** Proveedor WISP, Infraestructura de Redes y Seguridad Electrónica.
+- **Rubro:** Proveedor de Infraestructura de Redes y Seguridad Electrónica.
 - **Operación:** Dirigida por sus 2 socios fundadores.
 - **Objetivo:** Panel Administrativo (NOC) robusto para control total interno: facturación de clientes, gestión de inventario (equipos, fibra, CCTV) y operaciones.
 
