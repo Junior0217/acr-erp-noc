@@ -1,5 +1,5 @@
 require('dotenv').config();
-console.log('[RENDER SYNC] Backend API v2.1 started — Prisma Client regenerated');
+console.log('[RENDER SYNC] Backend API v2.2 started — pnpm 11 + supply-chain hardening + frontend build extraido de render-build.sh');
 const util         = require('util');
 const fs           = require('fs');
 const path         = require('path');
