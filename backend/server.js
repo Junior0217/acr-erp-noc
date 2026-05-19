@@ -366,6 +366,35 @@ app.get('/api/health', async (req, res) => {
   })
 })
 
+// /api/health/migrations — read-only check de Prisma migrations aplicadas.
+// Endpoint PUBLICO sin auth porque los nombres de migration son git-public
+// (viven en backend/prisma/migrations/) y NO exponen datos del negocio.
+// Cyber Neo: NO incluye checksum (irrelevante) ni rolled_back_at content;
+// solo name + applied flag. Útil para verificar que prisma migrate deploy
+// se ejecutó correctamente en el último build de Render.
+app.get('/api/health/migrations', async (req, res) => {
+  try {
+    const rows = await prisma.$queryRaw`
+      SELECT migration_name           AS name,
+             (finished_at IS NOT NULL) AS applied,
+             rolled_back_at            AS rolled_back
+        FROM _prisma_migrations
+       ORDER BY started_at DESC
+       LIMIT 15
+    `
+    res.json({
+      total: rows.length,
+      latest: rows.map(r => ({
+        name:        r.name,
+        applied:     Boolean(r.applied),
+        rolledBack:  r.rolled_back ? true : false,
+      })),
+    })
+  } catch (e) {
+    res.status(503).json({ error: 'No se pudo consultar _prisma_migrations.', code: e.code ?? null })
+  }
+})
+
 // /api/auth/challenge genera RSA cryptochallenge para login. Es idempotente y
 // no expone PII. IPs con NAT (oficinas) gastaban cuota global -> 429 al primer
 // usuario. Se exime del limiter global; loginLimiter cubre el abuso real (login).
