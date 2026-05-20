@@ -18,6 +18,7 @@ const jwt    = require('jsonwebtoken');
 const crypto = require('crypto');
 const { authenticator } = require('otplib');
 const { wrapJWT, unwrapJWT, decryptTOTP, PORTAL_JWT_SECRET } = require('./jwt-crypto');
+const { rlsContext } = require('./rls-context');
 
 const NIVEL_PROPIETARIO_ABSOLUTO = 100;
 
@@ -89,6 +90,15 @@ function createMiddlewares(deps) {
         }
       }
 
+      // L1.1 RLS — Monta AsyncLocalStorage con el userId del JWT verificado.
+      // Cualquier handler aguas abajo que use `prisma.withCurrentUserRls(fn)`
+      // toma el userId desde aquí sin pasarlo explícitamente. Si el storage
+      // ya estaba activo (handler anidado, test wrapper), `.run` crea un nuevo
+      // scope shadow que se desmonta al finalizar `next()`.
+      const uid = Number(payload.sub);
+      if (Number.isInteger(uid) && uid > 0) {
+        return rlsContext.run({ userId: uid }, () => next());
+      }
       next();
     } catch {
       res.clearCookie('token');

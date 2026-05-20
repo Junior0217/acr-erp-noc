@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import {
   Search, Plus, Minus, Trash2, ShoppingBag, FileText, Tag, Loader2, X, User, ExternalLink,
   Wifi, Camera, Wrench, Zap, Package, Network, Boxes, GripVertical, Lock, KeyRound, Keyboard, AlertCircle,
@@ -738,11 +738,53 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const mostrarEntrega   = prefsPOS.mostrarEntrega
   const mostrarGarantia  = prefsPOS.mostrarGarantia
   const mostrarNotas     = prefsPOS.mostrarNotas
-  const setMostrarValidez   = (b) => actualizarPrefsPOS({ mostrarValidez:   !!b })
-  const setMostrarFormaPago = (b) => actualizarPrefsPOS({ mostrarFormaPago: !!b })
-  const setMostrarEntrega   = (b) => actualizarPrefsPOS({ mostrarEntrega:   !!b })
-  const setMostrarGarantia  = (b) => actualizarPrefsPOS({ mostrarGarantia:  !!b })
-  const setMostrarNotas     = (b) => actualizarPrefsPOS({ mostrarNotas:     !!b })
+  const setMostrarValidez   = useCallback((b) => actualizarPrefsPOS({ mostrarValidez:   !!b }), [actualizarPrefsPOS])
+  const setMostrarFormaPago = useCallback((b) => actualizarPrefsPOS({ mostrarFormaPago: !!b }), [actualizarPrefsPOS])
+  const setMostrarEntrega   = useCallback((b) => actualizarPrefsPOS({ mostrarEntrega:   !!b }), [actualizarPrefsPOS])
+  const setMostrarGarantia  = useCallback((b) => actualizarPrefsPOS({ mostrarGarantia:  !!b }), [actualizarPrefsPOS])
+  const setMostrarNotas     = useCallback((b) => actualizarPrefsPOS({ mostrarNotas:     !!b }), [actualizarPrefsPOS])
+  // Mapas de setters texto/mostrar — eliminan cascadas if/else en handlers
+  // del EditorCondiciones. Referencia estable mientras los setters de useState
+  // (React garantiza identidad estable) y los useCallback de mostrar* no
+  // cambien. Cada onChange/onMostrar queda en una sola línea.
+  const setters = useMemo(() => ({
+    texto: {
+      validez:  setValidezTexto,
+      pago:     setFormaPagoTexto,
+      entrega:  setEntregaTexto,
+      garantia: setGarantiaTexto,
+      notas:    setNotasTexto,
+    },
+    mostrar: {
+      validez:  setMostrarValidez,
+      pago:     setMostrarFormaPago,
+      entrega:  setMostrarEntrega,
+      garantia: setMostrarGarantia,
+      notas:    setMostrarNotas,
+    },
+  }), [setMostrarValidez, setMostrarFormaPago, setMostrarEntrega, setMostrarGarantia, setMostrarNotas])
+
+  // Memoización del <select> de forma de pago — el JSX es estático (7 opciones
+  // hardcodeadas) y solo `value`/`disabled` dependen del estado. Sin useMemo,
+  // EditorCondiciones recibe un node nuevo en cada render y reconcilia el
+  // subárbol del editor entero. Deps mínimas → re-render solo cuando cambia
+  // el texto seleccionado o la visibilidad.
+  const formaPagoChildren = useMemo(() => (
+    <select
+      value={formaPagoTexto}
+      onChange={e => setFormaPagoTexto(e.target.value)}
+      disabled={!mostrarFormaPago}
+      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <option value="Contado">Contado</option>
+      <option value="Transferencia bancaria">Transferencia bancaria</option>
+      <option value="Tarjeta de crédito/débito">Tarjeta crédito/débito</option>
+      <option value="Cheque">Cheque</option>
+      <option value="Crédito 15 días">Crédito 15 días</option>
+      <option value="Crédito 30 días">Crédito 30 días</option>
+      <option value="Mixto">Mixto</option>
+    </select>
+  ), [formaPagoTexto, mostrarFormaPago])
   // Flags de obligatoriedad heredados de EmpresaPerfil.condicionesDefault._obligatorio.
   // Si owner los marcó, el toggle se fuerza ON y queda bloqueado.
   const obligValidez  = !!empresa?.condicionesDefault?._obligatorio?.validez
@@ -1289,20 +1331,8 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                     garantia: mostrarGarantia,
                     notas:    mostrarNotas,
                   }}
-                  onChange={(k, v) => {
-                    if (k === 'validez')  setValidezTexto(v)
-                    if (k === 'pago')     setFormaPagoTexto(v)
-                    if (k === 'entrega')  setEntregaTexto(v)
-                    if (k === 'garantia') setGarantiaTexto(v)
-                    if (k === 'notas')    setNotasTexto(v)
-                  }}
-                  onMostrar={(k, b) => {
-                    if (k === 'validez')  setMostrarValidez(b)
-                    if (k === 'pago')     setMostrarFormaPago(b)
-                    if (k === 'entrega')  setMostrarEntrega(b)
-                    if (k === 'garantia') setMostrarGarantia(b)
-                    if (k === 'notas')    setMostrarNotas(b)
-                  }}
+                  onChange={(k, v) => setters.texto[k]?.(v)}
+                  onMostrar={(k, b) => setters.mostrar[k]?.(b)}
                   obligatorios={{
                     validez:  obligValidez,
                     entrega:  obligEntrega,
@@ -1316,22 +1346,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                     garantia: 'Ej: 30 días contra defectos de fabricación.',
                     notas:    'Notas internas o aclaraciones para el cliente.',
                   }}
-                  formaPagoChildren={
-                    <select
-                      value={formaPagoTexto}
-                      onChange={e => setFormaPagoTexto(e.target.value)}
-                      disabled={!mostrarFormaPago}
-                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      <option value="Contado">Contado</option>
-                      <option value="Transferencia bancaria">Transferencia bancaria</option>
-                      <option value="Tarjeta de crédito/débito">Tarjeta crédito/débito</option>
-                      <option value="Cheque">Cheque</option>
-                      <option value="Crédito 15 días">Crédito 15 días</option>
-                      <option value="Crédito 30 días">Crédito 30 días</option>
-                      <option value="Mixto">Mixto</option>
-                    </select>
-                  }
+                  formaPagoChildren={formaPagoChildren}
                 />
               </div>
             </details>

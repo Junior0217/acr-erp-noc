@@ -13,6 +13,7 @@ const rateLimit    = require('express-rate-limit');
 const helmet       = require('helmet');
 const { z }        = require('zod');
 const { PrismaClient } = require('@prisma/client');
+const { rlsContext } = require('./shared/rls-context');
 const jwt          = require('jsonwebtoken');
 const bcrypt       = require('bcryptjs');
 const cookieParser = require('cookie-parser');
@@ -161,7 +162,68 @@ const prismaBase = new PrismaClient({ log: [{ emit: 'event', level: 'query' }] }
 prismaBase.$on('query', e => {
   if (e.duration > 500) console.warn(`[SLOW QUERY] ${e.duration}ms — ${e.query.slice(0, 200)}`)
 })
+
+// ─── L1.1 RLS — AsyncLocalStorage + wrappers de contexto ─────────────────────
+// La migración 20260519230000_rls_strict_policies estableció políticas que
+// EXIGEN `app.bypass_rls='true'` O `app.current_employee_id` seteado. La BD
+// default `bypass='true'` para no romper queries legacy. Los endpoints que
+// quieren ENFORCE real (no bypass) usan:
+//
+//   await prisma.withRlsContext(req.user.sub, async (tx) => {
+//     // tx aquí ya tiene SET LOCAL app.current_employee_id = <userId> y
+//     // SET LOCAL app.bypass_rls = 'false' aplicados.
+//     return tx.factura.findMany({ where: { ... } });
+//   });
+//
+// El middleware `verificarJWT` (shared/middlewares.js) monta el contexto
+// AsyncLocalStorage automáticamente tras verificar el JWT, permitiendo que el
+// código que llame `prisma.withCurrentUserRls(fn)` use el JWT del request en
+// curso sin pasar el id manualmente. Adopción opt-in para no impactar perf
+// transversal (cada `withRlsContext` abre una transacción interactiva).
+
 const prisma = prismaBase.$extends({
+  client: {
+    /** Devuelve el id del empleado activo en el AsyncLocalStorage o null. */
+    rlsCurrentUserId() { return rlsContext.getStore()?.userId ?? null; },
+    /**
+     * Ejecuta `fn(tx)` dentro de una transacción interactiva con
+     * `SET LOCAL app.bypass_rls='false'` + `SET LOCAL app.current_employee_id=$userId`
+     * aplicados. Las queries usadas DENTRO de fn deben usar `tx`, no `prisma`,
+     * para heredar el contexto RLS. Si fn lanza, la tx hace rollback.
+     */
+    async withRlsContext(userId, fn) {
+      const uid = Number(userId);
+      if (!Number.isInteger(uid) || uid <= 0) {
+        throw new Error('withRlsContext: userId inválido (debe ser entero positivo).');
+      }
+      return prismaBase.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'false'`);
+        await tx.$executeRawUnsafe(`SET LOCAL app.current_employee_id = '${uid}'`);
+        return rlsContext.run({ userId: uid }, () => fn(tx));
+      });
+    },
+    /**
+     * Variante que toma el userId del AsyncLocalStorage montado por el
+     * middleware Express. Si no hay contexto, lanza — fuerza explicitud.
+     */
+    async withCurrentUserRls(fn) {
+      const store = rlsContext.getStore();
+      if (!store?.userId) {
+        throw new Error('withCurrentUserRls: sin contexto de usuario (¿middleware no montado?).');
+      }
+      return this.withRlsContext(store.userId, fn);
+    },
+    /**
+     * Ejecuta `fn(tx)` con bypass RLS explícito. Para cron jobs, seeds, scripts
+     * de mantenimiento que necesitan tocar tablas RLS sin un usuario asociado.
+     */
+    async withRlsBypass(fn) {
+      return prismaBase.$transaction(async (tx) => {
+        await tx.$executeRawUnsafe(`SET LOCAL app.bypass_rls = 'true'`);
+        return fn(tx);
+      });
+    },
+  },
   query: {
     auditLog: {
       update:     () => { throw new Error('AuditLog es inmutable: update no permitido.') },
@@ -171,6 +233,8 @@ const prisma = prismaBase.$extends({
     },
   },
 });
+
+
 
 // ─── Core services (audit / sequences / verify-hash) ─────────────────────────
 // Factories que cierran sobre el prisma extendido. AuditLog ORM-immutable via
