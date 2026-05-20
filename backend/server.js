@@ -1106,6 +1106,21 @@ async function startServer() {
   // Pre-generate RSA challenges so first login after cold start never fails
   await warmChallengeStore(3)
 
+  // Seed idempotente de UsuarioPreferenciasPOS. Garantiza que cada empleado
+  // con permisos POS tenga su fila de defaults pre-poblada para métricas de
+  // adopción y para que el primer GET de /api/preferencias-pos no caiga al
+  // fallback (mejora latencia del primer login post-boot).
+  // Try/catch wide: el seed NUNCA debe bloquear el boot — si la migration
+  // de UsuarioPreferenciasPOS aún no se aplicó en prod (race), simplemente
+  // se omite con warning y se re-intentará en el próximo boot.
+  try {
+    const { runSeed } = require('./prisma/seeds/usuario-preferencias-pos');
+    const r = await runSeed({ prisma });
+    console.log(`[SEED:preferencias-pos] empleados=${r.empleados} creados=${r.creados} existian=${r.existian}${r.motivo ? ` motivo=${r.motivo}` : ''}`);
+  } catch (err) {
+    console.warn('[SEED:preferencias-pos] omitido:', err?.message ?? err);
+  }
+
   app.listen(PORT, () => {
     console.log(`[SERVER] ERP backend running on port ${PORT}`);
     console.log(`[ENV] NODE_ENV=${process.env.NODE_ENV ?? 'development'} | CORS=${[...ALLOWED_ORIGINS].join(', ')}`);

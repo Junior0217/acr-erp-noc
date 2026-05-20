@@ -8,7 +8,7 @@ import { useAuth } from '@shared/contexts/AuthContext'
 import { useCart } from '@shared/contexts/CartContext'
 import { useEmpresa } from '@shared/contexts/EmpresaContext'
 import PinAuthModal from '@shared/components/PinAuthModal'
-import CondicionToggle from '@shared/components/CondicionToggle'
+import EditorCondiciones from './_shared/EditorCondiciones'
 import usePreferenciasPOS from '@shared/hooks/usePreferenciasPOS'
 import { toast } from 'sonner'
 import { marked } from 'marked'
@@ -1235,7 +1235,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                 Condiciones · Notas · Vencimiento
               </summary>
               <div className="p-2 space-y-2 border-t border-slate-700/50">
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 gap-2">
                   <label className="text-[10px] text-slate-500 block">
                     Días vence
                     <input
@@ -1244,24 +1244,54 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                       className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500"
                     />
                   </label>
-                  <div className={`block rounded border px-2 py-1 transition-colors ${mostrarFormaPago ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
-                    <div className="flex items-center justify-between gap-1 mb-1">
-                      <div className="flex items-center gap-1.5">
-                        <span className="text-[10px] text-slate-300 font-medium">Forma de Pago</span>
-                        <span className={`rounded-full border px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide ${mostrarFormaPago ? 'bg-blue-600/20 text-blue-300 border-blue-600/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
-                          {mostrarFormaPago ? 'En PDF' : 'Oculto'}
-                        </span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => setMostrarFormaPago(v => !v)}
-                        aria-pressed={mostrarFormaPago}
-                        aria-label="Mostrar Forma de Pago en PDF"
-                        className={`relative inline-flex h-4 w-8 flex-shrink-0 rounded-full transition-colors ${mostrarFormaPago ? 'bg-blue-600' : 'bg-slate-700'}`}
-                      >
-                        <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${mostrarFormaPago ? 'translate-x-4' : 'translate-x-0'}`} />
-                      </button>
-                    </div>
+                </div>
+                {/* Editor unificado — misma fuente de verdad que PanelFacturas/Cotizaciones.
+                    Los 5 toggles (validez, pago, entrega, garantía, notas) viajan por una
+                    sola API. formaPagoChildren inyecta el <select> propio del POS. */}
+                <EditorCondiciones
+                  keys={['validez','pago','entrega','garantia','notas']}
+                  values={{
+                    validez:  validezTexto,
+                    pago:     formaPagoTexto,
+                    entrega:  entregaTexto,
+                    garantia: garantiaTexto,
+                    notas:    notasTexto,
+                  }}
+                  mostrar={{
+                    validez:  mostrarValidez,
+                    pago:     mostrarFormaPago,
+                    entrega:  mostrarEntrega,
+                    garantia: mostrarGarantia,
+                    notas:    mostrarNotas,
+                  }}
+                  onChange={(k, v) => {
+                    if (k === 'validez')  setValidezTexto(v)
+                    if (k === 'pago')     setFormaPagoTexto(v)
+                    if (k === 'entrega')  setEntregaTexto(v)
+                    if (k === 'garantia') setGarantiaTexto(v)
+                    if (k === 'notas')    setNotasTexto(v)
+                  }}
+                  onMostrar={(k, b) => {
+                    if (k === 'validez')  setMostrarValidez(b)
+                    if (k === 'pago')     setMostrarFormaPago(b)
+                    if (k === 'entrega')  setMostrarEntrega(b)
+                    if (k === 'garantia') setMostrarGarantia(b)
+                    if (k === 'notas')    setMostrarNotas(b)
+                  }}
+                  obligatorios={{
+                    validez:  obligValidez,
+                    entrega:  obligEntrega,
+                    garantia: obligGarantia,
+                  }}
+                  locked={!effectiveUnlocked}
+                  onRequestUnlock={() => setPinModalOpen(true)}
+                  placeholders={{
+                    validez:  'Ej: Esta cotización es válida por 15 días.',
+                    entrega:  'Ej: Entrega en 3-5 días laborables tras confirmación.',
+                    garantia: 'Ej: 30 días contra defectos de fabricación.',
+                    notas:    'Notas internas o aclaraciones para el cliente.',
+                  }}
+                  formaPagoChildren={
                     <select
                       value={formaPagoTexto}
                       onChange={e => setFormaPagoTexto(e.target.value)}
@@ -1276,57 +1306,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                       <option value="Crédito 30 días">Crédito 30 días</option>
                       <option value="Mixto">Mixto</option>
                     </select>
-                  </div>
-                </div>
-                {/* Validez */}
-                <CondicionToggle
-                  label="Validez"
-                  texto={validezTexto}
-                  onTexto={setValidezTexto}
-                  mostrar={mostrarValidez}
-                  onMostrar={setMostrarValidez}
-                  obligatorio={obligValidez}
-                  locked={!effectiveUnlocked}
-                  onRequestUnlock={() => setPinModalOpen(true)}
-                  placeholder="Ej: Esta cotización es válida por 15 días."
-                />
-                {/* Entrega */}
-                <CondicionToggle
-                  label="Tiempo de Entrega"
-                  texto={entregaTexto}
-                  onTexto={setEntregaTexto}
-                  mostrar={mostrarEntrega}
-                  onMostrar={setMostrarEntrega}
-                  obligatorio={obligEntrega}
-                  locked={!effectiveUnlocked}
-                  onRequestUnlock={() => setPinModalOpen(true)}
-                  placeholder="Ej: Entrega en 3-5 días laborables tras confirmación."
-                />
-                {/* Garantía */}
-                <CondicionToggle
-                  label="Garantía"
-                  texto={garantiaTexto}
-                  onTexto={setGarantiaTexto}
-                  mostrar={mostrarGarantia}
-                  onMostrar={setMostrarGarantia}
-                  obligatorio={obligGarantia}
-                  locked={!effectiveUnlocked}
-                  onRequestUnlock={() => setPinModalOpen(true)}
-                  placeholder="Ej: 30 días contra defectos de fabricación."
-                />
-                {/* Notas — sin _obligatorio (notas son siempre opcionales DGII) */}
-                <CondicionToggle
-                  label="Notas / Aclaraciones"
-                  texto={notasTexto}
-                  onTexto={setNotasTexto}
-                  mostrar={mostrarNotas}
-                  onMostrar={setMostrarNotas}
-                  obligatorio={false}
-                  locked={!effectiveUnlocked}
-                  onRequestUnlock={() => setPinModalOpen(true)}
-                  multiline
-                  maxLength={2000}
-                  placeholder="Notas internas o aclaraciones para el cliente."
+                  }
                 />
               </div>
             </details>
