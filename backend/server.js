@@ -1,4 +1,8 @@
 require('dotenv').config();
+// L1.3 — Validación rígida de env vars al boot. Si falta DATABASE_URL,
+// DIRECT_URL, JWT_SECRET, AUDIT_SECRET o CORS_ORIGIN, el módulo hace
+// process.exit(1) ANTES de cargar el resto del server.
+require('./shared/env');
 console.log('[RENDER SYNC] Backend API v2.3 started — credentials rotated 2026-05-19 + migrations security applied');
 const util         = require('util');
 const fs           = require('fs');
@@ -79,6 +83,7 @@ const createAdminRouter      = require('./routes/admin');
 const createDgiiRouter       = require('./modules/dgii');
 const createServiciosRouter  = require('./modules/servicios');
 const createPreferenciasPosRouter = require('./modules/admin/preferencias-pos/router');
+const createPosAutorizacionRouter = require('./modules/admin/pos-autorizacion/router');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
 const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
 
@@ -297,16 +302,20 @@ app.use((req, res, next) => {
 })
 
 const DEV_ORIGINS     = ['http://localhost:5173', 'http://127.0.0.1:5173']
-const PROD_ORIGINS    = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean)
-const CORS_WILDCARD   = process.env.NODE_ENV !== 'production' && (PROD_ORIGINS.includes('*') || PROD_ORIGINS.length === 0)
-const ALLOWED_ORIGINS = new Set([...DEV_ORIGINS, ...PROD_ORIGINS.filter(o => o !== '*')])
+// L1.2 — CORS estrictamente whitelist. Wildcard prohibido. Lista de orígenes
+// permitidos = DEV_ORIGINS (sólo en dev) + CORS_ORIGIN.split(',') del .env.
+// El '*' que pudiera venir en CORS_ORIGIN se descarta explícitamente.
+const PROD_ORIGINS    = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean).filter(o => o !== '*')
+const ALLOWED_ORIGINS = new Set([...(process.env.NODE_ENV !== 'production' ? DEV_ORIGINS : []), ...PROD_ORIGINS])
 
 const corsOptions = {
   origin: (origin, cb) => {
+    // Requests sin Origin header (curl, mismo dominio, server-to-server) se
+    // permiten — el navegador SIEMPRE envía Origin en cross-origin.
     if (!origin) return cb(null, true)
-    if (CORS_WILDCARD) return cb(null, true)
     if (ALLOWED_ORIGINS.has(origin)) return cb(null, true)
-    console.warn(`[CORS BLOCKED] ${origin}. Set CORS_ORIGIN env var on Render.`)
+    console.warn(`[CORS BLOCKED] ${origin}. Verifica CORS_ORIGIN en .env / Render Dashboard.`)
+    // L1.2: rechazo explícito (cors library traduce este error a 403/CORS-fail).
     cb(new Error(`CORS: origen no permitido → ${origin}`))
   },
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -1021,6 +1030,7 @@ app.use('/api', createAdminRouter(_routerDeps));
 app.use('/api', createDgiiRouter(_routerDeps));
 app.use('/api', createServiciosRouter(_routerDeps));
 app.use('/api', createPreferenciasPosRouter(_routerDeps));
+app.use('/api', createPosAutorizacionRouter(_routerDeps));
 
 // Arranca CRON jobs nocturnos (idempotente — solo registra una vez).
 // Vive en backend/jobs/cron.js · cierra sobre prisma inyectado.

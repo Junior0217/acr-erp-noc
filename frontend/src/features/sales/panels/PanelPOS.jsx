@@ -783,24 +783,49 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         toast.info('POS re-bloqueado por inactividad (5 min). Ingresa el PIN para editar descuentos nuevamente.')
       }, LOCK_IDLE_MS)
     }
-    const onBlur = () => setDescuentosUnlocked(false)
+    // Auto-lock por blur: NO bloquea inmediato (eso causaba falso positivo
+    // cuando el autofill de Chrome muestra un popover que dispara `blur`
+    // sin que el operador haya cambiado de ventana). En su lugar, espera 3s
+    // y verifica `document.hasFocus()` — si el documento sigue con foco,
+    // fue un blur efímero (autofill, password manager) y se cancela el lock.
+    // Si pasa 3s y el documento sigue sin foco, ahí sí se bloquea.
+    const BLUR_GRACE_MS = 3000
+    let blurGraceTimer = null
+    const onBlur = () => {
+      if (blurGraceTimer) clearTimeout(blurGraceTimer)
+      blurGraceTimer = setTimeout(() => {
+        // Re-validación: si el documento volvió a tener foco antes del
+        // grace period, NO se bloquea (fue un popover efímero).
+        if (typeof document !== 'undefined' && document.hasFocus()) return
+        setDescuentosUnlocked(false)
+      }, BLUR_GRACE_MS)
+    }
+    const onFocus = () => {
+      if (blurGraceTimer) { clearTimeout(blurGraceTimer); blurGraceTimer = null }
+    }
     // visibilitychange cubre los casos que blur NO captura: minimizar la
     // ventana, lock de pantalla del SO, cambio de aplicación que no quita
     // el foco del documento pero sí lo oculta. Spec: document.hidden = true
-    // → re-lock inmediato (más estricto que el idle timer).
+    // → re-lock inmediato (más estricto que el idle timer y NO tolera grace).
     const onVisibility = () => {
-      if (document.visibilityState === 'hidden') setDescuentosUnlocked(false)
+      if (document.visibilityState === 'hidden') {
+        if (blurGraceTimer) { clearTimeout(blurGraceTimer); blurGraceTimer = null }
+        setDescuentosUnlocked(false)
+      }
     }
     reset()
     window.addEventListener('mousemove', reset, { passive: true })
     window.addEventListener('keydown',  reset)
     window.addEventListener('blur',     onBlur)
+    window.addEventListener('focus',    onFocus)
     document.addEventListener('visibilitychange', onVisibility)
     return () => {
       if (timer) clearTimeout(timer)
+      if (blurGraceTimer) clearTimeout(blurGraceTimer)
       window.removeEventListener('mousemove', reset)
       window.removeEventListener('keydown',  reset)
       window.removeEventListener('blur',     onBlur)
+      window.removeEventListener('focus',    onFocus)
       document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [descuentosUnlocked])
