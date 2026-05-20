@@ -238,8 +238,8 @@ export default function FormularioSuplidor({ onClose, onSave, onToggleStatus, ne
               <input className={INPUT} value={form.cedula} onChange={masked("cedula", formatCedula)} placeholder="001-1234567-8" maxLength={13} />
             </div>
             <div>
-              <label className={LABEL}>Teléfono *</label>
-              <input required className={INPUT} value={form.telefono} onChange={masked("telefono", formatPhone)} placeholder="809-XXX-XXXX" maxLength={12} />
+              <label className={LABEL}>Teléfono</label>
+              <input className={INPUT} value={form.telefono} onChange={masked("telefono", formatPhone)} placeholder="809-XXX-XXXX (opcional)" maxLength={12} />
             </div>
             <div>
               <label className={LABEL}>Email</label>

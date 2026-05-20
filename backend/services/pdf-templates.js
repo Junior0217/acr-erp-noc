@@ -686,13 +686,11 @@ function renderDocumento(opts) {
       ${cond.garantia ? `<div class="cond-cell"><div class="lbl">Garantía</div><div class="val">${escape(cond.garantia)}</div></div>` : ''}
     </div>` : ''
 
-  // Dirección de la EMPRESA: el usuario pidió eliminar la ETIQUETA "Dirección:"
-  // pero CONSERVAR el texto físico de la ubicación. Va en su propia fila sin
-  // <span class="lbl">; el .row sin lbl colapsa a una sola línea de val al
-  // 100% del ancho corp-meta (alineado a la derecha como el resto).
+  // Dirección de la EMPRESA: REMOVIDA del header superior (era duplicada visualmente
+  // con el bloque centralizado del documento). La dirección física oficial vive
+  // ahora solo en el cliente-grid + verify URL del QR.
   const corpRows = [
     emp.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${escape(emp.rnc)}</span></div>` : '',
-    direccionEmp ? `<div class="row row-noticket"><span class="val val-direccion">${escape(direccionEmp)}</span></div>` : '',
     emp.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${escape(emp.telefono)}</span></div>` : '',
     emp.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${escape(emp.email)}</span></div>` : '',
     emp.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${escape(emp.website)}</span></div>` : '',
@@ -872,6 +870,7 @@ function renderDocumento(opts) {
         ${verify?.url
           ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${escape(verify.url)}</a></div>`
           : ''}
+        ${(!isFactura && emp.registroMercantil) ? `<div class="qr-url" style="margin-top:3px; color:#475569; font-size:7.5px;" title="Registro Mercantil / Cámara de Comercio">RM/Cám. Comercio: ${escape(emp.registroMercantil)}</div>` : ''}
       </div>
     </div>
     <div class="ctr">

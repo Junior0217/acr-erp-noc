@@ -74,7 +74,11 @@ export default function FormularioProspecto({ initialData, onClose, onSave, onCo
   const handleSave = async () => {
     setError("");
     if (!form.nombre.trim())                          { setError("El nombre es obligatorio."); return; }
-    if (form.telefono.replace(/\D/g, "").length < 7)  { setError("Teléfono inválido."); return; }
+    // Teléfono opcional: si se digita algo, debe ser válido (>= 7 dígitos);
+    // si está vacío, permite avanzar.
+    if (form.telefono.trim() && form.telefono.replace(/\D/g, "").length < 7) {
+      setError("Teléfono inválido."); return;
+    }
     if (!form.servicioInteresado)                     { setError("Selecciona un servicio."); return; }
     setSaving(true);
     try {
@@ -120,8 +124,8 @@ export default function FormularioProspecto({ initialData, onClose, onSave, onCo
               <input className={INPUT} placeholder="Juan Pérez" value={form.nombre} onChange={(e) => set("nombre", e.target.value)} />
             </div>
             <div>
-              <label className={LABEL}>Teléfono *</label>
-              <input className={INPUT} placeholder="809-000-0000" value={form.telefono} onChange={masked("telefono", formatPhone)} />
+              <label className={LABEL}>Teléfono</label>
+              <input className={INPUT} placeholder="809-000-0000 (opcional)" value={form.telefono} onChange={masked("telefono", formatPhone)} />
             </div>
             <div>
               <label className={LABEL}>Origen</label>

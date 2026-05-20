@@ -642,7 +642,12 @@ function CartLine({ linea, onChange, onRemove, unlocked, onRequestUnlock }) {
   return (
     <div className="bg-slate-800/40 border border-slate-700/40 rounded-xl p-3 space-y-2">
       <div className="flex items-start justify-between gap-2">
-        <p className="text-sm font-medium text-slate-100 leading-tight flex-1 min-w-0 truncate">{linea.nombre}</p>
+        <p className="text-sm font-medium text-slate-100 leading-tight flex-1 min-w-0 truncate">
+          {(linea.codigo || linea.sku) && (
+            <span className="font-mono text-[10px] text-emerald-400 mr-1.5">{linea.codigo || linea.sku}</span>
+          )}
+          <span>{linea.nombre}</span>
+        </p>
         <button onClick={onRemove} className="flex-shrink-0 text-slate-600 hover:text-red-400 transition-colors"><Trash2 size={13} /></button>
       </div>
       <div className="flex items-center gap-2 flex-wrap">
@@ -787,10 +792,11 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const [notasTexto, setNotasTexto]     = useState('')
   // Toggles visibilidad PDF — default ON para condiciones (heredan empresa)
   // y OFF para notas (no van al PDF a menos que el cajero las habilite).
-  const [mostrarValidez,  setMostrarValidez]  = useState(true)
-  const [mostrarEntrega,  setMostrarEntrega]  = useState(true)
-  const [mostrarGarantia, setMostrarGarantia] = useState(true)
-  const [mostrarNotas,    setMostrarNotas]    = useState(false)
+  const [mostrarValidez,    setMostrarValidez]    = useState(true)
+  const [mostrarFormaPago,  setMostrarFormaPago]  = useState(true)
+  const [mostrarEntrega,    setMostrarEntrega]    = useState(true)
+  const [mostrarGarantia,   setMostrarGarantia]   = useState(true)
+  const [mostrarNotas,      setMostrarNotas]      = useState(false)
   // Flags de obligatoriedad heredados de EmpresaPerfil.condicionesDefault._obligatorio.
   // Si owner los marcó, el toggle se fuerza ON y queda bloqueado.
   const obligValidez  = !!empresa?.condicionesDefault?._obligatorio?.validez
@@ -1028,8 +1034,9 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
         // Validez
         if (!obligValidez && !mostrarValidez) condicionesOverride.validez = { incluir: false, texto: null }
         else if (mostrarValidez && validezTexto.trim()) condicionesOverride.validez = { incluir: true, texto: validezTexto.trim().slice(0, 500) }
-        // Pago (sin toggle de visibilidad — siempre ON si tiene texto)
-        if (formaPagoTexto.trim()) condicionesOverride.pago = { incluir: true, texto: formaPagoTexto.trim().slice(0, 500) }
+        // Pago: ahora con switch — si OFF, omitir explícitamente. Si ON con texto, incluir.
+        if (!mostrarFormaPago) condicionesOverride.pago = { incluir: false, texto: null }
+        else if (formaPagoTexto.trim()) condicionesOverride.pago = { incluir: true, texto: formaPagoTexto.trim().slice(0, 500) }
         // Entrega
         if (!obligEntrega && !mostrarEntrega) condicionesOverride.entrega = { incluir: false, texto: null }
         else if (mostrarEntrega && entregaTexto.trim()) condicionesOverride.entrega = { incluir: true, texto: entregaTexto.trim().slice(0, 500) }
@@ -1104,6 +1111,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       setGarantiaTexto(defGarantia || '')
       setNotasTexto('')
       setMostrarValidez(true)
+      setMostrarFormaPago(true)
       setMostrarEntrega(true)
       setMostrarGarantia(true)
       setMostrarNotas(false)
@@ -1255,12 +1263,29 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                       className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs font-mono text-slate-100 focus:outline-none focus:border-blue-500"
                     />
                   </label>
-                  <label className="text-[10px] text-slate-500 block">
-                    Forma de Pago
+                  <div className={`block rounded border px-2 py-1 transition-colors ${mostrarFormaPago ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
+                    <div className="flex items-center justify-between gap-1 mb-1">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] text-slate-300 font-medium">Forma de Pago</span>
+                        <span className={`rounded-full border px-1.5 py-0.5 text-[8.5px] font-semibold uppercase tracking-wide ${mostrarFormaPago ? 'bg-blue-600/20 text-blue-300 border-blue-600/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
+                          {mostrarFormaPago ? 'En PDF' : 'Oculto'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setMostrarFormaPago(v => !v)}
+                        aria-pressed={mostrarFormaPago}
+                        aria-label="Mostrar Forma de Pago en PDF"
+                        className={`relative inline-flex h-4 w-8 flex-shrink-0 rounded-full transition-colors ${mostrarFormaPago ? 'bg-blue-600' : 'bg-slate-700'}`}
+                      >
+                        <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${mostrarFormaPago ? 'translate-x-4' : 'translate-x-0'}`} />
+                      </button>
+                    </div>
                     <select
                       value={formaPagoTexto}
                       onChange={e => setFormaPagoTexto(e.target.value)}
-                      className="mt-0.5 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
+                      disabled={!mostrarFormaPago}
+                      className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       <option value="Contado">Contado</option>
                       <option value="Transferencia bancaria">Transferencia bancaria</option>
@@ -1270,7 +1295,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                       <option value="Crédito 30 días">Crédito 30 días</option>
                       <option value="Mixto">Mixto</option>
                     </select>
-                  </label>
+                  </div>
                 </div>
                 {/* Validez */}
                 <CondicionToggleBlock

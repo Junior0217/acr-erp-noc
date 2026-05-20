@@ -177,7 +177,6 @@ export default function CotizacionDGII() {
                     <td className="px-2 py-1.5 align-top">
                       <p className="font-semibold text-slate-900 leading-tight">{it.desc}</p>
                       <p className="text-[9.5px] text-slate-600 mt-0.5 leading-snug">{it.detalle}</p>
-                      <p className="text-[9px] text-slate-400 label-mono mt-0.5">SKU: {it.sku}</p>
                     </td>
                     <td className="px-2 py-1.5 align-top text-center label-mono text-slate-700">{it.cant}</td>
                     <td className="px-2 py-1.5 align-top text-right label-mono text-slate-700 whitespace-nowrap">{fmt(it.precio)}</td>

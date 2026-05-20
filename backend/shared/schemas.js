@@ -91,7 +91,7 @@ const suplidorBaseShape = z.object({
   nombreContacto:    z.string().min(2).max(100),
   cedula:            optCedulaRD,
   cargo:             nullStr(80),
-  telefonoPrincipal: z.string().min(7).max(20),
+  telefonoPrincipal: z.string().max(20).optional().nullable().transform(v => (v == null || v === '') ? null : v),
   telefonoAlt:       nullStr(20),
   email:             z.string().email().trim().or(emptyStr).optional().transform(v => (v === '' || v == null) ? null : v),
   contactoAlt:       nullStr(150),
@@ -114,7 +114,7 @@ const suplidorUpdateSchema = suplidorBaseShape.omit({ noSuplidor: true }).partia
 
 const prospectoSchema = z.object({
   nombre:             z.string().min(2).max(150),
-  telefono:           z.string().min(7).max(20),
+  telefono:           z.string().max(20).optional().nullable().transform(v => (v == null || v === '') ? null : v),
   servicioInteresado: z.string().min(1).max(100),
   origen:             z.enum(['WhatsApp', 'Llamada', 'Referido', 'Web', 'Presencial', 'Otro']).default('WhatsApp'),
   notas:              nullStr(1000),

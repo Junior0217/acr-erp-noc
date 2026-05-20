@@ -233,7 +233,7 @@ function ModalFacturaManual({ onClose, onSuccess }) {
         <div className="flex items-center justify-between px-5 py-4 border-b border-slate-800 shrink-0">
           <div className="flex items-center gap-2">
             <Receipt size={16} className="text-blue-400" />
-            <h2 className="text-base font-semibold text-slate-100">Punto de Venta — Nueva Factura</h2>
+            <h2 className="text-base font-semibold text-slate-100">Punto de Venta</h2>
           </div>
           <button onClick={onClose} className="text-slate-500 hover:text-slate-100 transition-colors"><X size={18} /></button>
         </div>
