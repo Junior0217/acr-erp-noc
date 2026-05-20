@@ -58,6 +58,11 @@ function createFacturasService(deps) {
     generarSiguienteCodigo, persistirVerifyHash,
     buildFacturaPDFBuffer, sendFacturaPDF, pdfService,
     ownerAlerts,
+    // L1.1 RLS opt-in. Cuando server.js pasa el prisma extendido, este wrapper
+    // permite ejecutar queries enforced (SET LOCAL employee_id en TX). Si la
+    // dep no está disponible (test/standalone), `listarMisFacturasRls` lanza
+    // explícito — no degrada silenciosamente a "ver todo".
+    withCurrentUserRls,
   } = deps;
   if (!repo)                                          throw new Error('createFacturasService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createFacturasService: auditReq required');
@@ -475,6 +480,53 @@ function createFacturasService(deps) {
     return { status: 200, body: factura };
   }
 
+  // ─── L1.1 RLS — listado enforced por owner ─────────────────────────────────
+  // Endpoint para que el cajero / vendedor consulte SOLO las facturas que él
+  // emitió (empleadoId = user.sub). La política `rls_owner_match` lo enforcea
+  // a nivel BD: aunque un bug suba a `findMany` sin WHERE, RLS retorna 0 filas.
+  //
+  // El wrapper abre una tx interactiva con `SET LOCAL app.bypass_rls='false'`
+  // + `SET LOCAL app.current_employee_id=$uid`. Si la política aceptase un
+  // empleadoId distinto del setting, no devolvería esa fila.
+  //
+  // Si `withCurrentUserRls` no está disponible (test/standalone sin extension),
+  // lanza explícito — el código que invoca este método ESPERA enforce real,
+  // un fallback "ver todo" sería una regresión silenciosa de seguridad.
+  async function listarMisFacturasRls(query, user) {
+    if (typeof withCurrentUserRls !== 'function') {
+      throw new FacturaError(500, 'RLS_WRAPPER_MISSING',
+        'withCurrentUserRls no disponible — RLS enforce inoperante.');
+    }
+    if (!user?.sub) {
+      throw new FacturaError(401, 'NO_USER', 'user.sub requerido para RLS owner-match.');
+    }
+    const take    = Math.min(Math.max(parseInt(query?.limit, 10) || 50, 1), 100);
+    const pageNum = Math.max(parseInt(query?.page, 10) || 1, 1);
+    const skip    = (pageNum - 1) * take;
+    return withCurrentUserRls(async (tx) => {
+      const where = { empleadoId: Number(user.sub), deletedAt: null };
+      const [data, total] = await Promise.all([
+        tx.factura.findMany({
+          where, take, skip,
+          orderBy: { fechaEmision: 'desc' },
+          select: {
+            id: true, noFactura: true, ncf: true, total: true, estado: true,
+            fechaEmision: true, esCotizacion: true, esNotaCredito: true,
+            esNotaDebito: true, empleadoId: true,
+          },
+        }),
+        tx.factura.count({ where }),
+      ]);
+      return {
+        status: 200,
+        body: {
+          data,
+          meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1), rlsEnforced: true },
+        },
+      };
+    });
+  }
+
   return {
     FacturaError,
     revertirFactura,
@@ -482,6 +534,7 @@ function createFacturasService(deps) {
     emitirNotaDebito,
     emitirFacturaDesdeOT,
     patchCondiciones,
+    listarMisFacturasRls,
   };
 }
 

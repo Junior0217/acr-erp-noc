@@ -14,7 +14,11 @@ class ClienteError extends Error {
 }
 
 function createClientesService(deps) {
-  const { repo, auditReq, generarSiguienteCodigo, formatCliente, validUUID } = deps;
+  const {
+    repo, auditReq, generarSiguienteCodigo, formatCliente, validUUID,
+    // L1.1 RLS opt-in (ver facturas/service.js para racional).
+    withCurrentUserRls,
+  } = deps;
   if (!repo)                                          throw new Error('createClientesService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createClientesService: auditReq required');
   if (typeof generarSiguienteCodigo !== 'function')   throw new Error('createClientesService: generarSiguienteCodigo required');
@@ -156,6 +160,41 @@ function createClientesService(deps) {
     return { status: 200, body: formatCliente(updated) };
   }
 
+  // ─── L1.1 RLS — listado enforced bajo política rls_owner_match ─────────────
+  // Cliente NO tiene owner column (ver schema.prisma). La política para esa
+  // tabla cae al fallback "presencia de employee_id". Aún así, ejecutamos
+  // dentro de withCurrentUserRls para validar que la pipeline está sana:
+  // - El SET LOCAL se aplica (RLS confirma sesión legítima),
+  // - El test smoke valida que la tx funciona end-to-end.
+  // Cuando el schema agregue una columna owner explícita a Cliente, esta
+  // función queda lista para filtrar por ella sin más wiring.
+  async function listarMisClientesRls(query, user) {
+    if (typeof withCurrentUserRls !== 'function') {
+      throw new ClienteError(500, 'RLS_WRAPPER_MISSING',
+        'withCurrentUserRls no disponible — RLS enforce inoperante.');
+    }
+    if (!user?.sub) {
+      throw new ClienteError(401, 'NO_USER', 'user.sub requerido para RLS owner-match.');
+    }
+    const take    = Math.min(Math.max(parseInt(query?.limit, 10) || 50, 1), 100);
+    const pageNum = Math.max(parseInt(query?.page, 10) || 1, 1);
+    const skip    = (pageNum - 1) * take;
+    return withCurrentUserRls(async (tx) => {
+      const where = { deletedAt: null };
+      const [clientes, total] = await Promise.all([
+        tx.cliente.findMany({ where, take, skip, orderBy: { razonSocial: 'asc' } }),
+        tx.cliente.count({ where }),
+      ]);
+      return {
+        status: 200,
+        body: {
+          data: clientes.map(formatCliente),
+          meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1), rlsEnforced: true },
+        },
+      };
+    });
+  }
+
   return {
     ClienteError,
     listarClientes,
@@ -163,6 +202,7 @@ function createClientesService(deps) {
     actualizarCliente,
     eliminarCliente,
     toggleCliente,
+    listarMisClientesRls,
   };
 }
 

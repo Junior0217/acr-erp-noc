@@ -85,6 +85,7 @@ const createDgiiRouter       = require('./modules/dgii');
 const createServiciosRouter  = require('./modules/servicios');
 const createPreferenciasPosRouter = require('./modules/admin/preferencias-pos/router');
 const createPosAutorizacionRouter = require('./modules/admin/pos-autorizacion/router');
+const { createWebhookApproveLimiter } = require('./shared/limiters');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
 const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
 
@@ -1026,6 +1027,13 @@ const _routerDeps = {
   limiters: {
     loginLimiter, totpLimiter, backupCodeLimiter, billingLimiter,
     uploadLimiter, uploadMulter, portalLoginLimiter,
+    // webhookApproveLimiter — endpoint público HMAC del POS. Construido aquí
+    // (no en el router) para que el `store` Redis (makeRateLimitStore) viva en
+    // el mismo singleton que el resto de limiters → contador global cross-pod.
+    webhookApproveLimiter: createWebhookApproveLimiter({
+      makeStore:    makeRateLimitStore,
+      keyGenerator: (req) => sharedHelpers.reqFingerprint(req),
+    }),
   },
   // Helpers monolíticos pasados a routers para que handlers extraídos
   // sigan funcionando sin re-implementación. A medida que cada router migra

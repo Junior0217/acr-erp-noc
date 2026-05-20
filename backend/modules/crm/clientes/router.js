@@ -27,6 +27,10 @@ function createClientesRouter(deps) {
     repo, auditReq, generarSiguienteCodigo,
     formatCliente: helpers.formatCliente,
     validUUID:     helpers.validUUID,
+    // L1.1 RLS wrapper — opcional, fallback explícito ver service.js.
+    withCurrentUserRls: typeof prisma.withCurrentUserRls === 'function'
+      ? prisma.withCurrentUserRls.bind(prisma)
+      : undefined,
   });
   const controller = createClientesController({ service, schemas: clientesSchemas, sharedSchemas, helpers, prisma });
 

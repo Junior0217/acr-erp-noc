@@ -49,6 +49,11 @@ function createFacturasRouter(deps) {
     generarSiguienteCodigo, persistirVerifyHash,
     buildFacturaPDFBuffer, sendFacturaPDF, pdfService,
     ownerAlerts: deps.ownerAlerts,
+    // L1.1 RLS wrapper — bound al prisma extendido (server.js). Si no existe
+    // (tests con prisma mock), el service refleja el error vía RLS_WRAPPER_MISSING.
+    withCurrentUserRls: typeof prisma.withCurrentUserRls === 'function'
+      ? prisma.withCurrentUserRls.bind(prisma)
+      : undefined,
   });
   const controller = createFacturasController({ service, schemas: facturasSchemas, prisma, helpers });
 

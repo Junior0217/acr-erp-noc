@@ -22,6 +22,32 @@ const { rlsContext } = require('./rls-context');
 
 const NIVEL_PROPIETARIO_ABSOLUTO = 100;
 
+// ─── Cache in-memory de sessionToken (Cyber Neo + Rendimiento) ───────────────
+// La validación JWT cripto-segura ya verifica firma + expiración del payload.
+// El lookup `prisma.sessionToken.findUnique({ jti })` solo necesita correr para
+// detectar invalidaciones administrativas (force logout / device wipe) y
+// expiraciones server-side. Esos eventos son MUY infrecuentes — en ráfagas
+// típicas de UI (5-10 clicks/segundo del cajero en el POS) la BD recibe 5-10
+// findUnique idénticos por segundo, consumiendo pool de Supabase sin razón.
+//
+// Cache: Map<jti, { until: number }>. TTL hard de 30 segundos. Si un JTI ya
+// pasó la validación contra BD en los últimos 30s, se skipea el findUnique.
+// Ventana de invalidación máxima = 30s (aceptable para force-logout — el
+// usuario admin que lo dispara ya sabe que no es instantáneo).
+//
+// Cleanup: setInterval cada 60s purga entradas vencidas. La estructura es
+// process-local (ningún cross-pod sync), lo que está OK porque la pérdida de
+// la cache al reiniciar un pod solo provoca 1 findUnique extra por sesión
+// activa — costo despreciable.
+const sessionTokenCache = new Map();
+const SESSION_CACHE_TTL_MS = 30_000;
+setInterval(() => {
+  const now = Date.now();
+  for (const [jti, entry] of sessionTokenCache) {
+    if (entry.until <= now) sessionTokenCache.delete(jti);
+  }
+}, 60_000).unref();
+
 /**
  * @param {object} deps
  * @param {import('@prisma/client').PrismaClient} deps.prisma
@@ -47,15 +73,25 @@ function createMiddlewares(deps) {
       const ua      = req.headers['user-agent'] || '';
       if (payload.ua != null && payload.ua !== ua) {
         auditReq('session:ua_mismatch', req, { jti: payload.jti }, { userId: payload.sub });
+        sessionTokenCache.delete(payload.jti);
         await prisma.sessionToken.deleteMany({ where: { jti: payload.jti } });
         res.clearCookie('token');
         return res.status(401).json({ error: 'Sesión inválida.' });
       }
-      const session = await prisma.sessionToken.findUnique({ where: { jti: payload.jti } });
-      if (!session || session.expiresAt < new Date()) {
-        res.clearCookie('token');
-        res.clearCookie('csrf');
-        return res.status(401).json({ error: 'Sesión expirada.', code: 'SESSION_EXPIRED' });
+      // Skip findUnique si el JTI fue validado contra BD en los últimos 30s.
+      // Sliding refresh (líneas abajo) hace su propio updateMany — esa rama
+      // está cubierta de igual forma porque el JWT ya viene fresh entonces.
+      const cached = sessionTokenCache.get(payload.jti);
+      if (!cached || cached.until <= Date.now()) {
+        const session = await prisma.sessionToken.findUnique({ where: { jti: payload.jti } });
+        if (!session || session.expiresAt < new Date()) {
+          // Invalida cache por si quedó stale.
+          sessionTokenCache.delete(payload.jti);
+          res.clearCookie('token');
+          res.clearCookie('csrf');
+          return res.status(401).json({ error: 'Sesión expirada.', code: 'SESSION_EXPIRED' });
+        }
+        sessionTokenCache.set(payload.jti, { until: Date.now() + SESSION_CACHE_TTL_MS });
       }
       req.user = payload;
 
@@ -245,8 +281,18 @@ function createMiddlewares(deps) {
     requerirTOTPEstricto,
     vaultCooldownGuard,
     vaultLastReveal,
+    invalidarSessionCache,
   };
+}
+
+// Invalida una entrada del cache de sessionToken. Llamar desde authService al
+// hacer logout / force-revoke / device-wipe — garantiza que el próximo request
+// con ese jti hace findUnique fresco contra BD en vez de honrar TTL stale.
+function invalidarSessionCache(jti) {
+  if (!jti) return false;
+  return sessionTokenCache.delete(jti);
 }
 
 module.exports = createMiddlewares;
 module.exports.NIVEL_PROPIETARIO_ABSOLUTO = NIVEL_PROPIETARIO_ABSOLUTO;
+module.exports.invalidarSessionCache = invalidarSessionCache;

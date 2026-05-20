@@ -58,8 +58,17 @@ class MovimientoInventarioError extends Error {
   }
 }
 
-function createMovimientoInventarioService({ prisma }) {
+function createMovimientoInventarioService({ prisma, withCurrentUserRls }) {
   if (!prisma) throw new Error('createMovimientoInventarioService: prisma required');
+
+  // L1.1 RLS — wrapper tomado de la dep explícita O del prisma extendido (cuando
+  // server.js pasa el cliente con `$extends`). Si ninguno está, `listarMisMovimientosRls`
+  // lanza explícito — fail-closed para no degradar a "ver todo" silenciosamente.
+  const _rlsRunner = typeof withCurrentUserRls === 'function'
+    ? withCurrentUserRls
+    : (typeof prisma.withCurrentUserRls === 'function'
+        ? prisma.withCurrentUserRls.bind(prisma)
+        : null);
 
   // Modo passthrough: si AUDIT_SECRET no está configurado en dev, el servicio
   // sigue insertando movimientos PERO sin hash (legacy behavior). En
@@ -248,11 +257,56 @@ function createMovimientoInventarioService({ prisma }) {
     };
   }
 
+  // ─── L1.1 RLS — listado enforced bajo política rls_owner_match ─────────────
+  // MovimientoInventario tampoco tiene owner col (ver schema). Fallback política
+  // v1: la query queda bajo SET LOCAL employee_id, lo que valida sesión legítima
+  // pero no filtra por owner-de-fila. Útil como capa demostrativa + smoke test
+  // de la pipeline end-to-end; cuando schema agregue `empleadoCreadorId Int?`,
+  // este método filtra por él sin más wiring.
+  async function listarMisMovimientosRls(query, user) {
+    if (typeof _rlsRunner !== 'function') {
+      throw new MovimientoInventarioError(500, 'RLS_WRAPPER_MISSING',
+        'withCurrentUserRls no disponible — RLS enforce inoperante.');
+    }
+    if (!user?.sub) {
+      throw new MovimientoInventarioError(401, 'NO_USER',
+        'user.sub requerido para RLS owner-match.');
+    }
+    const take    = Math.min(Math.max(parseInt(query?.limit, 10) || 50, 1), 200);
+    const pageNum = Math.max(parseInt(query?.page, 10) || 1, 1);
+    const skip    = (pageNum - 1) * take;
+    const productoId = Number(query?.productoId);
+    return _rlsRunner(async (tx) => {
+      const where = Number.isInteger(productoId) && productoId > 0
+        ? { productoId }
+        : {};
+      const [data, total] = await Promise.all([
+        tx.movimientoInventario.findMany({
+          where, take, skip,
+          orderBy: { fecha: 'desc' },
+          select: {
+            id: true, productoId: true, tipo: true, cantidad: true,
+            ordenInstalacionId: true, fecha: true,
+          },
+        }),
+        tx.movimientoInventario.count({ where }),
+      ]);
+      return {
+        status: 200,
+        body: {
+          data,
+          meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1), rlsEnforced: true },
+        },
+      };
+    });
+  }
+
   return {
     MovimientoInventarioError,
     TIPOS_VALIDOS,
     appendMovimiento,
     verifyChain,
+    listarMisMovimientosRls,
   };
 }
 
