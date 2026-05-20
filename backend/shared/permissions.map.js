@@ -104,4 +104,11 @@ module.exports = [
 
   // ── DGII / Fiscal (alta sensibilidad — requiere TOTP estricto + owner) ────────
   { key: 'dgii:reportar',              module: 'DGII Fiscal',   label: 'Generar 606/607',       desc: 'Generar y descargar reportes DGII Norma 06-2018 (TOTP + Owner)', color: 'red' },
+
+  // ── Servicio Técnico (CCTV, impresoras, servidores, PC, redes, cercos) ───────
+  // Módulo distinto de "Servicios ISP" (planes/contratos) y de "Órd. Trabajo"
+  // genéricas. Cubre el flujo de recepción → diagnóstico → presupuesto →
+  // reparación → entrega/facturación de equipos físicos (foco Registro
+  // Mercantil ACR: venta/instalación/mantenimiento de infraestructura tecnológica).
+  { key: 'servicios:gestionar',        module: 'Servicio Técnico', label: 'Gestionar Órdenes Técnicas', desc: 'Crear, transicionar estado, presupuestar y facturar órdenes de servicio técnico (CCTV, impresoras, servidores, PC, cercos)', color: 'indigo' },
 ]
