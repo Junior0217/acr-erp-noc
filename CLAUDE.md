@@ -11,6 +11,16 @@ Al cerrar CUALQUIER vuelta de trabajo (refactor, feature, bugfix, doc, instalaci
 
 Sin resumen, la tarea NO se considera entregada. Aplica incluso si el cambio es mínimo (1 línea). Si NO hubo push (porque fue solo exploración), decirlo explícito: "sin push, solo análisis".
 
+### REGLA DE LAS 10 SUGERENCIAS (Innegociable, post-tarea)
+
+Al concluir CUALQUIER tarea, el agente debe generar obligatoriamente un listado estricto de exactamente **10 sugerencias avanzadas de mejora** (arquitectura, seguridad, rendimiento, redundancia o base de datos) basadas en el código modificado, sin importar el tamaño del scope. Las sugerencias se entregan numeradas (1 a 10), cada una con:
+- **Categoría** entre corchetes: `[Arquitectura]`, `[Seguridad]`, `[Rendimiento]`, `[Redundancia]`, `[BD]`, o `[DX]`.
+- **Acción concreta** (verbo imperativo): qué hacer.
+- **Impacto** en una frase: por qué importa.
+- **Anclaje real**: archivo/módulo del repo (NO inventar).
+
+Esta regla aplica incluso si el cambio fue mínimo o si la tarea fue solo exploratoria — el agente debe extrapolar oportunidades del área tocada (o del archivo abierto si era exploración).
+
 ## 5 Joyas del ERP (Skills + Stack adoptados)
 
 Stack de productividad acordado. Cada joya tiene un rol fijo. Usar siempre que aplique antes de improvisar.
