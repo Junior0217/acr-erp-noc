@@ -20,6 +20,8 @@
  *   generarPdfDocumento, facturaVerifyHash, QRCode })
  */
 
+const { LRUCache } = require('lru-cache');
+
 const PDF_TEMPLATE_VERSION = 'v11-2026-05-17-qr-url-natural-wrap';
 const PDF_CACHE_BUCKET     = process.env.SUPABASE_PDF_BUCKET ?? 'documentos-pdf';
 
@@ -29,6 +31,13 @@ const PREDER_MAX_ATTEMPTS = 5;
 const PREDER_LOOKBACK_MS  = 7 * 86_400_000;
 
 const QR_CACHE_MAX = 256;
+
+// Cache LRU para evitar re-procesar mergeCondiciones en bulk-PDF (cron y
+// /api/pdf/bulk). Key incluye empresa.id + factura.id + hash de los inputs
+// que el merge consume (condicionesDefault + condiciones override). TTL
+// corto (5 min) para que cualquier cambio en empresa/factura se refleje
+// rápido al regenerar PDFs después de editar configuración.
+const _condCache = new LRUCache({ max: 200, ttl: 5 * 60 * 1000 });
 
 class PdfError extends Error {
   constructor(status, code, message) {
@@ -65,7 +74,7 @@ const PUBLIC_VERIFY_BASE = _resolverVerifyBase();
  * Default empresa es siempre string. Si el doc dice incluir=false, NUNCA cae al
  * default (el usuario decidió ocultarla en este documento concreto).
  */
-function mergeCondiciones(empresa, factura) {
+function _mergeCondicionesRaw(empresa, factura) {
   const defs = empresa?.condicionesDefault ?? {};
   const obligatorios = defs?._obligatorio ?? {};
   const own  = factura?.condiciones ?? {};
@@ -95,6 +104,25 @@ function mergeCondiciones(empresa, factura) {
     entrega:  pick('entrega'),
     garantia: pick('garantia'),
   };
+}
+
+// Wrapper cacheado de mergeCondiciones. La key incluye los DOS inputs que
+// la función pura consume — basta para invalidar correctamente si cambia
+// algo en empresa.condicionesDefault o factura.condiciones.
+function mergeCondiciones(empresa, factura) {
+  const empId  = empresa?.id ?? 0;
+  const facId  = factura?.id ?? 'x';
+  // JSON.stringify es estable para objetos con keys conocidas (validez, pago,
+  // entrega, garantia, _obligatorio). Es ~10× más barato que el merge real
+  // cuando se aplica sobre los mismos pares (empresa, factura) en bulk-PDF.
+  const defsKey = JSON.stringify(empresa?.condicionesDefault ?? null);
+  const ownKey  = JSON.stringify(factura?.condiciones ?? null);
+  const key = `${empId}:${facId}:${defsKey}:${ownKey}`;
+  const hit = _condCache.get(key);
+  if (hit) return hit;
+  const out = _mergeCondicionesRaw(empresa, factura);
+  _condCache.set(key, out);
+  return out;
 }
 
 /**

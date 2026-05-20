@@ -12,7 +12,15 @@
  *   PUPPETEER_EXECUTABLE_PATH   — fuerza ruta al Chrome local (override universal)
  *   CHROMIUM_GRAPHICS=true      — habilita WebGL en sparticuz (no necesario para PDF)
  */
-const puppeteer = require('puppeteer-core')
+// Lazy-load de puppeteer-core: el módulo pesa ~50MB de RAM y solo se necesita
+// cuando un endpoint emite/preview de PDF. Endpoints como /api/clientes,
+// /api/inventario, /api/health no lo cargan al boot y el cold-start de Render
+// Free Tier mejora ~150-300ms.
+let _puppeteerMod = null
+function _puppeteer() {
+  if (!_puppeteerMod) _puppeteerMod = require('puppeteer-core')
+  return _puppeteerMod
+}
 const path = require('path')
 const fs = require('fs')
 
@@ -226,7 +234,7 @@ async function getBrowser() {
   if (_browser?.connected) return _browser
   if (_launching) return _launching
   const opts = await buildLaunchOptions()
-  _launching = puppeteer.launch(opts)
+  _launching = _puppeteer().launch(opts)
   try {
     _browser = await _launching
     _browser.on('disconnected', () => {

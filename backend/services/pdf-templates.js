@@ -869,8 +869,7 @@ function renderDocumento(opts) {
         <div>Escanea el QR o toca la URL para validar.</div>
         ${verify?.url
           ? `<div class="qr-url" title="${escape(verify.url)}"><a href="${escape(verify.url)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${escape(verify.url)}</a></div>`
-          : ''}
-        ${(!isFactura && emp.registroMercantil) ? `<div class="qr-url" style="margin-top:3px; color:#475569; font-size:7.5px;" title="Registro Mercantil / Cámara de Comercio">RM/Cám. Comercio: ${escape(emp.registroMercantil)}</div>` : ''}
+          : (emp.website ? `<div class="qr-url" title="${escape(emp.website)}"><a href="${escape(emp.website.startsWith('http') ? emp.website : 'https://' + emp.website)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${escape(emp.website)}</a></div>` : '')}
       </div>
     </div>
     <div class="ctr">

@@ -270,6 +270,17 @@ function createPosService(deps) {
       const cliente = await repo.findClienteByIdTx(tx, dto.clienteId);
       if (!cliente) throw new PosError(404, 'CLIENTE_NOT_FOUND', 'Cliente no encontrado en la base de datos.');
 
+      // Hardening: prohibir ocultar Forma de Pago en venta a crédito. La UI
+      // ya no debería permitirlo, pero defense-in-depth contra cookie hijack
+      // o requests directos. Si cliente tiene diasCredito > 0 y el frontend
+      // envió condicionesOverride.pago.incluir=false → rechazar.
+      if (dto.condicionesOverride?.pago?.incluir === false
+          && Number(cliente.diasCredito ?? 0) > 0
+          && !dto.esCotizacion) {
+        throw new PosError(409, 'PAGO_REQUERIDO_CREDITO',
+          'No se puede ocultar la "Forma de Pago" en una factura a crédito. El cliente tiene días de crédito activos — la condición de pago debe imprimirse para soporte legal de cobranza.');
+      }
+
       const itemIds = [...new Set(dto.lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))];
       const prodIds = [...new Set(dto.lineas.filter(l => l.productoId).map(l => l.productoId))];
       const [items, prods] = await Promise.all([

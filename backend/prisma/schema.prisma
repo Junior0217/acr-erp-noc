@@ -132,6 +132,7 @@ model Empleado {
   carritoTemp         CarritoTemp?
   ticketsTaller       TicketTaller[]
   fotosOT             OrdenFoto[]
+  preferenciasPOS     UsuarioPreferenciasPOS?
   incidencias         IncidenciaReconciliacion[]
   timelineEvents      ActivoTimeline[]
   facturas            Factura[]
@@ -658,6 +659,9 @@ model OrdenTrabajo {
   @@index([createdAt])
   @@index([deletedAt])
   @@index([fechaVencimientoSLA])
+  // Índice compuesto para acelerar listados del módulo Servicio Técnico
+  // (servicios/ordenes filtra por tipoOT='ServicioTecnico' + estado + orden por createdAt).
+  @@index([tipoOT, estado, createdAt])
 }
 
 model LineaOrdenTrabajo {
@@ -1114,21 +1118,21 @@ model EquipoPrestamo {
 //
 // `ackBy` + `ackAt`: el owner marca alertas como leídas. Si NULL → unread.
 model OwnerAlert {
-  id              Int       @id @default(autoincrement())
-  tipo            String
-  severity        String    @default("warn")
-  empleadoId      Int?
-  empleadoNombre  String?
+  id             Int       @id @default(autoincrement())
+  tipo           String
+  severity       String    @default("warn")
+  empleadoId     Int?
+  empleadoNombre String?
   // Referencia opcional al recurso afectado. Puede ser facturaId (UUID),
   // productoId (Int as string), etc. — interpretación por tipo.
-  resourceType    String?
-  resourceId      String?
-  payload         Json
-  ip              String?
-  ua              String?
-  createdAt       DateTime  @default(now())
-  ackBy           Int?
-  ackAt           DateTime?
+  resourceType   String?
+  resourceId     String?
+  payload        Json
+  ip             String?
+  ua             String?
+  createdAt      DateTime  @default(now())
+  ackBy          Int?
+  ackAt          DateTime?
 
   @@index([tipo])
   @@index([severity])
@@ -1387,4 +1391,25 @@ model ReporteDGIIGenerado {
   @@index([generadoEn])
   @@index([tipo, periodo])
   @@index([rncEmpresa])
+}
+
+// ─── Preferencias del POS por cajero ─────────────────────────────────────────
+//
+// Persiste las defaults de los switches de visualización de Validez / Forma de
+// Pago / Entrega / Garantía / Notas por usuario, para que cada cajero conserve
+// su configuración visual al recargar el POS. NO afecta el contenido (texto)
+// de las condiciones — esas siguen viniendo de EmpresaPerfil.condicionesDefault
+// + overrides por documento. Solo controla si la fila se renderiza en el PDF.
+//
+// `empleadoId` es FK 1:1 con Empleado.id (mismo modelo que ya autentica el JWT).
+// Cualquier campo NULL se interpreta como "usa el default global" cuando se lee.
+model UsuarioPreferenciasPOS {
+  empleadoId       Int      @id
+  mostrarValidez   Boolean  @default(true)
+  mostrarFormaPago Boolean  @default(true)
+  mostrarEntrega   Boolean  @default(true)
+  mostrarGarantia  Boolean  @default(true)
+  mostrarNotas     Boolean  @default(false)
+  updatedAt        DateTime @updatedAt
+  empleado         Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
 }

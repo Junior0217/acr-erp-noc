@@ -78,6 +78,7 @@ const createVentasRouter     = require('./routes/ventas');
 const createAdminRouter      = require('./routes/admin');
 const createDgiiRouter       = require('./modules/dgii');
 const createServiciosRouter  = require('./modules/servicios');
+const createPreferenciasPosRouter = require('./modules/admin/preferencias-pos/router');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
 const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
 
@@ -1019,6 +1020,7 @@ app.use('/api', createVentasRouter(_routerDeps));
 app.use('/api', createAdminRouter(_routerDeps));
 app.use('/api', createDgiiRouter(_routerDeps));
 app.use('/api', createServiciosRouter(_routerDeps));
+app.use('/api', createPreferenciasPosRouter(_routerDeps));
 
 // Arranca CRON jobs nocturnos (idempotente — solo registra una vez).
 // Vive en backend/jobs/cron.js · cierra sobre prisma inyectado.
