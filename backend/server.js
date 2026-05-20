@@ -91,26 +91,87 @@ const {
   createTotpLimiter,
   createBackupCodeLimiter,
   createTelemetryLimiter,
+  createBillingLimiter,
+  createUploadLimiter,
+  createPortalLoginLimiter,
 } = require('./shared/limiters');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
 const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
 
 let redisClient = null
 if (process.env.REDIS_URL && Redis) {
-  redisClient = new Redis(process.env.REDIS_URL, { lazyConnect: true, enableOfflineQueue: false })
+  redisClient = new Redis(process.env.REDIS_URL, {
+    lazyConnect:           true,
+    enableOfflineQueue:    false,
+    // commandTimeout 200ms: si un comando Redis (INCR, EXPIRE) tarda más, ioredis
+    // throw `Command timed out`. Necesario porque sin esto un Redis degradado
+    // (red lenta, replica failover) cuelga el request del cliente N segundos.
+    // 200ms es generoso vs SLO típico de Redis cloud (< 5ms) y mucho menor que
+    // el TTFB aceptable de la app (< 500ms).
+    commandTimeout:        200,
+    maxRetriesPerRequest:  1,
+    // retryStrategy: backoff lineal corto (no exponencial) — queremos detectar
+    // recovery rápido sin agotar el event loop reintentando.
+    retryStrategy:         (times) => Math.min(1000, times * 200),
+  })
   redisClient.on('error', err => console.warn('[REDIS]', err.message))
-  console.log('[REDIS] Client configured')
+  console.log('[REDIS] Client configured (commandTimeout=200ms, maxRetries=1)')
 }
 
-// Factory de RedisStore con prefix opcional. El prefix permite que limiters
-// distintos (login/TOTP/backup) compartan el mismo cliente Redis sin colisión
-// de claves. Si Redis no está configurado, retorna undefined → fallback Memory.
+// Factory de RedisStore con prefix opcional + FAIL-OPEN. El prefix permite que
+// limiters distintos (login/TOTP/backup) compartan el mismo cliente Redis sin
+// colisión de claves. Si Redis no está configurado, retorna undefined →
+// express-rate-limit usa MemoryStore por default.
+//
+// Fail-open: si una operación de RedisStore (increment/decrement/reset) lanza
+// — típicamente por commandTimeout o conexión caída — wrapper captura el error,
+// emite warning una vez por minuto, y deja pasar el request como si el contador
+// no hubiera incrementado. Trade-off explícito:
+//   - PRO: nunca bloqueamos al usuario por una falla de Redis (disponibilidad).
+//   - CON: durante el outage, el rate-limit efectivo se relaja (un atacante
+//     determinado podría aprovechar). Aceptable porque Redis caído suele ser
+//     transient (< 1 min) y los limiters están duplicados por capa (CSRF,
+//     verifyHash, 2FA, auditoría) — no son la única defensa.
+function _wrapStoreFailOpen(base) {
+  const warnOnce = (() => {
+    let lastWarnAt = 0
+    return (err) => {
+      const now = Date.now()
+      if (now - lastWarnAt > 60_000) {
+        console.warn('[REDIS:rate-limit] fail-open:', err?.message ?? err)
+        lastWarnAt = now
+      }
+    }
+  })()
+  const ZERO = { totalHits: 0, resetTime: undefined }
+  return new Proxy(base, {
+    get(target, prop) {
+      const orig = target[prop]
+      if (typeof orig !== 'function') return orig
+      // Métodos asíncronos que mutan estado — los envolvemos.
+      if (['increment', 'decrement', 'resetKey', 'resetAll', 'get'].includes(prop)) {
+        return async (...args) => {
+          try { return await orig.apply(target, args) }
+          catch (err) {
+            warnOnce(err)
+            return prop === 'increment' ? ZERO : undefined
+          }
+        }
+      }
+      // init / sync — devolvemos tal cual; si init falla, dejamos que
+      // express-rate-limit lo maneje.
+      return orig.bind(target)
+    },
+  })
+}
+
 function makeRateLimitStore({ prefix } = {}) {
   if (!redisClient || !RedisStore) return undefined
-  return new RedisStore({
+  const base = new RedisStore({
     ...(prefix ? { prefix } : {}),
     sendCommand: (...args) => redisClient.call(...args),
   })
+  return _wrapStoreFailOpen(base)
 }
 
 // ─── Sentry (descomenta en producción: npm install @sentry/node) ──────────────
@@ -527,6 +588,7 @@ const TELEMETRY_TYPES = new Set([
   'preferencias_pos_load_fail',
   'preferencias_pos_persist_fail',
   'unhandled_error',
+  'self_test',
 ]);
 app.post('/api/telemetry', telemetryLimiter, express.json({ limit: '4kb' }), (req, res) => {
   const body = req.body ?? {};
@@ -548,18 +610,41 @@ app.post('/api/telemetry', telemetryLimiter, express.json({ limit: '4kb' }), (re
   res.status(204).end();
 });
 
-const billingLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  max: 5,
+// ─── /api/telemetry/test — smoke test del pipeline de telemetría ─────────────
+// Emite un evento `self_test` con un nonce único en `[TELEMETRY]` y devuelve
+// el nonce al caller. El operador puede grep ese nonce en Render logs (o
+// Datadog) para verificar end-to-end que el agregador recoge stderr y que el
+// limiter no bloquea legítimos.
+//
+// Sin auth porque solo emite un evento controlado (no expone datos). El mismo
+// `telemetryLimiter` (60/min/IP) cubre el abuso. Útil para alertas tipo
+// "ping de canary" desde un job externo que verifica si la app vive.
+app.get('/api/telemetry/test', telemetryLimiter, (req, res) => {
+  const nonce = crypto.randomBytes(8).toString('hex');
+  const safe = {
+    type: 'self_test',
+    msg:  `nonce=${nonce}`,
+    href: '/api/telemetry/test',
+    ua:   String(req.headers['user-agent'] ?? '').slice(0, 200),
+    ip:   req.ip,
+    at:   new Date().toISOString(),
+  };
+  console.warn('[TELEMETRY]', JSON.stringify(safe));
+  res.json({ ok: true, nonce, at: safe.at, hint: `grep "${nonce}" en logs de Render para verificar.` });
+});
+
+const billingLimiter = createBillingLimiter({
   keyGenerator: (req) => req.user?.sub ? `billing:${req.user.sub}` : reqFingerprint(req),
-  store: makeRateLimitStore(),
-  message: { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
+  makeStore:    makeRateLimitStore,
 });
 
 // uploadLimiter + uploadMulter: declarados aquí (con el resto de limiters globales)
 // para evitar TDZ. Antes vivían junto a las rutas de upload (~línea 2780) pero
 // endpoints nuevos los referencian en líneas anteriores -> ReferenceError al boot.
-const uploadLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false })
+const uploadLimiter = createUploadLimiter({
+  keyGenerator: reqFingerprint,
+  makeStore:    makeRateLimitStore,
+});
 const uploadMulter  = multer({
   storage: multer.memoryStorage(),
   limits:  { fileSize: 2 * 1024 * 1024 },     // 2MB
@@ -673,9 +758,7 @@ function signPortalToken(usuario) {
   )
 }
 
-const portalLoginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
+const portalLoginLimiter = createPortalLoginLimiter({
   keyGenerator: (req) => {
     try {
       const raw = req.cookies?.pct
@@ -683,9 +766,7 @@ const portalLoginLimiter = rateLimit({
     } catch {}
     return reqFingerprint(req)
   },
-  store: makeRateLimitStore(),
-  message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
-  skipSuccessfulRequests: true,
+  makeStore: makeRateLimitStore,
 })
 
 // /api/health/legacy ELIMINADO (Fase 1.4): dup de /api/health sin uso real.
@@ -1240,6 +1321,22 @@ async function startServer() {
     // Falla del seed es no-fatal pero merece visibilidad en stderr para que
     // Render/Datadog la capture como alerta operacional.
     console.error('[SEED:preferencias-pos] ALERTA falla:', err?.message ?? err);
+  }
+
+  // ─── Auditoría de filas huérfanas (data drift) ──────────────────────────────
+  // Se corre POST-seed: el seed acaba de garantizar que cada empleado activo
+  // tiene su fila de prefs, así que cualquier fila restante apuntando a un
+  // empleado soft-deleted es genuinamente huérfana. NO purgamos — solo logueamos.
+  try {
+    const { runAudit, formatReport } = require('./prisma/seeds/_audit');
+    const audit = await runAudit({ prisma });
+    if (audit.totalHuerfanos > 0) {
+      console.warn(`${formatReport(audit)} sample_prefs=[${audit.tablas.usuarioPreferenciasPOS.sampleIds.join(',')}] sample_session=[${audit.tablas.sessionToken.sampleIds.join(',')}] sample_webauthn=[${audit.tablas.webauthnCredential.sampleIds.join(',')}]`);
+    } else {
+      console.log(formatReport(audit));
+    }
+  } catch (err) {
+    console.error('[AUDIT:orphans] ALERTA falla:', err?.message ?? err);
   }
 
   app.listen(PORT, () => {

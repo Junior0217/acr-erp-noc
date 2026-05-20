@@ -7,7 +7,9 @@
     "postinstall": "npx prisma generate",
     "start": "npx prisma generate && npx prisma migrate resolve --applied 20260510062138_modulo_servicios_inventario 2>/dev/null; npx prisma migrate deploy && node server.js",
     "dev": "node server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "audit:orphans": "node prisma/seeds/_audit.js",
+    "seed:prefs-pos": "node prisma/seeds/usuario-preferencias-pos.js"
   },
   "type": "commonjs",
   "dependencies": {

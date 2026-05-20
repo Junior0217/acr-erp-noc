@@ -142,12 +142,65 @@ function createWebhookApproveLimiter(opts = {}) {
  */
 function createTelemetryLimiter(opts = {}) {
   return buildLimiter({
-    windowMs:  60 * 1000,
-    max:       60,
+    windowMs:  opts.windowMs ?? 60 * 1000,
+    max:       opts.max ?? 60,
     keyGen:    opts.keyGenerator,
     message:   { error: 'Telemetry rate exceeded.' },
     makeStore: opts.makeStore,
     prefix:    opts.prefix ?? 'rl:telemetry:',
+  });
+}
+
+/**
+ * createBillingLimiter — operaciones de facturación autenticadas.
+ * Default 5 ops por usuario en 1 minuto. Protege contra creación accidental
+ * en bucle (cajero que doble-clickea "Generar factura"). El keyGenerator por
+ * defecto requiere `req.user.sub` (post-auth); el caller normalmente provee
+ * un fallback a fingerprint para llamadas anónimas raras.
+ */
+function createBillingLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:  opts.windowMs ?? 60 * 1000,
+    max:       opts.max ?? 5,
+    keyGen:    opts.keyGenerator,
+    message:   { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
+    makeStore: opts.makeStore,
+    prefix:    opts.prefix ?? 'rl:billing:',
+  });
+}
+
+/**
+ * createUploadLimiter — uploads de archivos (`POST /api/uploads/...`).
+ * Default 10 uploads por IP en 1 minuto. Suficientemente laxo para flujos
+ * legítimos (foto de instalación con 5 ángulos) pero corta script kiddies
+ * que intenten spam de uploads para llenar almacenamiento.
+ */
+function createUploadLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:  opts.windowMs ?? 60 * 1000,
+    max:       opts.max ?? 10,
+    keyGen:    opts.keyGenerator,
+    message:   { error: 'Demasiados uploads. Espere 1 minuto.' },
+    makeStore: opts.makeStore,
+    prefix:    opts.prefix ?? 'rl:upload:',
+  });
+}
+
+/**
+ * createPortalLoginLimiter — login del portal de clientes (`POST /api/portal/login`).
+ * Default 5 intentos por (sub-portal o fingerprint) en 15 minutos. Distinto
+ * del loginLimiter admin porque el universo de usuarios es mucho más amplio
+ * (cada cliente final), pero el riesgo de credential stuffing es similar.
+ */
+function createPortalLoginLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:               opts.windowMs ?? 15 * 60 * 1000,
+    max:                    opts.max ?? 5,
+    keyGen:                 opts.keyGenerator,
+    skipSuccessfulRequests: opts.skipSuccessfulRequests ?? true,
+    message:                { error: 'Demasiados intentos de inicio de sesión del portal. Intente en 15 minutos.' },
+    makeStore:              opts.makeStore,
+    prefix:                 opts.prefix ?? 'rl:portal:login:',
   });
 }
 
@@ -158,4 +211,7 @@ module.exports = {
   createBackupCodeLimiter,
   createWebhookApproveLimiter,
   createTelemetryLimiter,
+  createBillingLimiter,
+  createUploadLimiter,
+  createPortalLoginLimiter,
 };

@@ -27,6 +27,35 @@ const DEFAULTS = {
 const LS_KEY = 'acr.preferenciasPOS.v1'
 const BC_NAME = 'acr.preferenciasPOS'
 
+// ─── Telemetría fire-and-forget ──────────────────────────────────────────────
+// Reporta fallos silenciosos del hook al endpoint público `/api/telemetry`.
+// Diseño:
+//   - Cada (type, msg) se envía una sola vez por sesión del navegador. Sin
+//     dedupe, un Safari modo privado generaría 4 reportes por minuto (cada
+//     instancia del hook + cada operación). El Set in-memory cierra ese loop.
+//   - apiFetch retorna una Promise; usamos `.catch(()=>{})` para evitar que
+//     un fallo del propio /api/telemetry rompa el flujo del hook (sería loop
+//     o crash si el dev server está apagado).
+//   - El tipo `type` debe estar en TELEMETRY_TYPES del backend; si no, el
+//     endpoint responde 400 (silencioso para el hook).
+const _telemetrySent = new Set()
+function _telemetry(type, msg) {
+  const key = `${type}:${(msg ?? '').slice(0, 80)}`
+  if (_telemetrySent.has(key)) return
+  _telemetrySent.add(key)
+  try {
+    apiFetch('/api/telemetry', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({
+        type,
+        msg:  typeof msg === 'string' ? msg.slice(0, 480) : null,
+        href: typeof location !== 'undefined' ? location.href : null,
+      }),
+    }).catch(() => { /* fire-and-forget */ })
+  } catch { /* apiFetch lanzó sync — silencio */ }
+}
+
 // ─── Module-level singleton state ────────────────────────────────────────────
 
 let _cache         = null            // último valor conocido (compartido entre instancias)
@@ -36,24 +65,41 @@ const _subscribers = new Set()       // setState callbacks de cada instancia mon
 
 function _readLS() {
   try {
-    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_KEY) : null
+    if (typeof localStorage === 'undefined') {
+      _telemetry('localstorage_unavailable', 'typeof localStorage === undefined')
+      return null
+    }
+    const raw = localStorage.getItem(LS_KEY)
     if (!raw) return null
     const parsed = JSON.parse(raw)
     if (!parsed || typeof parsed !== 'object') return null
     return { ...DEFAULTS, ...parsed }
-  } catch { return null }
+  } catch (err) {
+    _telemetry('localstorage_unavailable', String(err?.message ?? err).slice(0, 200))
+    return null
+  }
 }
 
 function _writeLS(value) {
   try {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(LS_KEY, JSON.stringify(value))
-  } catch { /* quota / private mode — silencio */ }
+    if (typeof localStorage === 'undefined') {
+      _telemetry('localstorage_unavailable', 'typeof localStorage === undefined')
+      return
+    }
+    localStorage.setItem(LS_KEY, JSON.stringify(value))
+  } catch (err) {
+    // QuotaExceededError es el caso típico (modo incógnito Safari tiene LS de
+    // 0 bytes). Otro err: SecurityError en navegadores con privacy mode.
+    const code = err?.name === 'QuotaExceededError' ? 'localstorage_quota' : 'localstorage_unavailable'
+    _telemetry(code, String(err?.message ?? err).slice(0, 200))
+  }
 }
 
 function _getBroadcast() {
   if (_broadcast !== null) return _broadcast
   if (typeof BroadcastChannel === 'undefined') {
     _broadcast = false // sentinel: no disponible
+    _telemetry('broadcast_channel_unavailable', 'typeof BroadcastChannel === undefined')
     return null
   }
   try {
@@ -64,8 +110,9 @@ function _getBroadcast() {
       _setCache({ ...DEFAULTS, ...next, loading: false }, { broadcast: false, persistLS: true })
     }
     return _broadcast
-  } catch {
+  } catch (err) {
     _broadcast = false
+    _telemetry('broadcast_channel_error', String(err?.message ?? err).slice(0, 200))
     return null
   }
 }
@@ -76,7 +123,8 @@ function _setCache(next, opts = {}) {
   if (opts.broadcast !== false) {
     const bc = _getBroadcast()
     if (bc) {
-      try { bc.postMessage(next) } catch { /* silencio */ }
+      try { bc.postMessage(next) }
+      catch (err) { _telemetry('broadcast_channel_error', `postMessage: ${String(err?.message ?? err).slice(0, 160)}`) }
     }
   }
   for (const sub of _subscribers) {
@@ -89,7 +137,7 @@ async function _bootstrapFetch() {
   _initialFetch = (async () => {
     try {
       const res = await apiFetch('/api/preferencias-pos')
-      if (!res.ok) throw new Error('GET preferencias-pos no OK')
+      if (!res.ok) throw new Error(`GET preferencias-pos status=${res.status}`)
       const data = await res.json()
       const next = {
         mostrarValidez:   typeof data.mostrarValidez   === 'boolean' ? data.mostrarValidez   : DEFAULTS.mostrarValidez,
@@ -101,7 +149,8 @@ async function _bootstrapFetch() {
       }
       _setCache(next)
       return next
-    } catch {
+    } catch (err) {
+      _telemetry('preferencias_pos_load_fail', String(err?.message ?? err).slice(0, 200))
       // Fallback al cache LS (si existía) o DEFAULTS.
       const ls = _readLS()
       const next = { ...DEFAULTS, ...(ls || {}), loading: false }
@@ -122,12 +171,15 @@ function _scheduleFlush() {
     _pendingPatch = {}
     if (Object.keys(patch).length === 0) return
     try {
-      await apiFetch('/api/preferencias-pos', {
+      const res = await apiFetch('/api/preferencias-pos', {
         method:  'PUT',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify(patch),
       })
-    } catch { /* silencio — preferencia visual, fallback al cache LS */ }
+      if (!res.ok) _telemetry('preferencias_pos_persist_fail', `PUT status=${res.status}`)
+    } catch (err) {
+      _telemetry('preferencias_pos_persist_fail', String(err?.message ?? err).slice(0, 200))
+    }
   }, 600)
 }
 

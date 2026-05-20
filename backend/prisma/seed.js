@@ -282,6 +282,21 @@ async function main() {
   console.log('  ✅ Asistencia de muestra')
 
   console.log('\n🎉 Seed completado. Sistema listo para usar.')
+
+  // ── Auditoría de huérfanos (data drift cross-tabla) ─────────────────────────
+  // Solo reporta — no purga — porque el operador puede haber soft-deleted un
+  // empleado que será restaurado pronto (sus prefs/sessions valen oro).
+  try {
+    const { runAudit, formatReport } = require('./seeds/_audit')
+    const audit = await runAudit({ prisma })
+    if (audit.totalHuerfanos > 0) {
+      console.warn(`  ⚠  ${formatReport(audit)}`)
+    } else {
+      console.log(`  ✅ ${formatReport(audit)}`)
+    }
+  } catch (err) {
+    console.error('  ❌ [AUDIT:orphans] falla:', err?.message ?? err)
+  }
 }
 
 main()
