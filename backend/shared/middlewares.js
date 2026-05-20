@@ -16,6 +16,7 @@
 
 const jwt    = require('jsonwebtoken');
 const crypto = require('crypto');
+const { LRUCache } = require('lru-cache');
 const { authenticator } = require('otplib');
 const { wrapJWT, unwrapJWT, decryptTOTP, PORTAL_JWT_SECRET } = require('./jwt-crypto');
 const { rlsContext } = require('./rls-context');
@@ -30,23 +31,28 @@ const NIVEL_PROPIETARIO_ABSOLUTO = 100;
 // típicas de UI (5-10 clicks/segundo del cajero en el POS) la BD recibe 5-10
 // findUnique idénticos por segundo, consumiendo pool de Supabase sin razón.
 //
-// Cache: Map<jti, { until: number }>. TTL hard de 30 segundos. Si un JTI ya
-// pasó la validación contra BD en los últimos 30s, se skipea el findUnique.
-// Ventana de invalidación máxima = 30s (aceptable para force-logout — el
-// usuario admin que lo dispara ya sabe que no es instantáneo).
+// Estructura: LRUCache<jti, true>. TTL hard de 30s + cap de 5000 entradas
+// (suficiente para ~5000 sesiones concurrentes y techo duro contra fuga de
+// memoria por explosión de jti en ataques de credential stuffing). El valor
+// es trivial (`true`) — solo importa la presencia con TTL vivo.
 //
-// Cleanup: setInterval cada 60s purga entradas vencidas. La estructura es
-// process-local (ningún cross-pod sync), lo que está OK porque la pérdida de
-// la cache al reiniciar un pod solo provoca 1 findUnique extra por sesión
-// activa — costo despreciable.
-const sessionTokenCache = new Map();
+// Por qué LRU vs Map nativo: Map crecía sin techo y dependía de un setInterval
+// para purgar entradas vencidas. Si la purga se atrasaba (event loop saturado)
+// la memoria escalaba indefinidamente; un atacante podía emitir miles de jti
+// distintos y forzar un OOM. LRUCache caps por construcción y purga lazy en
+// cada get/set — sin timers extra. La pérdida de cache al reiniciar un pod
+// sigue costando 1 findUnique extra por sesión, aceptable.
 const SESSION_CACHE_TTL_MS = 30_000;
-setInterval(() => {
-  const now = Date.now();
-  for (const [jti, entry] of sessionTokenCache) {
-    if (entry.until <= now) sessionTokenCache.delete(jti);
-  }
-}, 60_000).unref();
+const SESSION_CACHE_MAX    = 5_000;
+const sessionTokenCache = new LRUCache({
+  max: SESSION_CACHE_MAX,
+  ttl: SESSION_CACHE_TTL_MS,
+  // updateAgeOnGet: false → no extendemos el TTL en cada hit. El TTL marca el
+  // tiempo máximo entre validaciones contra BD; resetear en cada hit lo haría
+  // efectivamente infinito para sesiones activas, anulando la salvaguarda de
+  // invalidación server-side (force logout). False es correcto.
+  updateAgeOnGet: false,
+});
 
 /**
  * @param {object} deps
@@ -81,17 +87,15 @@ function createMiddlewares(deps) {
       // Skip findUnique si el JTI fue validado contra BD en los últimos 30s.
       // Sliding refresh (líneas abajo) hace su propio updateMany — esa rama
       // está cubierta de igual forma porque el JWT ya viene fresh entonces.
-      const cached = sessionTokenCache.get(payload.jti);
-      if (!cached || cached.until <= Date.now()) {
+      if (!sessionTokenCache.has(payload.jti)) {
         const session = await prisma.sessionToken.findUnique({ where: { jti: payload.jti } });
         if (!session || session.expiresAt < new Date()) {
-          // Invalida cache por si quedó stale.
           sessionTokenCache.delete(payload.jti);
           res.clearCookie('token');
           res.clearCookie('csrf');
           return res.status(401).json({ error: 'Sesión expirada.', code: 'SESSION_EXPIRED' });
         }
-        sessionTokenCache.set(payload.jti, { until: Date.now() + SESSION_CACHE_TTL_MS });
+        sessionTokenCache.set(payload.jti, true);
       }
       req.user = payload;
 

@@ -1,49 +1,161 @@
 /**
  * backend/shared/limiters.js
  *
- * Factories para rate-limiters locales reusables transversalmente entre
- * routers. Vive aquí (no en server.js) para que cualquier módulo nuevo pueda
- * importar la misma política sin duplicar config (Cyber Neo + DRY).
+ * Factories para rate-limiters reusables. Centralizadas aquí para que
+ * cualquier router del repo (auth, POS, webhook, vault) consuma la MISMA
+ * política sin duplicar config (Cyber Neo + DRY).
  *
- * Cada factory acepta opcionalmente un `makeStore` que devuelve la
- * configuración de almacén distribuido (Redis vía rate-limit-redis). Cuando
- * `makeStore()` retorna `undefined`, express-rate-limit cae a su MemoryStore
- * por defecto — útil en desarrollo y como fallback resiliente si Redis no
- * está disponible al boot.
+ * Distribución horizontal:
+ *   - Cada factory acepta `makeStore`: factoría que devuelve un store de
+ *     express-rate-limit (típicamente `RedisStore` de rate-limit-redis).
+ *   - Si `makeStore()` retorna `undefined`, express-rate-limit cae a su
+ *     `MemoryStore` por defecto — fallback resiliente para desarrollo o si
+ *     Redis no está disponible al boot.
  *
- * Importante: la decisión de pasar `store` solo cuando es truthy es crítica;
- * `store: undefined` provoca `TypeError` en express-rate-limit. Por eso el
- * spread condicional `...(store ? { store } : {})`.
+ * Por qué Redis en producción:
+ *   En Render con N pods, cada pod tiene su propio MemoryStore. Un atacante
+ *   que rote IPs (o use proxies) puede dividir su tráfico entre pods y
+ *   exceder el límite efectivo NxK. Con RedisStore compartido, el contador
+ *   es global por (clave, ventana) — bloqueo real al 11vo request total.
+ *
+ * Convención de `prefix`:
+ *   Cada limiter usa un prefix Redis único (`rl:auth:login`, `rl:auth:totp`,
+ *   etc.) para evitar colisión de claves entre limiters distintos. Si no
+ *   se provee, RedisStore usa `rl:`.
+ *
+ * Convención de `keyGenerator`:
+ *   Por defecto: `req.ip` (express-rate-limit ya valida X-Forwarded-For con
+ *   `trust proxy`). Para limiters por-usuario (TOTP post-login) el caller
+ *   debe pasar un keyGenerator que use `req.user.sub` o un fingerprint.
+ *
+ * Importante: `store: undefined` provoca `TypeError` en express-rate-limit.
+ * Por eso el spread condicional `...(store ? { store } : {})`.
  */
 
 const rateLimit = require('express-rate-limit');
 
 /**
- * webhookApproveLimiter — endpoint público de aprobación firmada HMAC.
+ * makeRedisStore — crea un RedisStore conectado al cliente ioredis dado.
  *
- * 10 intentos por IP (o fingerprint hash) en 15 minutos. Bloquea brute-force
- * contra `POST /api/pos/authorize-webhook/:id/approve`, donde la única
- * autenticación es el HMAC del body (sin JWT). Distribuido vía Redis → todos
- * los pods comparten el contador, anulando escala horizontal como bypass.
- *
- * @param {{ makeStore?: () => object | undefined, keyGenerator?: (req: object) => string }} opts
+ * @param {object} opts
+ * @param {import('ioredis').Redis} opts.redis — cliente ioredis ya conectado.
+ * @param {string} opts.prefix — namespace de claves en Redis (ej. 'rl:auth:login:').
+ * @returns {object | undefined} — store listo para express-rate-limit, o
+ *   undefined si `redis` no está disponible.
  */
-function createWebhookApproveLimiter(opts = {}) {
-  const store    = typeof opts.makeStore === 'function' ? opts.makeStore() : undefined;
-  const keyGen   = typeof opts.keyGenerator === 'function'
-    ? opts.keyGenerator
-    : (req) => req.ip;
+function makeRedisStore({ redis, prefix }) {
+  if (!redis) return undefined;
+  // Lazy require — el require principal del archivo no debe forzar la
+  // dependencia de rate-limit-redis en entornos donde Redis no se usa.
+  const { RedisStore } = require('rate-limit-redis');
+  return new RedisStore({
+    prefix,
+    // rate-limit-redis v5 espera un callable `sendCommand` (ioredis lo expone).
+    sendCommand: (...args) => redis.call(...args),
+  });
+}
+
+// ─── Factory base ────────────────────────────────────────────────────────────
+function buildLimiter({ windowMs, max, keyGen, message, makeStore, prefix, skipSuccessfulRequests }) {
+  const store = typeof makeStore === 'function' ? makeStore({ prefix }) : undefined;
   return rateLimit({
-    windowMs:        15 * 60 * 1000,
-    max:             10,
-    keyGenerator:    keyGen,
+    windowMs,
+    max,
     standardHeaders: true,
     legacyHeaders:   false,
-    message:         { error: 'Demasiados intentos de aprobación. Intente en 15 minutos.' },
+    keyGenerator:    keyGen ?? ((req) => req.ip),
+    message,
+    ...(skipSuccessfulRequests != null ? { skipSuccessfulRequests } : {}),
     ...(store ? { store } : {}),
   });
 }
 
+/**
+ * createLoginLimiter — login admin (`POST /api/auth/login`).
+ * Default 5 intentos por IP en 15 minutos; `skipSuccessfulRequests:true` —
+ * los login OK no cuentan al contador, así un usuario legítimo no se bloquea.
+ */
+function createLoginLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:               opts.windowMs ?? 15 * 60 * 1000,
+    max:                    opts.max ?? 5,
+    keyGen:                 opts.keyGenerator,
+    skipSuccessfulRequests: opts.skipSuccessfulRequests ?? true,
+    message:                { error: 'Demasiados intentos de inicio de sesión. Intenta en 15 minutos.' },
+    makeStore:              opts.makeStore,
+    prefix:                 opts.prefix ?? 'rl:auth:login:',
+  });
+}
+
+/**
+ * createTotpLimiter — verificación 2FA TOTP post-login.
+ * Default 5 intentos por IP en 15 minutos; `skipSuccessfulRequests:true`.
+ */
+function createTotpLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:               opts.windowMs ?? 15 * 60 * 1000,
+    max:                    opts.max ?? 5,
+    keyGen:                 opts.keyGenerator,
+    skipSuccessfulRequests: opts.skipSuccessfulRequests ?? true,
+    message:                { error: 'Demasiados intentos de PIN. Intente en 15 minutos.' },
+    makeStore:              opts.makeStore,
+    prefix:                 opts.prefix ?? 'rl:auth:totp:',
+  });
+}
+
+/**
+ * createBackupCodeLimiter — backup codes 2FA (consumibles una sola vez).
+ * Default 3 intentos por IP en 1 hora. Brute-force prevention agresiva: NO
+ * skip successful (un código consumido OK también cuenta — anti-enum).
+ */
+function createBackupCodeLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:               opts.windowMs ?? 60 * 60 * 1000,
+    max:                    opts.max ?? 3,
+    keyGen:                 opts.keyGenerator,
+    skipSuccessfulRequests: opts.skipSuccessfulRequests ?? false,
+    message:                { error: 'Demasiados intentos con código de respaldo. Intente en 1 hora.' },
+    makeStore:              opts.makeStore,
+    prefix:                 opts.prefix ?? 'rl:auth:backup:',
+  });
+}
+
+/**
+ * createWebhookApproveLimiter — endpoint público HMAC (`POST /api/pos/authorize-webhook/:id/approve`).
+ * 10 intentos por IP en 15 minutos.
+ */
+function createWebhookApproveLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:  15 * 60 * 1000,
+    max:       10,
+    keyGen:    opts.keyGenerator,
+    message:   { error: 'Demasiados intentos de aprobación. Intenta en 15 minutos.' },
+    makeStore: opts.makeStore,
+    prefix:    opts.prefix ?? 'rl:pos:webhook:',
+  });
+}
+
+/**
+ * createTelemetryLimiter — endpoint de telemetría frontend (`POST /api/telemetry`).
+ * 60 reportes por IP en 1 minuto. Permisivo (no es brute-force-prone) pero
+ * evita que un cajero con loop runaway sature backend con miles de logs.
+ */
+function createTelemetryLimiter(opts = {}) {
+  return buildLimiter({
+    windowMs:  60 * 1000,
+    max:       60,
+    keyGen:    opts.keyGenerator,
+    message:   { error: 'Telemetry rate exceeded.' },
+    makeStore: opts.makeStore,
+    prefix:    opts.prefix ?? 'rl:telemetry:',
+  });
+}
+
 module.exports = {
+  makeRedisStore,
+  createLoginLimiter,
+  createTotpLimiter,
+  createBackupCodeLimiter,
   createWebhookApproveLimiter,
+  createTelemetryLimiter,
 };

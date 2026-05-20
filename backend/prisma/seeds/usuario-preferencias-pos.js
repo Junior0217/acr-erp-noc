@@ -35,7 +35,7 @@ async function runSeed({ prisma }) {
   const roles = await prisma.rol.findMany({ where: { activo: true } });
   const rolesPos = roles.filter(rolTienePosAccess).map((r) => r.id);
   if (rolesPos.length === 0) {
-    return { ok: true, empleados: 0, creados: 0, existian: 0, motivo: 'sin-roles-pos' };
+    return { ok: true, empleados: 0, creados: 0, existian: 0, huerfanos: 0, motivo: 'sin-roles-pos' };
   }
 
   const empleados = await prisma.empleado.findMany({
@@ -58,7 +58,16 @@ async function runSeed({ prisma }) {
     else        creados  += 1;
   }
 
-  return { ok: true, empleados: empleados.length, creados, existian };
+  // Detección de huérfanos: filas de UsuarioPreferenciasPOS cuyo empleado ya
+  // no figura en `empleados` (perdió permiso POS, fue desactivado o el rol
+  // pasó a inactivo). NO borramos automáticamente — solo reportamos. La
+  // decisión de purga la toma el operador (puede haber preferencias custom
+  // que el cajero recupere si lo re-activan).
+  const idsActivos = new Set(empleados.map((e) => e.id));
+  const todasPrefs = await prisma.usuarioPreferenciasPOS.findMany({ select: { empleadoId: true } });
+  const huerfanos  = todasPrefs.filter((p) => !idsActivos.has(p.empleadoId)).length;
+
+  return { ok: true, empleados: empleados.length, creados, existian, huerfanos };
 }
 
 module.exports = { runSeed, DEFAULTS, PERMISOS_POS };

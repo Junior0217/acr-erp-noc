@@ -85,7 +85,13 @@ const createDgiiRouter       = require('./modules/dgii');
 const createServiciosRouter  = require('./modules/servicios');
 const createPreferenciasPosRouter = require('./modules/admin/preferencias-pos/router');
 const createPosAutorizacionRouter = require('./modules/admin/pos-autorizacion/router');
-const { createWebhookApproveLimiter } = require('./shared/limiters');
+const {
+  createWebhookApproveLimiter,
+  createLoginLimiter,
+  createTotpLimiter,
+  createBackupCodeLimiter,
+  createTelemetryLimiter,
+} = require('./shared/limiters');
 const Redis            = (() => { try { return require('ioredis') } catch { return null } })()
 const { RedisStore }   = (() => { try { return require('rate-limit-redis') } catch { return {} } })()
 
@@ -96,9 +102,15 @@ if (process.env.REDIS_URL && Redis) {
   console.log('[REDIS] Client configured')
 }
 
-function makeRateLimitStore() {
+// Factory de RedisStore con prefix opcional. El prefix permite que limiters
+// distintos (login/TOTP/backup) compartan el mismo cliente Redis sin colisión
+// de claves. Si Redis no está configurado, retorna undefined → fallback Memory.
+function makeRateLimitStore({ prefix } = {}) {
   if (!redisClient || !RedisStore) return undefined
-  return new RedisStore({ sendCommand: (...args) => redisClient.call(...args) })
+  return new RedisStore({
+    ...(prefix ? { prefix } : {}),
+    sendCommand: (...args) => redisClient.call(...args),
+  })
 }
 
 // ─── Sentry (descomenta en producción: npm install @sentry/node) ──────────────
@@ -486,34 +498,54 @@ const limiter = rateLimit({
 });
 app.use('/api/', limiter);
 
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  keyGenerator: reqFingerprint,
-  store: makeRateLimitStore(),
-  message: { error: 'Demasiados intentos. Intente en 15 minutos.' },
-  skipSuccessfulRequests: true,
-});
+// L1.2/L1.3 — Limiters delegados a `backend/shared/limiters.js`. Compartimos
+// `makeRateLimitStore` (RedisStore con prefix por limiter → bloqueo global
+// cross-pod en Render). Si Redis cae, las factorías hacen fallback a Memory
+// sin abortar el boot.
+const loginLimiter      = createLoginLimiter({      keyGenerator: reqFingerprint, makeStore: makeRateLimitStore });
+const totpLimiter       = createTotpLimiter({       keyGenerator: reqFingerprint, makeStore: makeRateLimitStore });
+const backupCodeLimiter = createBackupCodeLimiter({ keyGenerator: reqFingerprint, makeStore: makeRateLimitStore });
+const telemetryLimiter  = createTelemetryLimiter({  keyGenerator: reqFingerprint, makeStore: makeRateLimitStore });
 
-const totpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: 5,
-  keyGenerator: reqFingerprint,
-  store: makeRateLimitStore(),
-  message: { error: 'Demasiados intentos de PIN. Intente en 15 minutos.' },
-  skipSuccessfulRequests: true,
-});
-
-// H7: limitador AISLADO para backup codes — más estricto que totpLimiter porque
-// los códigos no rotan automáticamente y son objetivo prioritario de brute-force.
-// 3 intentos por hora por fingerprint; sí cuenta los exitosos (para evitar enum).
-const backupCodeLimiter = rateLimit({
-  windowMs: 60 * 60 * 1000,
-  max: 3,
-  keyGenerator: reqFingerprint,
-  store: makeRateLimitStore(),
-  message: { error: 'Demasiados intentos con código de respaldo. Intente en 1 hora.' },
-  skipSuccessfulRequests: false,
+// ─── Telemetría frontend (público, rate-limited) ─────────────────────────────
+// Endpoint para que el SPA reporte fallos no-fatales:
+//   - BroadcastChannel inalcanzable (Safari modo privado / tabs aisladas).
+//   - localStorage quota / disabled / private mode.
+//   - apiFetch que rompe en boot del POS antes del primer GET de prefs.
+// El payload se trunca y se serializa en stderr para que Render lo indexe.
+// NO persiste a BD ni a tabla AuditLog — la idea es visibilidad operacional
+// barata; si crece, evolucionará a tabla `TelemetriaFrontend` con cron purger.
+//
+// Por qué público: el cajero puede fallar ANTES de tener cookie de sesión
+// (boot del PWA offline). Negar auth haría imposible recibir reportes del
+// flujo que falla. El rate-limit (60/min/fingerprint) cubre el abuso.
+const TELEMETRY_TYPES = new Set([
+  'broadcast_channel_unavailable',
+  'broadcast_channel_error',
+  'localstorage_unavailable',
+  'localstorage_quota',
+  'preferencias_pos_load_fail',
+  'preferencias_pos_persist_fail',
+  'unhandled_error',
+]);
+app.post('/api/telemetry', telemetryLimiter, express.json({ limit: '4kb' }), (req, res) => {
+  const body = req.body ?? {};
+  const type = typeof body.type === 'string' ? body.type : 'unknown';
+  if (!TELEMETRY_TYPES.has(type)) {
+    return res.status(400).json({ error: 'Unknown telemetry type.' });
+  }
+  const safe = {
+    type,
+    msg:  typeof body.msg  === 'string' ? body.msg.slice(0, 500)  : null,
+    href: typeof body.href === 'string' ? body.href.slice(0, 200) : null,
+    ua:   String(req.headers['user-agent'] ?? '').slice(0, 200),
+    ip:   req.ip,
+    at:   new Date().toISOString(),
+  };
+  // stderr para que el agregador (Render/Datadog) lo flagee como WARN; el
+  // emoji-free prefix `[TELEMETRY]` es grep-friendly para alertas.
+  console.warn('[TELEMETRY]', JSON.stringify(safe));
+  res.status(204).end();
 });
 
 const billingLimiter = rateLimit({
@@ -1198,9 +1230,16 @@ async function startServer() {
   try {
     const { runSeed } = require('./prisma/seeds/usuario-preferencias-pos');
     const r = await runSeed({ prisma });
-    console.log(`[SEED:preferencias-pos] empleados=${r.empleados} creados=${r.creados} existian=${r.existian}${r.motivo ? ` motivo=${r.motivo}` : ''}`);
+    const baseLine = `[SEED:preferencias-pos] empleados=${r.empleados} creados=${r.creados} existian=${r.existian} huerfanos=${r.huerfanos ?? 0}${r.motivo ? ` motivo=${r.motivo}` : ''}`;
+    if ((r.huerfanos ?? 0) > 0) {
+      console.warn(`[SEED:preferencias-pos] ALERTA discrepancias_permisos ${baseLine}`);
+    } else {
+      console.log(baseLine);
+    }
   } catch (err) {
-    console.warn('[SEED:preferencias-pos] omitido:', err?.message ?? err);
+    // Falla del seed es no-fatal pero merece visibilidad en stderr para que
+    // Render/Datadog la capture como alerta operacional.
+    console.error('[SEED:preferencias-pos] ALERTA falla:', err?.message ?? err);
   }
 
   app.listen(PORT, () => {
