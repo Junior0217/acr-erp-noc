@@ -8,6 +8,8 @@ import { useAuth } from '@shared/contexts/AuthContext'
 import { useCart } from '@shared/contexts/CartContext'
 import { useEmpresa } from '@shared/contexts/EmpresaContext'
 import PinAuthModal from '@shared/components/PinAuthModal'
+import CondicionToggle from '@shared/components/CondicionToggle'
+import usePreferenciasPOS from '@shared/hooks/usePreferenciasPOS'
 import { toast } from 'sonner'
 import { marked } from 'marked'
 // Native HTML5 DnD para catálogo → carrito. Más simple que @dnd-kit para
@@ -692,71 +694,8 @@ function CartLine({ linea, onChange, onRemove, unlocked, onRequestUnlock }) {
   )
 }
 
-// ─── CondicionToggleBlock ────────────────────────────────────────────────────
-// Bloque reusable para Validez / Entrega / Garantía / Notas en avanzados:
-//   - Header: label + badge ("En PDF" | "Oculto" | "Forzado") + switch
-//   - Body: input (o textarea si multiline) con override de texto
-//   - obligatorio=true: switch locked ON con icono candado (configurado por
-//     owner en MiEmpresa → backend también lo enforcea)
-function CondicionToggleBlock({
-  label, texto, onTexto, mostrar, onMostrar,
-  obligatorio = false, multiline = false, placeholder = '', maxLength = 500,
-  locked = false, onRequestUnlock,
-}) {
-  const on = obligatorio ? true : mostrar
-  // Texto override BLOQUEADO si locked y no es obligatorio. Owner siempre
-  // pasa locked=false desde el padre, así que siempre puede editar.
-  const textoLocked = locked
-  return (
-    <div className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
-      <div className="flex w-full items-center justify-between gap-2">
-        <div className="flex min-w-0 flex-1 items-center gap-1.5">
-          <span className="truncate text-[11px] font-medium text-slate-200">{label}</span>
-          {obligatorio && <Lock size={9} className="flex-shrink-0 text-amber-400" />}
-          <span className={`flex-shrink-0 rounded-full border px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide ${on ? 'bg-blue-600/20 text-blue-300 border-blue-600/30' : 'bg-slate-800 text-slate-500 border-slate-700'}`}>
-            {obligatorio ? 'Forzado' : (on ? 'En PDF' : 'Oculto')}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={() => {
-            if (obligatorio) return
-            if (locked) { onRequestUnlock?.(); return }
-            onMostrar(!on)
-          }}
-          disabled={obligatorio}
-          aria-pressed={on}
-          aria-label={`Toggle ${label}`}
-          className={`relative inline-flex h-4 w-8 flex-shrink-0 rounded-full transition-colors ${on ? 'bg-blue-600' : 'bg-slate-700'} ${obligatorio ? 'opacity-60 cursor-not-allowed' : ''}`}
-        >
-          <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0'}`} />
-        </button>
-      </div>
-      {on && (multiline ? (
-        <textarea
-          rows={2} maxLength={maxLength} value={texto}
-          onChange={e => onTexto(e.target.value)}
-          placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor (clic en el switch)' : placeholder}
-          disabled={textoLocked}
-          onClick={() => { if (textoLocked) onRequestUnlock?.() }}
-          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y disabled:opacity-40 disabled:cursor-not-allowed"
-        />
-      ) : (
-        <input
-          type="text" maxLength={maxLength} value={texto}
-          onChange={e => onTexto(e.target.value)}
-          placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor' : placeholder}
-          disabled={textoLocked}
-          onClick={() => { if (textoLocked) onRequestUnlock?.() }}
-          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
-        />
-      ))}
-      {on && multiline && (
-        <span className="text-[9px] text-slate-600">{(texto?.length ?? 0)}/{maxLength}</span>
-      )}
-    </div>
-  )
-}
+// CondicionToggle fue extraído a @shared/components/CondicionToggle.jsx
+// (reutilizable en PanelFacturas / PanelCotizaciones cuando ese editor migre).
 
 // ── PanelPOS ──────────────────────────────────────────────────────────────────
 export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaCreada }) {
@@ -790,13 +729,20 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   const [entregaTexto, setEntregaTexto] = useState('')
   const [garantiaTexto, setGarantiaTexto] = useState('')
   const [notasTexto, setNotasTexto]     = useState('')
-  // Toggles visibilidad PDF — default ON para condiciones (heredan empresa)
-  // y OFF para notas (no van al PDF a menos que el cajero las habilite).
-  const [mostrarValidez,    setMostrarValidez]    = useState(true)
-  const [mostrarFormaPago,  setMostrarFormaPago]  = useState(true)
-  const [mostrarEntrega,    setMostrarEntrega]    = useState(true)
-  const [mostrarGarantia,   setMostrarGarantia]   = useState(true)
-  const [mostrarNotas,      setMostrarNotas]      = useState(false)
+  // Toggles visibilidad PDF — persistidos por cajero vía hook usePreferenciasPOS
+  // (modelo Prisma UsuarioPreferenciasPOS). El hook carga al mount, persiste con
+  // debounce 600ms en cada cambio. Defaults: condiciones ON, notas OFF.
+  const { prefs: prefsPOS, actualizar: actualizarPrefsPOS } = usePreferenciasPOS()
+  const mostrarValidez   = prefsPOS.mostrarValidez
+  const mostrarFormaPago = prefsPOS.mostrarFormaPago
+  const mostrarEntrega   = prefsPOS.mostrarEntrega
+  const mostrarGarantia  = prefsPOS.mostrarGarantia
+  const mostrarNotas     = prefsPOS.mostrarNotas
+  const setMostrarValidez   = (b) => actualizarPrefsPOS({ mostrarValidez:   !!b })
+  const setMostrarFormaPago = (b) => actualizarPrefsPOS({ mostrarFormaPago: !!b })
+  const setMostrarEntrega   = (b) => actualizarPrefsPOS({ mostrarEntrega:   !!b })
+  const setMostrarGarantia  = (b) => actualizarPrefsPOS({ mostrarGarantia:  !!b })
+  const setMostrarNotas     = (b) => actualizarPrefsPOS({ mostrarNotas:     !!b })
   // Flags de obligatoriedad heredados de EmpresaPerfil.condicionesDefault._obligatorio.
   // Si owner los marcó, el toggle se fuerza ON y queda bloqueado.
   const obligValidez  = !!empresa?.condicionesDefault?._obligatorio?.validez
@@ -821,6 +767,34 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
   // y aplica a todos los usuarios (incluyendo sistema:owner). El bloqueo
   // se restaura al limpiar el carrito o al recargar el panel.
   const [descuentosUnlocked, setDescuentosUnlocked] = useState(false)
+
+  // Auto-lock por inactividad (5 min) o blur del tab — defense-in-depth
+  // contra abuso del PIN supervisor si el cajero deja el POS abierto sin
+  // vigilancia. Solo activa listeners cuando descuentosUnlocked === true;
+  // el unmount cleanup garantiza que no haya leak de eventListeners.
+  useEffect(() => {
+    if (!descuentosUnlocked) return
+    const LOCK_IDLE_MS = 5 * 60 * 1000
+    let timer = null
+    const reset = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        setDescuentosUnlocked(false)
+        toast.info('POS re-bloqueado por inactividad (5 min). Ingresa el PIN para editar descuentos nuevamente.')
+      }, LOCK_IDLE_MS)
+    }
+    const onBlur = () => setDescuentosUnlocked(false)
+    reset()
+    window.addEventListener('mousemove', reset, { passive: true })
+    window.addEventListener('keydown',  reset)
+    window.addEventListener('blur',     onBlur)
+    return () => {
+      if (timer) clearTimeout(timer)
+      window.removeEventListener('mousemove', reset)
+      window.removeEventListener('keydown',  reset)
+      window.removeEventListener('blur',     onBlur)
+    }
+  }, [descuentosUnlocked])
   const [pinSupervisorState, setPinSupervisorState] = useState('')
   const [pinModalOpen, setPinModalOpen] = useState(false)
   // Hotkeys "Cajero Express": F2 cliente · F3 catálogo · F4 PIN descuentos
@@ -1110,11 +1084,9 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       setEntregaTexto(defEntrega || '')
       setGarantiaTexto(defGarantia || '')
       setNotasTexto('')
-      setMostrarValidez(true)
-      setMostrarFormaPago(true)
-      setMostrarEntrega(true)
-      setMostrarGarantia(true)
-      setMostrarNotas(false)
+      // Los flags mostrar* ya no se resetean en cada emisión — son
+      // preferencias persistidas del cajero (usePreferenciasPOS) y permanecen
+      // entre emisiones para mantener consistencia visual de su flujo.
       return { ok: true }
     } finally { setSubmitting(false) }
   }
@@ -1298,7 +1270,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   </div>
                 </div>
                 {/* Validez */}
-                <CondicionToggleBlock
+                <CondicionToggle
                   label="Validez"
                   texto={validezTexto}
                   onTexto={setValidezTexto}
@@ -1310,7 +1282,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   placeholder="Ej: Esta cotización es válida por 15 días."
                 />
                 {/* Entrega */}
-                <CondicionToggleBlock
+                <CondicionToggle
                   label="Tiempo de Entrega"
                   texto={entregaTexto}
                   onTexto={setEntregaTexto}
@@ -1322,7 +1294,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   placeholder="Ej: Entrega en 3-5 días laborables tras confirmación."
                 />
                 {/* Garantía */}
-                <CondicionToggleBlock
+                <CondicionToggle
                   label="Garantía"
                   texto={garantiaTexto}
                   onTexto={setGarantiaTexto}
@@ -1334,7 +1306,7 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
                   placeholder="Ej: 30 días contra defectos de fabricación."
                 />
                 {/* Notas — sin _obligatorio (notas son siempre opcionales DGII) */}
-                <CondicionToggleBlock
+                <CondicionToggle
                   label="Notas / Aclaraciones"
                   texto={notasTexto}
                   onTexto={setNotasTexto}
