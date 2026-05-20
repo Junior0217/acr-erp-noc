@@ -85,3 +85,8 @@ coverage/
 .claude/skills/triage
 .claude/skills/write-a-skill
 .claude/skills/zoom-out
+
+# ─── Python artifacts dentro de skills (ui-ux-pro-max trae scripts .py) ───────
+# __pycache__ y *.pyc se regeneran al ejecutar; no aportan valor en git.
+.claude/skills/**/__pycache__/
+*.pyc
