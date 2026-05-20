@@ -159,6 +159,41 @@ function totalLinea(pu, pct, monto, cant) {
   return Math.round(efectivoUnitario(pu, pct, monto) * cant * 100) / 100
 }
 
+// ─── Hardening compartido: pago vs crédito ────────────────────────────────────
+//
+// Defense-in-depth contra request directos / cookie hijack que intenten
+// emitir una factura a crédito ocultando la fila de "Forma de Pago" del PDF.
+// La UI ya bloquea el switch cuando el cliente tiene diasCredito > 0, pero
+// el backend NUNCA debe confiar en el frontend.
+//
+// Reglas:
+//   - Si cliente.diasCredito > 0 → la condición de pago DEBE imprimirse
+//     (es soporte legal para cobranza, no es opcional).
+//   - condicionesOverride.pago.incluir === false → rechazo 409.
+//   - Las cotizaciones NO disparan este guard (no son fiscales aún).
+//
+// Llamada típica desde service: pasa el cliente recién cargado en la
+// transacción + el dto.condicionesOverride. `PosErrorClass` permite
+// inyectar el tipo de error específico del servicio que invoca (PosError,
+// CarritoError, etc.) para mantener la firma del catch upstream.
+function assertCondicionesPagoCompatibles(cliente, condicionesOverride, opts = {}) {
+  const { esCotizacion = false, errorClass } = opts
+  if (esCotizacion) return
+  const incluir = condicionesOverride?.pago?.incluir
+  if (incluir !== false) return
+  const dias = Number(cliente?.diasCredito ?? 0)
+  if (dias <= 0) return
+  const Ctor = errorClass || Error
+  const err = new Ctor(409, 'PAGO_REQUERIDO_CREDITO',
+    'No se puede ocultar la "Forma de Pago" en una factura a crédito. El cliente tiene días de crédito activos — la condición de pago debe imprimirse para soporte legal de cobranza.')
+  // Si el Ctor no es la firma esperada (PosError-like), igual añadimos los
+  // campos para que el middleware central pueda decidir el status code.
+  if (typeof err.status !== 'number') err.status = 409
+  if (typeof err.code !== 'string')   err.code = 'PAGO_REQUERIDO_CREDITO'
+  throw err
+}
+module.exports.assertCondicionesPagoCompatibles = assertCondicionesPagoCompatibles
+
 function formatCarrito(c) {
   if (!c) return null
   const lineas = (c.lineas ?? []).map(l => {

@@ -14,6 +14,7 @@ import { fetchPdfBlob, descargarBulkZip } from '@shared/utils/pdf'
 import { useCart } from '@shared/contexts/CartContext'
 import PdfPreviewDrawer from '@shared/components/PdfPreviewDrawer'
 import PinAuthModal     from '@shared/components/PinAuthModal'
+import EditorCondiciones from './_shared/EditorCondiciones'
 
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 const fmtDate = d => new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
@@ -451,25 +452,26 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                   </div>
                 ) : (
                   <div className="space-y-2.5">
-                    {['validez','pago','entrega','garantia'].map(k => (
-                      <div key={k} className="space-y-1">
-                        <div className="flex items-center justify-between">
-                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500">{k}</label>
-                          <button type="button" onClick={() => setCond(c => ({ ...c, [k]: { ...c[k], incluir: !c[k].incluir } }))}
-                            className="flex items-center gap-1.5 text-[10px] font-mono">
-                            <span className={`relative inline-flex h-4 w-7 items-center rounded-full transition-colors ${cond[k].incluir ? 'bg-blue-600' : 'bg-slate-700'}`}>
-                              <span className={`inline-block h-3 w-3 transform rounded-full bg-white shadow transition-transform ${cond[k].incluir ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
-                            </span>
-                            <span className={cond[k].incluir ? 'text-blue-300' : 'text-slate-500'}>{cond[k].incluir ? 'Incluir en PDF' : 'Omitir'}</span>
-                          </button>
-                        </div>
-                        <input type="text" value={cond[k].texto} maxLength={280}
-                          onChange={e => setCond(c => ({ ...c, [k]: { incluir: c[k].incluir || !!e.target.value, texto: e.target.value } }))}
-                          disabled={!cond[k].incluir}
-                          placeholder={cond[k].incluir ? '(vacío = usa default de empresa)' : 'Omitida'}
-                          className={`w-full px-3 py-1.5 bg-slate-800 border border-slate-700 rounded-lg text-xs text-slate-100 placeholder-slate-600 focus:outline-none focus:border-blue-500 transition-opacity ${!cond[k].incluir ? 'opacity-40' : ''}`} />
-                      </div>
-                    ))}
+                    {/* Editor unificado — _shared/EditorCondiciones también lo
+                        consume PanelFacturas. Una sola fuente de verdad para
+                        el patrón visual de toggles + inputs. */}
+                    <EditorCondiciones
+                      keys={['validez','pago','entrega','garantia']}
+                      values={{
+                        validez:  cond.validez.texto,
+                        pago:     cond.pago.texto,
+                        entrega:  cond.entrega.texto,
+                        garantia: cond.garantia.texto,
+                      }}
+                      mostrar={{
+                        validez:  cond.validez.incluir,
+                        pago:     cond.pago.incluir,
+                        entrega:  cond.entrega.incluir,
+                        garantia: cond.garantia.incluir,
+                      }}
+                      onChange={(k, v) => setCond(c => ({ ...c, [k]: { incluir: c[k].incluir || !!v, texto: v } }))}
+                      onMostrar={(k, b) => setCond(c => ({ ...c, [k]: { ...c[k], incluir: b } }))}
+                    />
                     <div className="flex justify-end gap-2 pt-2">
                       <button onClick={() => { setEditCond(false); setCond({
                         validez:  normCondField(full?.condiciones?.validez),

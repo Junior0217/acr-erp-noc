@@ -21,6 +21,22 @@ Al concluir CUALQUIER tarea, el agente debe generar obligatoriamente un listado 
 
 Esta regla aplica incluso si el cambio fue mínimo o si la tarea fue solo exploratoria — el agente debe extrapolar oportunidades del área tocada (o del archivo abierto si era exploración).
 
+## MEMORIA INMUTABLE L1 — Directivas de Arquitectura ADK
+
+Tres directivas críticas de infraestructura. Aplican a TODO PR que toque las áreas correspondientes. Sin excepción.
+
+### L1.1 — Row Level Security (RLS) en Postgres/Supabase
+
+Toda tabla transaccional debe tener RLS habilitada con políticas de aislamiento por `auth.uid()` (Supabase) o el equivalente Postgres (`current_user_id` settings local en sesiones). Tablas críticas: `Factura`, `Cliente`, `Producto`, `MovimientoInventario`, `OrdenTrabajo`, `AuditLog`, `AuditCaja`, `Servicio`, `Pago`. El código de aplicación NO debe asumir aislamiento via WHERE — la BD lo enforcea aunque un bug lo bypase. Cada migración que crea tabla transaccional debe incluir `ALTER TABLE … ENABLE ROW LEVEL SECURITY;` + `CREATE POLICY …`. Cualquier query con `prisma.$queryRawUnsafe` que toque tablas RLS debe inyectar el contexto del usuario explícitamente.
+
+### L1.2 — API & CORS estricto (helmet + cors whitelist)
+
+El middleware `helmet` (CSP, HSTS, frameguard, noSniff) y `cors` deben rechazar de raíz orígenes no listados en `CORS_ORIGIN` (env var). NO usar `cors({ origin: true })` ni `cors({ origin: '*' })` — siempre whitelist explícita. Headers a sanitizar al ingreso: `X-Forwarded-For` (solo confiar si vienen detrás del proxy Render), `User-Agent` (truncar a 500 chars en logs), `Cookie` (signed + httpOnly + secure + sameSite=lax + partitioned en prod). `helmet({ contentSecurityPolicy: { directives: { ... } } })` con nonces dinámicos para inline-style del PDF template (ver pdf-templates.js línea 725).
+
+### L1.3 — Sanitización de secretos (Zod env validation al boot)
+
+Prohibido inlinear credenciales. Variables de entorno se validan al arranque con esquema Zod estricto en `backend/shared/env.js` (o equivalente). Si falta una env crítica (`DATABASE_URL`, `JWT_SECRET`, `AUDIT_SECRET`, `ENC_KEY`, `SUPABASE_SERVICE_KEY`, `SMTP_PASS`) → `process.exit(1)` antes de aceptar el primer request. Defaults solo para no-críticas (`PORT`, `NODE_ENV`). Cualquier secret en código (incluso comentado) → bloqueado por `pre-block-protected.cjs` para archivos `.env*`. Rotación documentada en `backend/scripts/security/README.md`.
+
 ## 5 Joyas del ERP (Skills + Stack adoptados)
 
 Stack de productividad acordado. Cada joya tiene un rol fijo. Usar siempre que aplique antes de improvisar.

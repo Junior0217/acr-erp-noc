@@ -26,85 +26,55 @@
 
 import CondicionToggle from '@shared/components/CondicionToggle'
 
+// Lista completa de toggles que el editor puede renderizar. Cada panel
+// consumidor puede pasar `keys` para filtrar (ej. PanelFacturas/Cotizaciones
+// no editan "notas" desde aquí — usan otra UI).
+const ALL_KEYS = ['validez', 'pago', 'entrega', 'garantia', 'notas']
+
+const META = {
+  validez:  { label: 'Validez',              placeholder: 'Ej: Esta cotización es válida por 15 días.',          multiline: false, maxLength: 500  },
+  pago:     { label: 'Forma de Pago',        placeholder: '',                                                     multiline: false, maxLength: 500  },
+  entrega:  { label: 'Tiempo de Entrega',    placeholder: 'Ej: Entrega en 3-5 días laborables tras confirmación.', multiline: false, maxLength: 500 },
+  garantia: { label: 'Garantía',             placeholder: 'Ej: 30 días contra defectos de fabricación.',         multiline: false, maxLength: 500  },
+  notas:    { label: 'Notas / Aclaraciones', placeholder: 'Notas internas o aclaraciones para el cliente.',      multiline: true,  maxLength: 2000 },
+}
+
 export default function EditorCondiciones({
   values, onChange, mostrar, onMostrar,
   obligatorios = {}, locked = false, onRequestUnlock,
   formaPagoChildren, placeholders = {},
+  keys,
 }) {
-  const ph = {
-    validez:  placeholders.validez  ?? 'Ej: Esta cotización es válida por 15 días.',
-    pago:     placeholders.pago     ?? '',
-    entrega:  placeholders.entrega  ?? 'Ej: Entrega en 3-5 días laborables tras confirmación.',
-    garantia: placeholders.garantia ?? 'Ej: 30 días contra defectos de fabricación.',
-    notas:    placeholders.notas    ?? 'Notas internas o aclaraciones para el cliente.',
-  }
+  const renderKeys = Array.isArray(keys) && keys.length > 0
+    ? keys.filter(k => ALL_KEYS.includes(k))
+    : ALL_KEYS
 
   return (
     <div className="space-y-2">
-      <CondicionToggle
-        label="Validez"
-        texto={values.validez ?? ''}
-        onTexto={(v) => onChange('validez', v)}
-        mostrar={mostrar.validez}
-        onMostrar={(b) => onMostrar('validez', b)}
-        obligatorio={!!obligatorios.validez}
-        locked={locked}
-        onRequestUnlock={onRequestUnlock}
-        placeholder={ph.validez}
-      />
-
-      <CondicionToggle
-        label="Forma de Pago"
-        texto={values.pago ?? ''}
-        onTexto={(v) => onChange('pago', v)}
-        mostrar={mostrar.pago}
-        onMostrar={(b) => onMostrar('pago', b)}
-        obligatorio={false}
-        locked={locked}
-        onRequestUnlock={onRequestUnlock}
-        variant={formaPagoChildren ? 'select' : 'default'}
-        placeholder={ph.pago}
-      >
-        {formaPagoChildren}
-      </CondicionToggle>
-
-      <CondicionToggle
-        label="Tiempo de Entrega"
-        texto={values.entrega ?? ''}
-        onTexto={(v) => onChange('entrega', v)}
-        mostrar={mostrar.entrega}
-        onMostrar={(b) => onMostrar('entrega', b)}
-        obligatorio={!!obligatorios.entrega}
-        locked={locked}
-        onRequestUnlock={onRequestUnlock}
-        placeholder={ph.entrega}
-      />
-
-      <CondicionToggle
-        label="Garantía"
-        texto={values.garantia ?? ''}
-        onTexto={(v) => onChange('garantia', v)}
-        mostrar={mostrar.garantia}
-        onMostrar={(b) => onMostrar('garantia', b)}
-        obligatorio={!!obligatorios.garantia}
-        locked={locked}
-        onRequestUnlock={onRequestUnlock}
-        placeholder={ph.garantia}
-      />
-
-      <CondicionToggle
-        label="Notas / Aclaraciones"
-        texto={values.notas ?? ''}
-        onTexto={(v) => onChange('notas', v)}
-        mostrar={mostrar.notas}
-        onMostrar={(b) => onMostrar('notas', b)}
-        obligatorio={false}
-        locked={locked}
-        onRequestUnlock={onRequestUnlock}
-        multiline
-        maxLength={2000}
-        placeholder={ph.notas}
-      />
+      {renderKeys.map((k) => {
+        const meta = META[k]
+        const isPago = k === 'pago'
+        const placeholder = placeholders[k] ?? meta.placeholder
+        return (
+          <CondicionToggle
+            key={k}
+            label={meta.label}
+            texto={values?.[k] ?? ''}
+            onTexto={(v) => onChange(k, v)}
+            mostrar={!!mostrar?.[k]}
+            onMostrar={(b) => onMostrar(k, b)}
+            obligatorio={!!obligatorios[k]}
+            locked={locked}
+            onRequestUnlock={onRequestUnlock}
+            multiline={meta.multiline}
+            maxLength={meta.maxLength}
+            placeholder={placeholder}
+            variant={isPago && formaPagoChildren ? 'select' : 'default'}
+          >
+            {isPago && formaPagoChildren}
+          </CondicionToggle>
+        )
+      })}
     </div>
   )
 }

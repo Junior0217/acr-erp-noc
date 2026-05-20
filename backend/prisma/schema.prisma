@@ -1412,4 +1412,8 @@ model UsuarioPreferenciasPOS {
   mostrarNotas     Boolean  @default(false)
   updatedAt        DateTime @updatedAt
   empleado         Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  // Para panels admin tipo "última vez que cada cajero ajustó su POS" y para
+  // métricas de adopción del modelo (cajeros activos = updatedAt en últimos 30d).
+  @@index([updatedAt])
 }

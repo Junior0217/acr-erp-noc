@@ -26,6 +26,7 @@
  */
 
 const crypto = require('crypto');
+const { assertCondicionesPagoCompatibles } = require('../_lib');
 
 class PosError extends Error {
   constructor(status, code, message, extra) {
@@ -270,16 +271,13 @@ function createPosService(deps) {
       const cliente = await repo.findClienteByIdTx(tx, dto.clienteId);
       if (!cliente) throw new PosError(404, 'CLIENTE_NOT_FOUND', 'Cliente no encontrado en la base de datos.');
 
-      // Hardening: prohibir ocultar Forma de Pago en venta a crédito. La UI
-      // ya no debería permitirlo, pero defense-in-depth contra cookie hijack
-      // o requests directos. Si cliente tiene diasCredito > 0 y el frontend
-      // envió condicionesOverride.pago.incluir=false → rechazar.
-      if (dto.condicionesOverride?.pago?.incluir === false
-          && Number(cliente.diasCredito ?? 0) > 0
-          && !dto.esCotizacion) {
-        throw new PosError(409, 'PAGO_REQUERIDO_CREDITO',
-          'No se puede ocultar la "Forma de Pago" en una factura a crédito. El cliente tiene días de crédito activos — la condición de pago debe imprimirse para soporte legal de cobranza.');
-      }
+      // Hardening: prohibir ocultar Forma de Pago en venta a crédito.
+      // Helper compartido vive en modules/ventas/_lib.js (reutilizado por
+      // procesarFacturaManual y carrito/checkout).
+      assertCondicionesPagoCompatibles(cliente, dto.condicionesOverride, {
+        esCotizacion: dto.esCotizacion,
+        errorClass:   PosError,
+      });
 
       const itemIds = [...new Set(dto.lineas.filter(l => l.itemCatalogoId).map(l => l.itemCatalogoId))];
       const prodIds = [...new Set(dto.lineas.filter(l => l.productoId).map(l => l.productoId))];
@@ -540,6 +538,13 @@ function createPosService(deps) {
     const factura = await prisma.$transaction(async (tx) => {
       const cliente = await repo.findClienteByIdTx(tx, dto.clienteId);
       if (!cliente) throw new PosError(404, 'CLIENTE_NOT_FOUND', 'Cliente no encontrado en la base de datos.');
+
+      // Hardening compartido (helper en _lib.js). Aplica al endpoint
+      // /api/facturas/manual igual que a /api/pos/venta.
+      assertCondicionesPagoCompatibles(cliente, dto.condicionesOverride, {
+        esCotizacion: dto.esCotizacion,
+        errorClass:   PosError,
+      });
 
       const productoIds = [...new Set(dto.lineas.map(l => l.productoId).filter(Boolean))];
       const productos = await repo.findProductosForManualTx(tx, productoIds);

@@ -149,3 +149,78 @@ test('PDF · sección de cliente usa "Facturar a" en facturas y "Cliente" en cot
   const htmlCot = renderDocumento(baseArgs({ tipo: 'cotizacion' }))
   assert.equal(htmlCot.includes('>Cliente<'), true)
 })
+
+// ─── Notas de Crédito (B04) y Notas de Débito (B03) ──────────────────────────
+
+const facturaOrigenFix = {
+  noFactura: 'FAC-000099',
+  ncf:       'B01000000099',
+  tipoNcf:   'Fiscal',
+}
+
+test('PDF · Nota de Crédito (B04) imprime "Modifica al Comprobante" + motivo + NCF origen', () => {
+  const html = renderDocumento(baseArgs({
+    tipo:                    'nota-credito',
+    numero:                  'NC-000001',
+    ncf:                     'B04000000001',
+    esNotaCredito:           true,
+    facturaOrigen:           facturaOrigenFix,
+    motivoNotaModificatoria: 'Devolución total del cliente por defecto fábrica',
+    estado:                  'Emitida',
+  }))
+  assert.equal(html.includes('Modifica al Comprobante'), true, 'Debe imprimir "Modifica al Comprobante"')
+  assert.equal(html.includes('B01000000099'),            true, 'NCF de la factura origen visible')
+  assert.equal(html.includes('FAC-000099'),              true, 'noFactura origen visible')
+  assert.equal(html.includes('Devolución total'),        true, 'motivo del modificatoria visible')
+  // El watermark de NC NO debe leer "Cotización" ni "Anulada".
+  assert.equal(/watermark cotizacion/.test(html), false, 'NC NO debe llevar watermark Cotización')
+})
+
+test('PDF · Nota de Débito (B03) imprime "Modifica al Comprobante" + motivo + NCF origen', () => {
+  const html = renderDocumento(baseArgs({
+    tipo:                    'nota-debito',
+    numero:                  'ND-000001',
+    ncf:                     'B03000000001',
+    esNotaDebito:            true,
+    facturaOrigen:           facturaOrigenFix,
+    motivoNotaModificatoria: 'Cargo adicional por flete no contemplado en la factura original',
+    estado:                  'Emitida',
+  }))
+  assert.equal(html.includes('Modifica al Comprobante'), true)
+  assert.equal(html.includes('B01000000099'),            true)
+  assert.equal(html.includes('Cargo adicional'),         true)
+  // Watermark ND visible (notadebito) — verifica que el template diferencia.
+  assert.equal(html.includes('notadebito') || html.includes('Nota de Débito'), true,
+    'ND debe llevar watermark/leyenda distinta a factura/cotización')
+})
+
+test('PDF · NC sin facturaOrigen degrada a "—" sin crashear (legacy safe)', () => {
+  const html = renderDocumento(baseArgs({
+    tipo:           'nota-credito',
+    numero:         'NC-LEGACY',
+    ncf:            'B04999999999',
+    esNotaCredito:  true,
+    facturaOrigen:  null,  // legacy: NC creada antes del soporte de modificatoria
+    motivoNotaModificatoria: null,
+    estado:         'Emitida',
+  }))
+  // El template imprime el bloque con "—" como fallback (degradación visual segura).
+  // Lo crítico: NO crashea + NO muestra "undefined" / "null" literalmente.
+  assert.equal(html.includes('undefined'), false, 'No debe haber "undefined" literal en el HTML')
+  assert.equal(html.includes('Modifica al Comprobante'), true, 'El bloque modificatoria sigue presente (con "—")')
+})
+
+test('PDF · NC/ND respetan campos clave del Registro Mercantil (NO los imprimen)', () => {
+  const htmlNc = renderDocumento(baseArgs({
+    tipo: 'nota-credito', numero: 'NC-001', ncf: 'B04000000001',
+    esNotaCredito: true, facturaOrigen: facturaOrigenFix,
+    motivoNotaModificatoria: 'test', estado: 'Emitida',
+  }))
+  const htmlNd = renderDocumento(baseArgs({
+    tipo: 'nota-debito', numero: 'ND-001', ncf: 'B03000000001',
+    esNotaDebito: true, facturaOrigen: facturaOrigenFix,
+    motivoNotaModificatoria: 'test cargo', estado: 'Emitida',
+  }))
+  assert.equal(htmlNc.includes('RM-2024-99999'), false, 'NC NO debe imprimir registroMercantil')
+  assert.equal(htmlNd.includes('RM-2024-99999'), false, 'ND NO debe imprimir registroMercantil')
+})

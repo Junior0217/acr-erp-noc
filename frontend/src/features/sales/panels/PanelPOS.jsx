@@ -784,15 +784,24 @@ export default function PanelPOS({ preloadItems = [], onClearPreload, onFacturaC
       }, LOCK_IDLE_MS)
     }
     const onBlur = () => setDescuentosUnlocked(false)
+    // visibilitychange cubre los casos que blur NO captura: minimizar la
+    // ventana, lock de pantalla del SO, cambio de aplicación que no quita
+    // el foco del documento pero sí lo oculta. Spec: document.hidden = true
+    // → re-lock inmediato (más estricto que el idle timer).
+    const onVisibility = () => {
+      if (document.visibilityState === 'hidden') setDescuentosUnlocked(false)
+    }
     reset()
     window.addEventListener('mousemove', reset, { passive: true })
     window.addEventListener('keydown',  reset)
     window.addEventListener('blur',     onBlur)
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       if (timer) clearTimeout(timer)
       window.removeEventListener('mousemove', reset)
       window.removeEventListener('keydown',  reset)
       window.removeEventListener('blur',     onBlur)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [descuentosUnlocked])
   const [pinSupervisorState, setPinSupervisorState] = useState('')

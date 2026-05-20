@@ -5,6 +5,8 @@
  * formatCarrito vienen inyectados desde _lib.
  */
 
+const { assertCondicionesPagoCompatibles } = require('../_lib');
+
 class CarritoError extends Error {
   constructor(status, code, message) {
     super(message);
@@ -115,6 +117,16 @@ function createCarritoService(deps) {
     }));
     if (!procesarFacturaPOS) {
       throw new CarritoError(503, 'PROCESADOR_POS_NO_DISPONIBLE', 'procesarFacturaPOS no inyectado en deps.');
+    }
+    // Hardening compartido: prohibir ocultar Forma de Pago si el cliente
+    // del carrito tiene días de crédito activos. El cliente vive en
+    // `carrito.cliente` o se carga aparte — si el carrito no lo trae,
+    // lo carga el procesarFacturaPOS aguas abajo (que también valida).
+    if (carrito.cliente) {
+      assertCondicionesPagoCompatibles(carrito.cliente, payload.condicionesOverride, {
+        esCotizacion: payload.esCotizacion,
+        errorClass:   CarritoError,
+      });
     }
     const permisos = Array.isArray(user?.permisos) ? user.permisos : [];
     const puedeOverride = permisos.includes('sistema:owner') || permisos.includes('pos:override_precio');
