@@ -25,6 +25,7 @@ const {
   createWebhookApproveLimiter,
   createTelemetryLimiter,
   makeRedisStore,
+  LIMITER_PREFIXES,
 } = require('../shared/limiters');
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -77,6 +78,24 @@ test('factories expuestas son middlewares (function de arity 3)', () => {
     const mw = factory();
     assert.equal(typeof mw, 'function', `${factory.name} → middleware`);
     assert.equal(mw.length, 3, `${factory.name} arity (req,res,next)`);
+  }
+});
+
+// ─── 1.b) Contrato LIMITER_PREFIXES ─────────────────────────────────────────
+// El typedef JSDoc `LimiterName` en shared/limiters.js enumera 8 nombres. Si
+// alguien añade un noveno limiter al objeto pero olvida actualizar el typedef,
+// el autocomplete del IDE no se entera y la firma TS-via-JSDoc miente. Este
+// test es el contrato: si agregas un limiter, FALLA hasta que alguien lo
+// declare también en el typedef (y bumpee el `=== 8` aquí).
+test('LIMITER_PREFIXES — contrato de 8 entradas únicas, frozen', () => {
+  const keys   = Object.keys(LIMITER_PREFIXES);
+  const values = Object.values(LIMITER_PREFIXES);
+  assert.equal(keys.length, 8, 'LIMITER_PREFIXES debe tener exactamente 8 entradas; si añadiste un limiter, actualiza el typedef LimiterName y este test.');
+  assert.equal(new Set(values).size, 8, 'todos los prefixes deben ser únicos (anti-colisión Redis).');
+  assert.ok(Object.isFrozen(LIMITER_PREFIXES), 'LIMITER_PREFIXES debe estar congelado (Object.freeze).');
+  // Convención de naming: rl:<dominio>:<accion>: terminando en `:`.
+  for (const v of values) {
+    assert.match(v, /^rl:[a-z]+(:[a-z]+)*:$/, `prefix '${v}' no respeta convención rl:<dominio>:<accion>:`);
   }
 });
 

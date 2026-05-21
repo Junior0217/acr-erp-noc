@@ -206,6 +206,13 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
     isDirty:  condIsDirty,
   } = useCondicionesDoc()
   const [savingCond, setSavingCond] = useState(false)
+  // canSave centraliza la política del botón Guardar (idéntico a PanelFacturas):
+  // hay cambios pendientes + no estoy ya en flight. Reduce ramas booleanas
+  // inline en JSX y previene drift entre `disabled` y el guard del handler.
+  const canSave = useMemo(
+    () => condIsDirty && !savingCond,
+    [condIsDirty, savingCond],
+  )
   // Paridad POS/Carrito/Facturas: editar condiciones exige PIN supervisor.
   const [pinCondOpen, setPinCondOpen] = useState(false)
 
@@ -466,7 +473,7 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                         Cancelar
                       </button>
                       <button onClick={guardarCondiciones}
-                        disabled={savingCond || !condIsDirty}
+                        disabled={!canSave}
                         title={!condIsDirty ? 'No hay cambios para guardar' : undefined}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         {savingCond ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}

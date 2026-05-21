@@ -53,6 +53,14 @@ const _telemetrySent = new Set()
 // comparación `startsWith('csrf=')` garantiza que solo cae sobre la cookie
 // cuyo nombre completo es `csrf`. Regex match parcial sería vulnerable a
 // otra cookie con sufijo similar definida por extensiones o terceros.
+//
+// Validación de formato:
+//   El backend genera el cookie csrf con `crypto.randomBytes(32).toString('hex')`
+//   → 64 chars de [0-9a-f]. Aceptamos un rango más amplio [A-Za-z0-9_-]{16,256}
+//   para tolerar rotación a base64url sin perder backward-compat. Si el cookie
+//   contiene cualquier otro carácter (extensión maliciosa inyectando HTML, byte
+//   nulo, espacio, etc.), descartamos — no queremos que `<script>...` llegue
+//   al header X-CSRF-Token del request server-side.
 function _readCsrfCookie() {
   try {
     if (typeof document === 'undefined') return null
@@ -60,7 +68,9 @@ function _readCsrfCookie() {
     if (!raw) return null
     const found = raw.split('; ').find((r) => r.startsWith('csrf='))
     if (!found) return null
-    return decodeURIComponent(found.slice('csrf='.length))
+    const value = decodeURIComponent(found.slice('csrf='.length))
+    if (!/^[a-zA-Z0-9_-]{16,256}$/.test(value)) return null
+    return value
   } catch { return null }
 }
 

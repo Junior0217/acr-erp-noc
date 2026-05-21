@@ -856,6 +856,15 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
     isDirty:  condIsDirty,
   } = useCondicionesDoc()
   const [savingCond, setSavingCond] = useState(false)
+  // canSave centraliza la política del botón Guardar: hay cambios + no estoy
+  // ya guardando + el editor está activo (PIN supervisor pasó). Una sola
+  // fuente de verdad evita drift entre el `disabled` del botón y el guard
+  // dentro de `guardarCondiciones`. useMemo porque el JSX se re-renderiza
+  // muchas veces (cada keystroke en el editor) y la comparación es pura.
+  const canSave = useMemo(
+    () => condIsDirty && !savingCond,
+    [condIsDirty, savingCond],
+  )
   // Paridad POS/Carrito: editar condiciones de un documento ya emitido también
   // exige PIN supervisor (Zero Trust). Owner igualmente — sin excepción.
   const [pinCondOpen, setPinCondOpen] = useState(false)
@@ -1023,7 +1032,7 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
                         Cancelar
                       </button>
                       <button onClick={guardarCondiciones}
-                        disabled={savingCond || !condIsDirty}
+                        disabled={!canSave}
                         title={!condIsDirty ? 'No hay cambios para guardar' : undefined}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         {savingCond ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
