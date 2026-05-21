@@ -520,10 +520,28 @@ export default function CotizadorManualPro() {
         throw new Error(j.error ?? `HTTP ${res.status}`)
       }
       const blob = await res.blob()
+      if (!blob || blob.size === 0) throw new Error('El servidor devolvió un PDF vacío.')
       const url  = URL.createObjectURL(blob)
-      window.open(url, '_blank', 'noopener,noreferrer')
+      // window.open tras await es bloqueado por popup blocker (no es gesto
+      // de usuario). Usamos un anchor <a download target="_blank"> que el
+      // browser trata como descarga/navegación legítima. Si el navegador es
+      // restrictivo y nada pasa, ofrecemos descarga manual como fallback.
+      const a = document.createElement('a')
+      a.href     = url
+      a.download = `cotizacion-${state.numeroDocumento || 'libre'}.pdf`
+      a.target   = '_blank'
+      a.rel      = 'noopener noreferrer'
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      // Liberar después de 60s para no fugar memoria (tab nueva ya cargó).
       setTimeout(() => URL.revokeObjectURL(url), 60_000)
-      toast.success('PDF generado.')
+      toast.success('PDF generado · revisa Descargas o nueva pestaña.', {
+        action: {
+          label: 'Abrir',
+          onClick: () => window.open(url, '_blank', 'noopener,noreferrer'),
+        },
+      })
     } catch (e) {
       toast.error(`Error generando PDF: ${e.message}`)
     } finally { setGenerando(false) }
