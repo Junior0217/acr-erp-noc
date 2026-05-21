@@ -28,6 +28,7 @@ const ComprasDGII     = lazy(() => import('@features/dgii/Compras'))
 const Configuracion   = lazy(() => import('@features/settings/Configuracion'))
 const Servicios       = lazy(() => import('@features/services/Servicios'))
 const OrdenesServicio = lazy(() => import('@features/services/OrdenesServicio'))
+const CotizadorManualPro = lazy(() => import('@features/sales/panels/CotizadorManualPro'))
 const Taller          = lazy(() => import('@features/workshop/Taller'))
 const CustomerPortal  = lazy(() => import('@features/portal/CustomerPortal'))
 const PortalTracking  = lazy(() => import('@features/portal/PortalTracking'))
@@ -100,6 +101,9 @@ function AppRoutes() {
           <Route path="rrhh"      element={<Suspense fallback={<PageLoader />}><RRHH /></Suspense>} />
           <Route path="servicios" element={<Suspense fallback={<PageLoader />}><Servicios /></Suspense>} />
           <Route path="servicios/ordenes" element={<Suspense fallback={<PageLoader />}><OrdenesServicio /></Suspense>} />
+          {/* Cotizador Libre Pro — proyectos de infraestructura con texto plano editable.
+              Protegida por AuthProvider (caemos aquí solo si user!=null) + permiso server-side. */}
+          <Route path="servicios/cotizador-pro" element={<Suspense fallback={<PageLoader />}><CotizadorManualPro /></Suspense>} />
           <Route path="taller"    element={<Suspense fallback={<PageLoader />}><Taller /></Suspense>} />
           <Route path="crm"       element={<Suspense fallback={<PageLoader />}><CRM /></Suspense>} />
           <Route path="mapa"      element={<Suspense fallback={<PageLoader />}><MapaNOC /></Suspense>} />

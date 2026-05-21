@@ -822,6 +822,21 @@ const _pdfModule = buildPdfModule({
 });
 console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${_pdfModule.service.PUBLIC_VERIFY_BASE}`);
 
+// ─── Cotizador Libre (proyectos de infraestructura editables) ────────────────
+// Módulo independiente del pipeline NCF/Factura: solo render PDF en memoria.
+// No persiste, no usa Supabase cache, no consume secuencias. Útil para socios
+// que cotizan proyectos donde los precios/descripciones se manejan fuera del
+// catálogo rígido del inventario físico.
+const buildCotizadorLibreModule = require('./modules/ventas/cotizador-libre');
+const _cotizadorLibreModule = buildCotizadorLibreModule({
+  middlewares: _sharedMw,
+  auditReq,
+  generarPdfDocumento,
+  QRCode: QRCode_pdfStack,
+  billingLimiter,
+});
+app.use('/api/ventas', _cotizadorLibreModule.router);
+
 // Handlers inline restantes migrados (Fase 1.4):
 //   /api/productos/:id/bundles     → modules/ventas/catalogo
 //   /api/catalogo/:id/bundles      → modules/ventas/catalogo
