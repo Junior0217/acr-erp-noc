@@ -43,6 +43,7 @@ module.exports = [
   { key: 'venta:ver_cotizaciones',     module: 'Ventas',        label: 'Ver Cotizaciones',      desc: 'Consultar listado de cotizaciones',              color: 'amber'   },
   { key: 'venta:crear_cotizaciones',   module: 'Ventas',        label: 'Crear Cotizaciones',    desc: 'Guardar y editar cotizaciones',                  color: 'amber'   },
   { key: 'venta:editar_cotizaciones',  module: 'Ventas',        label: 'Editar Cotizaciones',   desc: 'Actualizar precios en cotización pendiente',     color: 'amber'   },
+  { key: 'cotizador_libre_manual',     module: 'Ventas',        label: 'Cotizador Libre Pro',   desc: 'Acceso al cotizador manual sin tocar inventario (socios + beta)', color: 'amber' },
   { key: 'ventas:forzar_credito',      module: 'Ventas',        label: 'Forzar Crédito',        desc: 'Bypass límite de crédito al facturar (Owner only)', color: 'red'   },
 
   // ── Órdenes de Trabajo ────────────────────────────────────────────────────────

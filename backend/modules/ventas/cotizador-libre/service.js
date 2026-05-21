@@ -30,7 +30,7 @@ class CotizadorLibreError extends Error {
 }
 
 function createCotizadorLibreService(deps) {
-  const { generarPdfDocumento, QRCode } = deps;
+  const { generarPdfDocumento, QRCode, repo } = deps;
   if (typeof generarPdfDocumento !== 'function') throw new Error('createCotizadorLibreService: generarPdfDocumento required');
 
   // ─── Helpers de cálculo (defensa-en-profundidad) ──────────────────────────
@@ -261,7 +261,57 @@ function createCotizadorLibreService(deps) {
     return { buffer, totales, numeroDocumento: dto.numeroDocumento || `COT-${Date.now().toString().slice(-6)}` };
   }
 
-  return { generarPdf };
+  // ─── Drafts (persistencia opcional — repo puede no estar inyectado) ──────
+  function _assertRepo() {
+    if (!repo) {
+      throw new CotizadorLibreError(500, 'NO_REPO',
+        'Repo de drafts no inyectado — endpoint no disponible.');
+    }
+  }
+
+  async function listDrafts(empleadoId, query = {}) {
+    _assertRepo();
+    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
+      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
+    }
+    const drafts = await repo.listByEmpleado(empleadoId, { limit: query.limit });
+    return { drafts };
+  }
+
+  async function getDraft(empleadoId, numeroDocumento) {
+    _assertRepo();
+    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
+      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
+    }
+    const draft = await repo.findByEmpleadoYNumero(empleadoId, numeroDocumento);
+    if (!draft) throw new CotizadorLibreError(404, 'NOT_FOUND', 'Borrador no encontrado.');
+    return draft;
+  }
+
+  async function upsertDraft(empleadoId, dto) {
+    _assertRepo();
+    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
+      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
+    }
+    const saved = await repo.upsertByEmpleadoYNumero(empleadoId, dto.numeroDocumento, {
+      cliente:     dto.cliente,
+      items:       dto.items,
+      condiciones: dto.condiciones,
+      meta:        dto.meta ?? null,
+    });
+    return saved;
+  }
+
+  async function deleteDraft(empleadoId, numeroDocumento) {
+    _assertRepo();
+    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
+      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
+    }
+    const r = await repo.deleteByEmpleadoYNumero(empleadoId, numeroDocumento);
+    return { deleted: r.count };
+  }
+
+  return { generarPdf, listDrafts, getDraft, upsertDraft, deleteDraft };
 }
 
 module.exports = createCotizadorLibreService;

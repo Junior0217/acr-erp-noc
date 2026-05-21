@@ -829,6 +829,7 @@ console.log(`[VERIFY] PUBLIC_VERIFY_BASE=${_pdfModule.service.PUBLIC_VERIFY_BASE
 // catálogo rígido del inventario físico.
 const buildCotizadorLibreModule = require('./modules/ventas/cotizador-libre');
 const _cotizadorLibreModule = buildCotizadorLibreModule({
+  prisma,
   middlewares: _sharedMw,
   auditReq,
   generarPdfDocumento,

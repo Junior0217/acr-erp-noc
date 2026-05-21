@@ -72,7 +72,27 @@ const cotizadorLibreSchema = z.object({
   empresaTagline:       z.string().max(200).optional().nullable(),
 });
 
+// Schema del PUT draft. Reutiliza la estructura del PDF schema pero relaja
+// items (permite cantidad 0 / precio 0 — el cajero puede guardar borradores
+// incompletos). El render PDF sí exige descripcion no-vacía + min 1 línea.
+const draftPayloadSchema = z.object({
+  numeroDocumento: z.string().min(1).max(40),
+  cliente:         clienteSchema,
+  items:           z.array(itemSchema).max(MAX_LINEAS),
+  condiciones:     condicionesSchema,
+  meta:            z.object({
+    aplicaItbisGlobal:    z.boolean().optional(),
+    porcentajeItbis:      z.coerce.number().min(0).max(40).optional(),
+    descuentoGlobalPct:   z.coerce.number().min(0).max(100).optional(),
+    descuentoGlobalMonto: z.coerce.number().min(0).optional(),
+  }).partial().optional().nullable(),
+});
+
+const numeroParamSchema = z.string().min(1).max(40);
+
 module.exports = {
   cotizadorLibreSchema,
+  draftPayloadSchema,
+  numeroParamSchema,
   MAX_LINEAS,
 };

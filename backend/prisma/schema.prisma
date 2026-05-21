@@ -133,6 +133,7 @@ model Empleado {
   ticketsTaller       TicketTaller[]
   fotosOT             OrdenFoto[]
   preferenciasPOS     UsuarioPreferenciasPOS?
+  cotizacionesLibres  CotizacionLibreDraft[]
   incidencias         IncidenciaReconciliacion[]
   timelineEvents      ActivoTimeline[]
   facturas            Factura[]
@@ -1415,5 +1416,43 @@ model UsuarioPreferenciasPOS {
 
   // Para panels admin tipo "última vez que cada cajero ajustó su POS" y para
   // métricas de adopción del modelo (cajeros activos = updatedAt en últimos 30d).
+  @@index([updatedAt])
+}
+
+// ─── Cotizador Libre Pro (borradores editables sin tocar inventario) ─────────
+// Permite a usuarios autorizados (permiso `cotizador_libre_manual`) guardar
+// borradores de cotizaciones de proyectos de infraestructura/CCTV con texto
+// libre. NO consume NCF, NO descuenta stock, NO genera AuditCaja — es una
+// herramienta operativa para socios que cotizan proyectos fuera del catálogo
+// rígido. El render PDF vive en backend/modules/ventas/cotizador-libre/.
+//
+// Diseño:
+//   - Una fila = un borrador identificado por (empleadoId, numeroDocumento).
+//   - Un empleado puede tener N borradores en paralelo (proyecto A, B, C).
+//   - `cliente`, `items` y `condiciones` son Json crudo — no validamos shape
+//     a nivel DB; lo hace Zod en el endpoint. La razón: el módulo evoluciona
+//     rápido (campos opcionales aparecen) y migrar JSON columnar es costoso.
+//   - ON DELETE Cascade: si el empleado se borra (hard delete), sus drafts
+//     se purgan. Para soft-delete, el operador puede correr cron de purga.
+model CotizacionLibreDraft {
+  id              String   @id @default(uuid())
+  empleadoId      Int
+  numeroDocumento String
+  cliente         Json
+  items           Json
+  condiciones     Json
+  // Snapshot opcional de los switches globales (ITBIS, descuento) — el frontend
+  // los persiste para que al recargar el draft, el cajero los vea idénticos.
+  meta            Json?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  empleado        Empleado @relation(fields: [empleadoId], references: [id], onDelete: Cascade)
+
+  // Un draft único por (empleado, numeroDocumento) — permite upsert idempotente
+  // desde el auto-save sin riesgo de duplicar filas en condiciones de carrera.
+  @@unique([empleadoId, numeroDocumento])
+  // Listado del panel admin: "borradores recientes del cajero X".
+  @@index([empleadoId, updatedAt(sort: Desc)])
+  // GC y métricas operacionales (cuántos drafts hay en total, antigüedad).
   @@index([updatedAt])
 }

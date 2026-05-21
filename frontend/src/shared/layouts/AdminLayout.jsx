@@ -196,6 +196,7 @@ const navItems = [
   { to: '/contabilidad', label: 'Contabilidad',   icon: BookOpen,        sub: 'Cuentas · Balances',         permiso: null             },
   { to: '/rrhh',         label: 'RRHH',           icon: Users,           sub: 'Técnicos · Nómina',          permiso: 'rrhh:ver'       },
   { to: '/servicios',    label: 'Servicios',      icon: Wrench,          sub: 'Suscripciones cliente · Planes ISP', permiso: 'servicios:ver'  },
+  { to: '/servicios/cotizador-pro', label: 'Cotizador Libre Pro', icon: FileText, sub: 'Proyectos · CCTV · Texto plano editable', permiso: 'cotizador_libre_manual' },
   { to: '/taller',       label: 'Taller',         icon: ClipboardList,   sub: 'RMA · Reparaciones',         permiso: 'ot:ver'         },
   { to: '/crm',          label: 'CRM',            icon: Handshake,       sub: 'Clientes · Suplidores',      permiso: 'crm:ver'        },
   { to: '/mapa',         label: 'Mapa NOC',       icon: Globe,           sub: 'Cobertura · Geo',            permiso: 'mapa:ver'       },

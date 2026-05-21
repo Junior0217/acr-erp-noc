@@ -9,21 +9,26 @@
  *   generarPdfDocumento, QRCode, billingLimiter })
  */
 
+const createRepo       = require('./repo');
 const createService    = require('./service');
 const createController = require('./controller');
 const createRouter     = require('./router');
 
 function buildCotizadorLibreModule(deps) {
-  const { middlewares, auditReq, generarPdfDocumento, QRCode, billingLimiter } = deps;
-  if (!middlewares)                            throw new Error('buildCotizadorLibreModule: middlewares required');
-  if (typeof auditReq !== 'function')          throw new Error('buildCotizadorLibreModule: auditReq required');
+  const { prisma, middlewares, auditReq, generarPdfDocumento, QRCode, billingLimiter } = deps;
+  if (!middlewares)                              throw new Error('buildCotizadorLibreModule: middlewares required');
+  if (typeof auditReq !== 'function')            throw new Error('buildCotizadorLibreModule: auditReq required');
   if (typeof generarPdfDocumento !== 'function') throw new Error('buildCotizadorLibreModule: generarPdfDocumento required');
 
-  const service    = createService({ generarPdfDocumento, QRCode });
+  // `prisma` es opcional para el render PDF, pero requerido para drafts.
+  // Si no se inyecta, los endpoints CRUD responden 500 NO_REPO — útil para
+  // tests donde solo se valida el pipeline de PDF.
+  const repo       = prisma ? createRepo(prisma) : null;
+  const service    = createService({ generarPdfDocumento, QRCode, repo });
   const controller = createController({ service, auditReq });
   const router     = createRouter({ controller, middlewares, billingLimiter });
 
-  return { router, service };
+  return { router, service, repo };
 }
 
 module.exports = buildCotizadorLibreModule;

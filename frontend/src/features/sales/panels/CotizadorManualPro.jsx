@@ -16,8 +16,8 @@
  *   - condiciones (validez/pago/entrega/garantía/notas) via useCondicionesDoc.
  */
 
-import { useMemo, useState } from 'react'
-import { Plus, Trash2, FileDown, Loader2, Building2, ShieldCheck, FileText } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Plus, Trash2, FileDown, Loader2, Building2, ShieldCheck, FileText, Save, Boxes } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '@shared/utils/api'
 import EditorCondiciones  from '@features/sales/panels/_shared/EditorCondiciones'
@@ -42,20 +42,87 @@ const FORMA_PAGO_OPCIONES = [
   'Cheque', 'Crédito 15 días', 'Crédito 30 días', '50% anticipo + 50% contra entrega',
 ]
 
-function nuevaLinea() {
-  return { id: crypto.randomUUID(), codigo: '', descripcion: '', cantidad: 1, precioUnit: 0, aplicaItbis: true }
+function nuevaLinea(over = {}) {
+  return {
+    id:          crypto.randomUUID(),
+    codigo:      '',
+    descripcion: '',
+    cantidad:    1,
+    precioUnit:  0,
+    aplicaItbis: true,
+    ...over,
+  }
 }
 
 const ITEMS_INICIAL = [nuevaLinea()]
+
+// ─── Plantilla CCTV híbrida (Escuela Benito Juárez — 36 cámaras) ────────────
+// Listado canónico que el socio inyecta con un click. Cantidades, descripciones
+// y modelos siguen el estándar ACR Networks para proyectos escolares medianos.
+// El cajero ajusta precios in-place tras la inyección — los `precioUnit: 0`
+// son placeholders intencionales para forzar revisión antes de generar PDF.
+const PLANTILLA_CCTV_36 = [
+  { codigo: 'CCTV-DAH-HFW1839T',     descripcion: 'Cámara IP Dahua 4K 8MP IPC-HFW1839T1-LED tipo bullet ColorVu 2.8mm',                cantidad: 36, precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'CCTV-DAH-NVR5232',      descripcion: 'NVR Dahua 32 Canales NVR5232-EI 4K H.265+ con AI (rostros + cruce de línea)',         cantidad: 2,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'STORAGE-WD-8TB-PURPLE', descripcion: 'Disco duro Western Digital Purple 8TB Surveillance WD84PURZ',                          cantidad: 4,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'NET-UBQ-USW-24-POE',    descripcion: 'Switch UniFi USW-24-POE 24-puerto gigabit con 16 PoE+ (250W total)',                   cantidad: 2,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'NET-UBQ-USW-LITE-8',    descripcion: 'Switch UniFi USW-Lite-8-POE 8-puerto gigabit con 4 PoE+ (52W)',                        cantidad: 2,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'FO-DROP-2H-1000M',      descripcion: 'Bobina Fibra Óptica Drop 2 Hilos SM G657A1 1000m (interplanta entre edificios)',     cantidad: 2,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m exterior (gel-filled) para tendido entre cámaras y rack', cantidad: 6,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'NET-RJ45-CAT6-PACK100', descripcion: 'Conectores RJ45 Cat6 blindados pack×100 con bota anti-tirón',                          cantidad: 2,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'NET-RACK-12U',          descripcion: 'Rack mural 12U 600mm con organizador y bandeja para NVR + switches',                  cantidad: 2,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'POWER-UPS-3KVA',        descripcion: 'UPS APC SmartConnect 3000VA online con respaldo 2h al rack principal',               cantidad: 1,  precioUnit: 0,    aplicaItbis: true },
+  { codigo: 'SVC-INSTALACION',       descripcion: 'Servicio técnico: instalación, configuración remota DMSS, programación AI y entrega final con planos as-built', cantidad: 1, precioUnit: 0, aplicaItbis: true },
+  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 2 horas presencial al personal designado (uso de NVR, exportación de video, alertas móvil)',       cantidad: 1, precioUnit: 0, aplicaItbis: true },
+]
 
 function fmtRD(n) {
   return Number(n ?? 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 })
 }
 
+// ─── Badge de estado de auto-save (header derecho) ──────────────────────────
+// Visualización compacta del ciclo idle → saving → saved/error. `lastSavedAt`
+// se renderiza relativo ("hace 12s") para que el socio vea que la persistencia
+// está viva sin tener que mirar el devtools.
+function SaveStatusBadge({ status, lastSavedAt }) {
+  const rel = lastSavedAt ? Math.max(0, Math.floor((Date.now() - lastSavedAt.getTime()) / 1000)) : null
+  const relTxt = rel == null ? '' : rel < 60 ? `hace ${rel}s` : rel < 3600 ? `hace ${Math.floor(rel / 60)}m` : `hace ${Math.floor(rel / 3600)}h`
+  if (status === 'saving') {
+    return <span className="flex items-center gap-1.5 text-[10px] font-semibold text-blue-300 px-2 py-1 rounded bg-blue-500/10 border border-blue-500/30"><Loader2 size={11} className="animate-spin" /> Guardando…</span>
+  }
+  if (status === 'error') {
+    return <span className="text-[10px] font-semibold text-red-300 px-2 py-1 rounded bg-red-500/10 border border-red-500/30">Error al guardar</span>
+  }
+  if (status === 'saved' || lastSavedAt) {
+    return <span className="flex items-center gap-1.5 text-[10px] font-semibold text-emerald-300 px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30"><Save size={11} /> Guardado {relTxt}</span>
+  }
+  return <span className="text-[10px] font-semibold text-slate-500 px-2 py-1 rounded bg-slate-800 border border-slate-700">Sin cambios</span>
+}
+
+// Defaults de condiciones para reset/initial.
+const CONDICIONES_DEFAULT = {
+  validez:  { incluir: true,  texto: 'Esta cotización es válida por 15 días calendarios.' },
+  pago:     { incluir: true,  texto: '50% anticipo + 50% contra entrega.' },
+  entrega:  { incluir: true,  texto: 'Entrega e instalación en 5-7 días laborables tras confirmación.' },
+  garantia: { incluir: true,  texto: '12 meses contra defectos de fábrica para equipos. Mano de obra: 90 días.' },
+  notas:    { incluir: false, texto: '' },
+}
+
+// Key estable para localStorage: persistimos el numeroDocumento "actual" del
+// usuario entre recargas. Si el navegador se cierra, al regresar el GET inicial
+// hidrata desde el draft correspondiente.
+const LS_KEY_ULTIMO_DOC = 'acr.cotizadorLibre.ultimoDoc'
+
 export default function CotizadorManualPro() {
   // ─── Cliente / encabezado del documento ──────────────────────────────────
   const [cliente, setCliente] = useState(CLIENTE_DEFAULT)
-  const [numeroDocumento, setNumeroDocumento] = useState(`COT-${Date.now().toString().slice(-6)}`)
+  const [numeroDocumento, setNumeroDocumento] = useState(() => {
+    try {
+      const prev = typeof localStorage !== 'undefined' ? localStorage.getItem(LS_KEY_ULTIMO_DOC) : null
+      if (prev && prev.trim()) return prev
+    } catch {}
+    return `COT-${Date.now().toString().slice(-6)}`
+  })
 
   // ─── Items editables ─────────────────────────────────────────────────────
   const [items, setItems] = useState(ITEMS_INICIAL)
@@ -74,13 +141,7 @@ export default function CotizadorManualPro() {
     cond, reset: resetCond,
     values: condValues, mostrar: condMostrar,
     onChange: condOnChange, onMostrar: condOnMostrar,
-  } = useCondicionesDoc({
-    validez:  { incluir: true,  texto: 'Esta cotización es válida por 15 días calendarios.' },
-    pago:     { incluir: true,  texto: '50% anticipo + 50% contra entrega.' },
-    entrega:  { incluir: true,  texto: 'Entrega e instalación en 5-7 días laborables tras confirmación.' },
-    garantia: { incluir: true,  texto: '12 meses contra defectos de fábrica para equipos. Mano de obra: 90 días.' },
-    notas:    { incluir: false, texto: '' },
-  })
+  } = useCondicionesDoc(CONDICIONES_DEFAULT)
 
   // ─── Cálculo en tiempo real (espejo del backend service._calcularTotales) ──
   // useMemo porque el array de items puede crecer a 30-50 líneas y el cómputo
@@ -105,6 +166,111 @@ export default function CotizadorManualPro() {
     const total         = Math.round((baseImponible + itbis) * 100) / 100
     return { lineas, subtotal, descuento, baseImponible, itbis, total }
   }, [items, aplicaItbisGlobal, porcentajeItbis, descuentoPct, descuentoMonto])
+
+  // ─── Plantilla CCTV (botón estético) ─────────────────────────────────────
+  const cargarPlantillaCctv = () => {
+    if (items.length > 1 || (items[0]?.descripcion?.trim())) {
+      const ok = window.confirm('¿Reemplazar las líneas actuales con la plantilla CCTV 36 cámaras? El cliente y condiciones se mantienen.')
+      if (!ok) return
+    }
+    setItems(PLANTILLA_CCTV_36.map(nuevaLinea))
+    toast.success(`Plantilla CCTV cargada · ${PLANTILLA_CCTV_36.length} líneas`)
+  }
+
+  // ─── Auto-save persistente (PUT debounced 3s) ────────────────────────────
+  // El estado se serializa al backend cada 3s de inactividad. Si el usuario
+  // sigue tipeando, el timer se resetea (debounce). El primer ciclo después
+  // de hydrate desde GET inicial se skipea (`isReadyRef`) para no escribir
+  // el draft que acaba de leer.
+  const [saveStatus,  setSaveStatus]  = useState('idle')  // 'idle' | 'saving' | 'saved' | 'error'
+  const [lastSavedAt, setLastSavedAt] = useState(null)
+  const isReadyRef  = useRef(false)
+  const debounceRef = useRef(null)
+
+  // GET inicial: hidrata desde un draft existente con el mismo numeroDocumento.
+  useEffect(() => {
+    let cancel = false
+    ;(async () => {
+      try {
+        const r = await apiFetch(`/api/ventas/cotizador-libre/draft/${encodeURIComponent(numeroDocumento)}`)
+        if (cancel) return
+        if (r.ok) {
+          const draft = await r.json()
+          if (draft?.cliente) setCliente({ ...CLIENTE_DEFAULT, ...draft.cliente })
+          if (Array.isArray(draft?.items) && draft.items.length > 0) {
+            setItems(draft.items.map((it) => nuevaLinea(it)))
+          }
+          if (draft?.condiciones) resetCond(draft.condiciones)
+          if (draft?.meta) {
+            if (typeof draft.meta.aplicaItbisGlobal    === 'boolean') setAplicaItbisGlobal(draft.meta.aplicaItbisGlobal)
+            if (typeof draft.meta.porcentajeItbis      === 'number')  setPorcentajeItbis(draft.meta.porcentajeItbis)
+            if (typeof draft.meta.descuentoGlobalPct   === 'number')  setDescuentoPct(draft.meta.descuentoGlobalPct)
+            if (typeof draft.meta.descuentoGlobalMonto === 'number')  setDescuentoMonto(draft.meta.descuentoGlobalMonto)
+          }
+          setLastSavedAt(new Date(draft.updatedAt))
+        }
+      } catch { /* silencio — sin draft o sin red, defaults se mantienen */ }
+      finally {
+        // Activar auto-save hasta el siguiente paint para evitar el ciclo
+        // "fetch → setState → useEffect → save inmediato del mismo data".
+        if (!cancel) {
+          setTimeout(() => { isReadyRef.current = true }, 0)
+        }
+      }
+    })()
+    return () => { cancel = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // intencionalmente solo al montar — cambios de numeroDocumento son cargas distintas que el usuario debe ejecutar conscientemente
+
+  // Persiste el numeroDocumento "actual" en LS para hidratar tras recarga.
+  useEffect(() => {
+    try {
+      if (numeroDocumento) localStorage.setItem(LS_KEY_ULTIMO_DOC, numeroDocumento)
+    } catch {}
+  }, [numeroDocumento])
+
+  // Debounced auto-save: 3 segundos sin tocar nada → PUT.
+  useEffect(() => {
+    if (!isReadyRef.current) return
+    if (!numeroDocumento?.trim()) return
+    setSaveStatus('idle')
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(async () => {
+      try {
+        setSaveStatus('saving')
+        const payload = {
+          numeroDocumento,
+          cliente,
+          items: items.map((l) => ({
+            codigo:      l.codigo?.trim() || null,
+            descripcion: l.descripcion ?? '',
+            cantidad:    Number(l.cantidad ?? 0),
+            precioUnit:  Number(l.precioUnit ?? 0),
+            aplicaItbis: !!l.aplicaItbis,
+          })),
+          condiciones: cond,
+          meta: {
+            aplicaItbisGlobal,
+            porcentajeItbis:      Number(porcentajeItbis),
+            descuentoGlobalPct:   Number(descuentoPct),
+            descuentoGlobalMonto: Number(descuentoMonto),
+          },
+        }
+        const res = await apiFetch('/api/ventas/cotizador-libre/draft', {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body:    JSON.stringify(payload),
+        })
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const j = await res.json().catch(() => ({}))
+        setSaveStatus('saved')
+        setLastSavedAt(j?.updatedAt ? new Date(j.updatedAt) : new Date())
+      } catch {
+        setSaveStatus('error')
+      }
+    }, 3000)
+    return () => clearTimeout(debounceRef.current)
+  }, [items, cliente, cond, aplicaItbisGlobal, porcentajeItbis, descuentoPct, descuentoMonto, numeroDocumento])
 
   // ─── Generar PDF ─────────────────────────────────────────────────────────
   const [generando, setGenerando] = useState(false)
@@ -163,17 +329,27 @@ export default function CotizadorManualPro() {
               Cotizador Manual Pro
             </h1>
             <p className="text-xs text-slate-500 mt-1 tracking-wide">
-              Editor libre · Sin stock rígido · PDF on-demand · Cyber-Industrial
+              Editor libre · Sin stock rígido · PDF on-demand · Auto-guardado
             </p>
           </div>
-          <div className="flex items-center gap-2">
-            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">N° doc:</label>
-            <input
-              value={numeroDocumento}
-              onChange={(e) => setNumeroDocumento(e.target.value)}
-              className={INPUT + ' w-44'}
-              placeholder="COT-XXXXXX"
-            />
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              onClick={cargarPlantillaCctv}
+              title="Inyectar listado completo: 36 cámaras + 2 NVRs + discos + switches + bobinas + servicio técnico"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-300 text-xs font-bold transition-colors">
+              <Boxes size={13} />
+              Cargar Plantilla Base CCTV (36 Cámaras)
+            </button>
+            <div className="flex items-center gap-2">
+              <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">N° doc:</label>
+              <input
+                value={numeroDocumento}
+                onChange={(e) => setNumeroDocumento(e.target.value)}
+                className={INPUT + ' w-44'}
+                placeholder="COT-XXXXXX"
+              />
+            </div>
+            <SaveStatusBadge status={saveStatus} lastSavedAt={lastSavedAt} />
           </div>
         </header>
 
@@ -435,13 +611,7 @@ export default function CotizadorManualPro() {
           {/* Reset button — restaura los defaults iniciales (útil tras tocar mucho). */}
           <div className="flex justify-end mt-3">
             <button
-              onClick={() => resetCond({
-                validez:  { incluir: true,  texto: 'Esta cotización es válida por 15 días calendarios.' },
-                pago:     { incluir: true,  texto: '50% anticipo + 50% contra entrega.' },
-                entrega:  { incluir: true,  texto: 'Entrega e instalación en 5-7 días laborables tras confirmación.' },
-                garantia: { incluir: true,  texto: '12 meses contra defectos de fábrica para equipos. Mano de obra: 90 días.' },
-                notas:    { incluir: false, texto: '' },
-              })}
+              onClick={() => resetCond(CONDICIONES_DEFAULT)}
               className="text-[10px] text-slate-500 hover:text-slate-300 transition-colors uppercase tracking-wider">
               Restaurar defaults
             </button>

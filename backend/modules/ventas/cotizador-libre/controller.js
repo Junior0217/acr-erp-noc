@@ -8,7 +8,11 @@
  */
 
 const { z } = require('zod');
-const { cotizadorLibreSchema } = require('./schema');
+const {
+  cotizadorLibreSchema,
+  draftPayloadSchema,
+  numeroParamSchema,
+} = require('./schema');
 const { CotizadorLibreError }  = require('./service');
 
 function _wrap(fn) {
@@ -53,7 +57,41 @@ function createCotizadorLibreController({ service, auditReq }) {
     res.end(buffer);
   });
 
-  return { postPdf };
+  // ─── Drafts CRUD ──────────────────────────────────────────────────────────
+  const listDrafts = _wrap(async (req, res) => {
+    const empleadoId = Number(req.user?.sub);
+    const limit      = req.query?.limit;
+    const out = await service.listDrafts(empleadoId, { limit });
+    res.json(out);
+  });
+
+  const getDraft = _wrap(async (req, res) => {
+    const empleadoId = Number(req.user?.sub);
+    const numero     = numeroParamSchema.parse(req.params.numero);
+    const draft      = await service.getDraft(empleadoId, numero);
+    res.json(draft);
+  });
+
+  const upsertDraft = _wrap(async (req, res) => {
+    const empleadoId = Number(req.user?.sub);
+    const dto        = draftPayloadSchema.parse(req.body ?? {});
+    const saved      = await service.upsertDraft(empleadoId, dto);
+    auditReq('cotizador_libre:draft_upsert', req, {
+      numeroDocumento: saved.numeroDocumento,
+      items:           Array.isArray(saved.items) ? saved.items.length : null,
+    });
+    res.json({ ok: true, id: saved.id, updatedAt: saved.updatedAt });
+  });
+
+  const deleteDraft = _wrap(async (req, res) => {
+    const empleadoId = Number(req.user?.sub);
+    const numero     = numeroParamSchema.parse(req.params.numero);
+    const out        = await service.deleteDraft(empleadoId, numero);
+    auditReq('cotizador_libre:draft_delete', req, { numeroDocumento: numero, deleted: out.deleted });
+    res.json(out);
+  });
+
+  return { postPdf, listDrafts, getDraft, upsertDraft, deleteDraft };
 }
 
 module.exports = createCotizadorLibreController;
