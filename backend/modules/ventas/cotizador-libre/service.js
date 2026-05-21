@@ -426,8 +426,14 @@ function createCotizadorLibreService(deps) {
   // ─── Sheet de anexo fotográfico — solo body. Header/footer Puppeteer. ─
   function _renderAnexoSheet({ tilesHtml, numero, fechaIso, totalFotos, paginaNum, paginasTotales }) {
     const fechaCortaStr = fechaCorta(fechaIso);
+    // Title-bar del anexo solo en página 1 (paginaNum===1). Páginas
+    // siguientes (2/N) saltan el title-bar y muestran solo el grid de fotos
+    // — no es la "primera vez" para el lector y reduce ruido. El footer
+    // Puppeteer ya muestra "Página N/M" en cada hoja, no duplicamos aquí.
+    const mostrarTitleBar = paginaNum === 1;
     return `
 <section class="anexo-sheet">
+  ${mostrarTitleBar ? `
   <div class="title-bar">
     <div class="doc-type">
       Anexo Técnico
@@ -437,12 +443,11 @@ function createCotizadorLibreService(deps) {
       <div class="num mono">${_esc(numero)}</div>
       <div style="margin-top:6px; font-size:9px; opacity:0.85;">
         ${totalFotos} imagen${totalFotos === 1 ? '' : 'es'} · ${_esc(fechaCortaStr)}
-        ${paginasTotales > 1 ? ` · Página ${paginaNum}/${paginasTotales}` : ''}
       </div>
     </div>
-  </div>
+  </div>` : ''}
   <main class="anexo-body">
-    <div class="section-label">Capturas de campo</div>
+    ${mostrarTitleBar ? '<div class="section-label">Capturas de campo</div>' : ''}
     <div class="anexo-grid">${tilesHtml}</div>
   </main>
 </section>`;
@@ -452,9 +457,13 @@ function createCotizadorLibreService(deps) {
   // inyecta dentro del <style>...</style> existente vía replace al final.
   const _ANEXO_CSS = `
 /* ── Anexo fotográfico (cotizador libre) ───────────────────────────────── */
+/* Grid 2x2 con cards aspect 4:3 garantiza que 4 fotos quepan en una hoja
+   Letter con margin 48mm top + 38mm bottom + 36px lateral. Verticales:
+   - 2 cards × (66mm img + 22mm caption) + 1 gap 12mm = 188mm
+   - Espacio disponible: 193mm — quedan 5mm de aire al final. */
 .anexo-grid {
   display: grid; grid-template-columns: 1fr 1fr;
-  gap: 14px 10px; margin-top: 6px;
+  gap: 12px 12px; margin-top: 6px;
 }
 .foto-card {
   border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden;
@@ -464,15 +473,16 @@ function createCotizadorLibreService(deps) {
   width: 100%; aspect-ratio: 4 / 3;
   background: #0f172a;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
+  max-height: 66mm;
 }
 .foto-card .foto-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.foto-card figcaption { padding: 7px 10px 8px; font-size: 9px; color: #334155; line-height: 1.4; }
-.foto-meta { font-size: 8px; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px; font-weight: 700; }
+.foto-card figcaption { padding: 6px 9px 7px; font-size: 8.5px; color: #334155; line-height: 1.35; max-height: 22mm; overflow: hidden; }
+.foto-meta { font-size: 7.5px; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 2px; font-weight: 700; }
 .foto-meta strong { color: #1e40af; }
-.foto-desc { color: #475569; margin-bottom: 4px; font-size: 9px; }
-.foto-lugar { color: #0f172a; font-size: 9px; }
-.foto-lugar .lbl { color: #64748b; font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 4px; font-weight: 700; }
-.foto-nombre { color: #94a3b8; font-size: 8.5px; margin-top: 2px; font-style: italic; }
+.foto-desc { color: #475569; margin-bottom: 3px; font-size: 8.5px; line-height: 1.3; }
+.foto-lugar { color: #0f172a; font-size: 8.5px; line-height: 1.3; }
+.foto-lugar .lbl { color: #64748b; font-size: 7px; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 3px; font-weight: 700; }
+.foto-nombre { color: #94a3b8; font-size: 7.5px; margin-top: 1px; font-style: italic; }
 `;
 
   function _renderAnexoFotos({ lineas, numero, fechaIso }) {
@@ -496,9 +506,12 @@ function createCotizadorLibreService(deps) {
 
     if (tiles.length === 0) return { anexoHtml: '', anexoCss: '' };
 
-    // Paginación: 6 fotos por sheet (3 filas × 2 cols) para mantener buena
-    // densidad visual sin overflow. Si hay 7+, generamos múltiples sheets.
-    const FOTOS_X_PAGINA = 6;
+    // Paginación: 4 fotos por sheet (2 filas × 2 cols). Cálculo:
+    //   Letter útil ≈ 184mm ancho × 193mm alto (entre header 48mm + footer
+    //   38mm). Card aspect 4:3 = 88mm × 66mm imagen + 22mm caption = 88mm.
+    //   2 filas × 88mm + 1 × 12mm gap = 188mm — cabe en 193mm con margen.
+    // ANTES eran 6 (overflow). 4 garantiza que SIEMPRE quepan en 1 página.
+    const FOTOS_X_PAGINA = 4;
     const paginas = [];
     for (let i = 0; i < tiles.length; i += FOTOS_X_PAGINA) {
       paginas.push(tiles.slice(i, i + FOTOS_X_PAGINA));
@@ -651,10 +664,15 @@ function createCotizadorLibreService(deps) {
     // maneja @page margin + Puppeteer headerTemplate/footerTemplate).
     html = html.replace(/<style[^>]*>/, (m) => `${m}
 .sheet { position: static !important; overflow: visible !important; min-height: 0 !important; padding: 0 !important; width: 100% !important; }
-.body { padding: 4mm 16mm 4mm !important; }
-/* page-break helpers — cada sub-sección del cotizador libre inicia en su propia hoja */
-.portada-sheet { page-break-before: avoid; break-before: auto; page-break-after: always; break-after: page; padding: 0 16mm; }
-.anexo-sheet   { page-break-before: always; break-before: page; padding: 0 16mm; }
+/* Body padding lateral IGUAL al template oficial (36px). Mantiene paridad
+   visual exacta con cotizaciones estándar — mismo ancho del title-bar, del
+   client-grid y de la items table. Sin padding vertical (lo maneja @page). */
+.body { padding: 0 36px 12px !important; }
+/* Sub-secciones del cotizador libre usan el MISMO padding lateral 36px que
+   el template oficial. Title-bar dentro de portada/anexo queda alineado. */
+.portada-sheet, .anexo-sheet { padding: 0 36px; }
+.portada-sheet { page-break-before: avoid; break-before: auto; page-break-after: always; break-after: page; }
+.anexo-sheet   { page-break-before: always; break-before: page; }
 `);
 
     // 3) Inyectar CSS extra (portada + sobre-empresa + resumen + watermark).

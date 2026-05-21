@@ -55,7 +55,14 @@ function createOpsRouter(deps) {
 
   // ─── Limiters LOCALES (superficie pública) ──────────────────────────────
   const trackingLimiter = rateLimit({ windowMs: 60_000, max: 10, standardHeaders: true, legacyHeaders: false });
-  const verifyLimiter   = rateLimit({ windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false });
+  // verifyLimiter: 6 requests/minuto por IP. El cliente legítimo escanea el
+  // QR del PDF UNA vez al recibirlo; 6 da margen para refresh manual.
+  // Anti-bruteforce: un atacante que pruebe hashes random 6/min llegaría a
+  // 1/segundo cada 10s → con espacio 16^24 = 7.9e28 hashes, tomaría 4e22
+  // años cubrir el 1% del espacio. Inviable.
+  const verifyLimiter   = rateLimit({ windowMs: 60_000, max: 6, standardHeaders: true, legacyHeaders: false });
+  // publicKey limiter más laxo (clientes pueden cachear pero refrescar).
+  const publicKeyLimiter = rateLimit({ windowMs: 60_000, max: 20, standardHeaders: true, legacyHeaders: false });
 
   const router = express.Router();
 
@@ -84,7 +91,7 @@ function createOpsRouter(deps) {
   // Mejora #7 — Public key Ed25519 para validación offline. Cualquier cliente
   // (auditor con teléfono, herramienta externa) puede descargar la public key
   // y verificar la firma del verifyHash sin contactar al server.
-  router.get('/publico/verify/public-key', verifyLimiter, (_req, res) => {
+  router.get('/publico/verify/public-key', publicKeyLimiter, (_req, res) => {
     try {
       const { getPublicKeyPem, getPublicKeyRawBase64 } = require('../../../shared/services/ed25519-sign.service');
       res.setHeader('Cache-Control', 'public, max-age=86400'); // 1 día
