@@ -344,7 +344,14 @@ async function generarPdfDocumento(html, opts = {}) {
       margin: opts.margin ?? { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
       landscape:         opts.landscape ?? false,
       scale:             opts.scale ?? 1,
-      displayHeaderFooter: false,
+      // Permite que módulos pasen header/footer templates HTML que se renderizan
+      // en CADA página del PDF (no flotantes — Puppeteer los inserta dentro del
+      // margin top/bottom del @page). Es el approach correcto para garantizar
+      // que header (logo+empresa) y footer (QR+verify) NUNCA se solapen con
+      // contenido en documentos multi-página.
+      displayHeaderFooter: opts.displayHeaderFooter === true,
+      headerTemplate:      typeof opts.headerTemplate === 'string' ? opts.headerTemplate : '',
+      footerTemplate:      typeof opts.footerTemplate === 'string' ? opts.footerTemplate : '',
     })
     return Buffer.from(pdf)
   } finally {

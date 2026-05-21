@@ -133,10 +133,16 @@ function createCotizadorLibreController({ service, auditReq }) {
       { requesterId, isGlobal, targetEmpleadoId },
       numero,
     );
+    const crossUser = !!(isGlobal && targetEmpleadoId && targetEmpleadoId !== requesterId);
     auditReq('cotizador_libre:draft_delete', req, {
-      numeroDocumento: numero,
-      deleted: out.deleted,
-      crossUser: !!(isGlobal && targetEmpleadoId && targetEmpleadoId !== requesterId),
+      numeroDocumento:  numero,
+      deleted:          out.deleted,
+      actorRequesterId: requesterId,
+      targetEmpleadoId: targetEmpleadoId ?? requesterId,
+      crossUser,
+      // severity high cuando un global borra el draft de otro técnico —
+      // queryable desde AuditLog dashboard para alertar.
+      severity:         crossUser ? 'high' : 'normal',
     });
     res.json(out);
   });

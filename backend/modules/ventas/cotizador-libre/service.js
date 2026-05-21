@@ -225,35 +225,18 @@ function createCotizadorLibreService(deps) {
       </table>`;
   }
 
-  function _renderPortadaSheet({ portada, empresa, numero, cliente, fechaIso, qrDataUri, verifyUrl }) {
+  // ─── Portada (carta de presentación) — solo contenido, sin header/footer
+  // (esos se inyectan por Puppeteer en cada página). page-break-after: always
+  // garantiza que la portada sea su propia página, separada del documento. ──
+  function _renderPortadaSheet({ portada, empresa, numero, cliente, fechaIso }) {
     if (!portada?.activa || !(portada.texto ?? '').trim()) return '';
     const repFull = [empresa.representanteNombre, empresa.representanteApellido].filter(Boolean).join(' ').trim();
-    const corpRows = [
-      empresa.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${_esc(empresa.rnc)}</span></div>` : '',
-      empresa.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${_esc(empresa.telefono)}</span></div>` : '',
-      empresa.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${_esc(empresa.email)}</span></div>` : '',
-      empresa.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${_esc(empresa.website)}</span></div>` : '',
-    ].filter(Boolean).join('');
-    const assets = empresa.assets ?? {};
     const fechaStr = fechaCorta(fechaIso);
-    // Convertir saltos de línea del texto editable a <p>, escapando HTML.
     const textoHtml = String(portada.texto).split(/\n{2,}/).map(parr =>
       `<p>${_esc(parr).replace(/\n/g, '<br/>')}</p>`
     ).join('');
     return `
-<div class="sheet portada-sheet">
-  <div class="band"></div>
-  <header class="header">
-    <div class="brand">
-      ${assets.logoClaro ? `<div class="logo"><img src="${_esc(assets.logoClaro)}" alt=""/></div>` : ''}
-      <div class="brand-info">
-        <div class="razon">${_esc(empresa.razonSocial ?? '—')}</div>
-        ${empresa.nombreComercial ? `<div class="nombre-comercial">${_esc(empresa.nombreComercial)}</div>` : ''}
-        ${empresa.eslogan ? `<div class="eslogan">${_esc(empresa.eslogan)}</div>` : ''}
-      </div>
-    </div>
-    <div class="corp-meta">${corpRows}</div>
-  </header>
+<section class="portada-sheet" style="page-break-after: always; break-after: page; padding: 0 16mm;">
   <div class="title-bar">
     <div class="doc-type">Carta de Presentación<span class="sub">Propuesta Comercial</span></div>
     <div class="doc-meta">
@@ -261,7 +244,7 @@ function createCotizadorLibreService(deps) {
       <div style="margin-top:6px; font-size:9px; opacity:0.85;">${_esc(fechaStr)}</div>
     </div>
   </div>
-  <main class="body portada-body">
+  <main class="portada-body">
     <div class="section-label">Estimado(a)</div>
     <div class="portada-cliente">
       <div class="razon-cli">${_esc(cliente?.razonSocial ?? '—')}</div>
@@ -274,24 +257,7 @@ function createCotizadorLibreService(deps) {
       <div class="firma-empresa">${_esc(empresa.razonSocial ?? '—')}</div>
     </div>
   </main>
-  <footer class="footer">
-    <div class="qr-block">
-      ${verifyUrl
-        ? `<a class="qr-anchor" href="${_esc(verifyUrl)}"><img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/></a>`
-        : `<img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/>`}
-      <div class="qr-text">
-        <div class="qr-ttl">Verificación Anti-Fraude</div>
-        <div>Escanea el QR o toca la URL para validar.</div>
-        ${verifyUrl ? `<div class="qr-url"><a href="${_esc(verifyUrl)}" style="text-decoration:none;color:inherit;">${_esc(verifyUrl)}</a></div>` : ''}
-      </div>
-    </div>
-    <div class="ctr">
-      <div>Documento Electrónico Verificable</div>
-      <div class="verify-line">${_esc(empresa.razonSocial ?? '')}${empresa.rnc ? ` · RNC ${_esc(empresa.rnc)}` : ''}</div>
-    </div>
-    <div class="right mono">${_esc(fechaStr)}</div>
-  </footer>
-</div>`;
+</section>`;
   }
 
   function _renderSobreEmpresa({ sobreEmpresa }) {
@@ -302,6 +268,64 @@ function createCotizadorLibreService(deps) {
     return `
       <div class="section-label" style="margin-top:14px;">Sobre nosotros</div>
       <div class="sobre-empresa-box">${textoHtml}</div>`;
+  }
+
+  // ─── Header/Footer templates de Puppeteer (multi-page, sin overlap) ──────
+  // Puppeteer los renderiza DENTRO del margin top/bottom de @page. NO usan
+  // CSS externo — todo inline styles. Disponibles: <span class="pageNumber">
+  // y <span class="totalPages"> sustituidos por Puppeteer en runtime.
+  function _buildHeaderTemplate({ empresa }) {
+    const assets = empresa.assets ?? {};
+    const corpRows = [];
+    if (empresa.rnc)      corpRows.push(`<div><span style="color:#94a3b8; font-size:8px; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-right:3mm;">RNC</span><span style="color:#0f172a; font-weight:600;">${_esc(empresa.rnc)}</span></div>`);
+    if (empresa.telefono) corpRows.push(`<div><span style="color:#94a3b8; font-size:8px; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-right:3mm;">Tel</span><span style="color:#0f172a; font-weight:600;">${_esc(empresa.telefono)}</span></div>`);
+    if (empresa.email)    corpRows.push(`<div><span style="color:#94a3b8; font-size:8px; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-right:3mm;">Email</span><span style="color:#0f172a; font-weight:600;">${_esc(empresa.email)}</span></div>`);
+    if (empresa.website)  corpRows.push(`<div><span style="color:#94a3b8; font-size:8px; text-transform:uppercase; letter-spacing:0.08em; font-weight:700; margin-right:3mm;">Web</span><span style="color:#0f172a; font-weight:600;">${_esc(empresa.website)}</span></div>`);
+
+    return `
+<div style="-webkit-print-color-adjust:exact; print-color-adjust:exact; width:100%; font-family:'Helvetica Neue',Arial,sans-serif; font-size:9.5px; color:#475569; box-sizing:border-box; padding:0;">
+  <div style="height:3px; background:#cbd5e1; width:100%;"></div>
+  <div style="padding:5mm 16mm 3mm; display:flex; align-items:center; justify-content:space-between; gap:10mm; border-bottom:1px solid #e2e8f0;">
+    <div style="display:flex; align-items:center; gap:4mm;">
+      ${assets.logoClaro ? `<img src="${_esc(assets.logoClaro)}" style="width:16mm; height:16mm; object-fit:contain; flex-shrink:0;"/>` : ''}
+      <div>
+        <div style="font-size:13.5px; font-weight:800; color:#0f172a; letter-spacing:-0.005em; line-height:1.15;">${_esc(empresa.razonSocial ?? '—')}</div>
+        ${empresa.nombreComercial ? `<div style="font-size:9px; color:#1e40af; font-weight:600; margin-top:1px; text-transform:uppercase; letter-spacing:0.02em;">${_esc(empresa.nombreComercial)}</div>` : ''}
+        ${empresa.eslogan ? `<div style="font-size:8.5px; color:#64748b; font-style:italic; margin-top:1.5px; max-width:90mm;">${_esc(empresa.eslogan)}</div>` : ''}
+      </div>
+    </div>
+    <div style="text-align:right; line-height:1.5; color:#475569; font-size:9px;">
+      ${corpRows.join('')}
+    </div>
+  </div>
+</div>`;
+  }
+
+  function _buildFooterTemplate({ empresa, qrDataUri, verifyUrl }) {
+    const websiteHref = empresa.website
+      ? (String(empresa.website).startsWith('http') ? empresa.website : 'https://' + empresa.website)
+      : null;
+    const urlMostrar = verifyUrl || websiteHref || '';
+    return `
+<div style="-webkit-print-color-adjust:exact; print-color-adjust:exact; width:100%; font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5px; color:#94a3b8; box-sizing:border-box;">
+  <div style="padding:3mm 16mm 4mm; display:flex; align-items:flex-start; justify-content:space-between; gap:8mm; border-top:1px solid #e2e8f0;">
+    <div style="display:flex; align-items:flex-start; gap:3mm; flex:1; min-width:0;">
+      ${qrDataUri ? `<img src="${_esc(qrDataUri)}" style="width:16mm; height:16mm; border:1px solid #cbd5e1; padding:0.5mm; background:white; border-radius:1mm; flex-shrink:0;"/>` : ''}
+      <div style="min-width:0; max-width:80mm;">
+        <div style="font-weight:800; text-transform:uppercase; letter-spacing:0.08em; color:#0f172a; font-size:8.5px;">Verificación Anti-Fraude</div>
+        <div style="color:#475569; font-size:8px; margin-top:0.5mm;">Escanea el QR o copia la URL.</div>
+        ${urlMostrar ? `<div style="font-family:'SF Mono','Consolas',monospace; color:#1e40af; font-size:8px; margin-top:0.5mm; word-wrap:break-word; overflow-wrap:break-word; word-break:break-all;">${_esc(urlMostrar)}</div>` : ''}
+      </div>
+    </div>
+    <div style="text-align:center; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; font-size:8px; flex-shrink:0; padding:0 4mm;">
+      <div>Documento Electrónico Verificable</div>
+      <div style="font-weight:500; text-transform:none; letter-spacing:0; color:#64748b; font-size:7.5px; margin-top:0.5mm;">${_esc(empresa.razonSocial ?? '')}${empresa.rnc ? ` · RNC ${_esc(empresa.rnc)}` : ''}</div>
+    </div>
+    <div style="text-align:right; font-family:'SF Mono','Consolas',monospace; color:#94a3b8; font-size:8px; flex-shrink:0;">
+      Página <span class="pageNumber"></span> / <span class="totalPages"></span>
+    </div>
+  </div>
+</div>`;
   }
 
   function _renderEstadoBadge(estado) {
@@ -319,14 +343,11 @@ function createCotizadorLibreService(deps) {
 
   const _EXTRA_CSS = `
 /* ── Cotizador libre — bloques extra (portada, sobre-empresa, resumen) ─── */
-/* CRITICO: el footer del template oficial es position:absolute bottom:0,
-   por lo que NO empuja el contenido del body, flota encima. Cualquier .body
-   con contenido extenso (anexo de fotos, portada larga) debe tener
-   padding-bottom suficiente para no quedar solapado por el footer. Altura
-   del footer ~90px (qr 64 + padding 8+12 + texto). Reservamos 120-140px. */
-.portada-sheet .portada-body { padding: 36px 50px 140px; }
-.cotizador-libre-body        { padding-bottom: 130px !important; }
-.anexo > main.body           { padding-bottom: 140px !important; }
+/* Header/footer ya no son inline en el HTML — Puppeteer los renderiza vía
+   displayHeaderFooter + headerTemplate/footerTemplate en CADA página dentro
+   del margin top/bottom. Body queda libre de overlap garantizado. Removidos
+   los paddings agresivos del approach anterior. */
+.portada-sheet .portada-body { padding: 14px 16mm 14px; }
 .portada-cliente { margin-top: 6px; }
 .portada-cliente .razon-cli { font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.005em; }
 .portada-cliente .contacto-cli { font-size: 11px; color: #475569; margin-top: 2px; }
@@ -348,25 +369,39 @@ function createCotizadorLibreService(deps) {
 .items.resumen-exec { margin-top: 4px; }
 .items.resumen-exec tbody td { font-size: 10px; }
 
-/* ── Watermark BORRADOR (cuando estado='Borrador') ─────────────────────── */
-/* Reemplaza el watermark suave "Cotización" del template oficial por uno  */
-/* más visible en ámbar para señalar al cliente que NO es oferta final.    */
-.watermark.borrador-libre {
-  color: #f59e0b !important;
-  opacity: 0.13 !important;
-  font-size: 130px !important;
+/* ── Watermarks de cotización libre ──────────────────────────────────────
+   Doble capa: COTIZACIÓN base (azul tenue, siempre presente) + estado
+   encima (ámbar/verde/rojo según Borrador/Convertida/Perdida).
+   position:fixed garantiza repetición en cada página del PDF (Puppeteer
+   con @media print honra fixed elements multi-page). */
+.watermark.cotizacion {
+  position: fixed !important;
+  top: 35% !important;
+  left: 50% !important;
+  transform: translate(-50%, -50%) rotate(-20deg) !important;
+  font-size: 110px !important;
+  font-weight: 900 !important;
+  color: #1e40af !important;
+  opacity: 0.06 !important;
+  letter-spacing: 0.1em !important;
+  text-transform: uppercase !important;
+  pointer-events: none !important;
+  z-index: 5 !important;
+}
+.watermark.cotizador-estado {
+  position: fixed;
+  top: 55%; left: 50%;
+  transform: translate(-50%, -50%) rotate(-15deg);
+  font-size: 95px;
+  font-weight: 900;
   letter-spacing: 0.1em;
+  text-transform: uppercase;
+  pointer-events: none;
+  z-index: 6;
 }
-.watermark.convertida-libre {
-  color: #16a34a !important;
-  opacity: 0.10 !important;
-  font-size: 130px !important;
-}
-.watermark.perdida-libre {
-  color: #dc2626 !important;
-  opacity: 0.10 !important;
-  font-size: 130px !important;
-}
+.watermark.cotizador-estado.borrador   { color: #f59e0b; opacity: 0.14; }
+.watermark.cotizador-estado.convertida { color: #16a34a; opacity: 0.12; }
+.watermark.cotizador-estado.perdida    { color: #dc2626; opacity: 0.12; }
 `;
 
   // ─── Inyección de fila Descuento en la sección de totales ─────────────────
@@ -388,33 +423,11 @@ function createCotizadorLibreService(deps) {
   // del template oficial. Reusa las clases CSS ya inyectadas en el <head> por
   // renderDocumento, así que la apariencia es 100% consistente sin duplicar
   // CSS. `page-break-before: always` fuerza salto de página limpio.
-  function _renderAnexoSheet({ tilesHtml, empresa, numero, fechaIso, qrDataUri, verifyUrl, totalFotos, paginaNum, paginasTotales }) {
-    const repFull = [empresa.representanteNombre, empresa.representanteApellido].filter(Boolean).join(' ').trim();
-    const corpRows = [
-      empresa.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${_esc(empresa.rnc)}</span></div>` : '',
-      empresa.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${_esc(empresa.telefono)}</span></div>` : '',
-      empresa.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${_esc(empresa.email)}</span></div>` : '',
-      empresa.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${_esc(empresa.website)}</span></div>` : '',
-    ].filter(Boolean).join('');
-    const assets = empresa.assets ?? {};
+  // ─── Sheet de anexo fotográfico — solo body. Header/footer Puppeteer. ─
+  function _renderAnexoSheet({ tilesHtml, numero, fechaIso, totalFotos, paginaNum, paginasTotales }) {
     const fechaCortaStr = fechaCorta(fechaIso);
-
     return `
-<div class="sheet" style="page-break-before: always;">
-  <div class="band"></div>
-
-  <header class="header">
-    <div class="brand">
-      ${assets.logoClaro ? `<div class="logo"><img src="${_esc(assets.logoClaro)}" alt=""/></div>` : ''}
-      <div class="brand-info">
-        <div class="razon">${_esc(empresa.razonSocial ?? '—')}</div>
-        ${empresa.nombreComercial ? `<div class="nombre-comercial">${_esc(empresa.nombreComercial)}</div>` : ''}
-        ${empresa.eslogan ? `<div class="eslogan">${_esc(empresa.eslogan)}</div>` : ''}
-      </div>
-    </div>
-    <div class="corp-meta">${corpRows}</div>
-  </header>
-
+<section style="page-break-before: always; break-before: page; padding: 0 16mm;">
   <div class="title-bar">
     <div class="doc-type">
       Anexo Técnico
@@ -428,32 +441,11 @@ function createCotizadorLibreService(deps) {
       </div>
     </div>
   </div>
-
-  <main class="body">
+  <main class="anexo-body">
     <div class="section-label">Capturas de campo</div>
     <div class="anexo-grid">${tilesHtml}</div>
   </main>
-
-  <footer class="footer">
-    <div class="qr-block">
-      ${verifyUrl
-        ? `<a class="qr-anchor" href="${_esc(verifyUrl)}"><img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/></a>`
-        : `<img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/>`}
-      <div class="qr-text">
-        <div class="qr-ttl">Verificación Anti-Fraude</div>
-        <div>Escanea el QR o toca la URL para validar.</div>
-        ${verifyUrl
-          ? `<div class="qr-url" title="${_esc(verifyUrl)}"><a href="${_esc(verifyUrl)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${_esc(verifyUrl)}</a></div>`
-          : (empresa.website ? `<div class="qr-url" title="${_esc(empresa.website)}"><a href="${_esc(empresa.website.startsWith('http') ? empresa.website : 'https://' + empresa.website)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${_esc(empresa.website)}</a></div>` : '')}
-      </div>
-    </div>
-    <div class="ctr">
-      <div>Documento Electrónico Verificable</div>
-      <div class="verify-line">${_esc(empresa.razonSocial ?? '')}${empresa.rnc ? ` · RNC ${_esc(empresa.rnc)}` : ''}</div>
-    </div>
-    <div class="right mono">${_esc(fechaCortaStr)}</div>
-  </footer>
-</div>`;
+</section>`;
   }
 
   // CSS extra que el template oficial NO trae (grid de fotos, foto-card). Se
@@ -483,7 +475,7 @@ function createCotizadorLibreService(deps) {
 .foto-nombre { color: #94a3b8; font-size: 8.5px; margin-top: 2px; font-style: italic; }
 `;
 
-  function _renderAnexoFotos({ lineas, empresa, numero, fechaIso, qrDataUri, verifyUrl }) {
+  function _renderAnexoFotos({ lineas, numero, fechaIso }) {
     // Aplanar: cada foto se renderiza con metadatos contextuales del ítem padre.
     const tiles = [];
     lineas.forEach((l, i) => {
@@ -526,11 +518,8 @@ function createCotizadorLibreService(deps) {
 
     const anexoHtml = paginas.map((pag, idx) => _renderAnexoSheet({
       tilesHtml:       pag.map(renderTile).join(''),
-      empresa,
       numero,
       fechaIso,
-      qrDataUri,
-      verifyUrl,
       totalFotos:      tiles.length,
       paginaNum:       idx + 1,
       paginasTotales:  paginas.length,
@@ -638,13 +627,25 @@ function createCotizadorLibreService(deps) {
     // 1) Render del documento oficial.
     let html = renderDocumento(opts);
 
-    // 2) Inyectar CSS extra (portada + sobre-empresa + resumen) en <style>.
+    // 2) STRIP del inline header / footer / band del template oficial.
+    //    Los reemplazamos por headerTemplate/footerTemplate de Puppeteer que
+    //    Puppeteer inserta dentro del margin top/bottom de CADA página.
+    //    Garantía: header y footer SIEMPRE aparecen en todas las páginas y
+    //    NUNCA se solapan con contenido (Puppeteer reserva el espacio).
+    html = html.replace(/<div class="band"><\/div>\s*/g, '');
+    html = html.replace(/<header class="header">[\s\S]*?<\/header>\s*/g, '');
+    html = html.replace(/<footer class="footer">[\s\S]*?<\/footer>\s*/g, '');
+    // Sheet ya no necesita overflow:hidden ni position:relative para anclar
+    // footer absolute. Sobre-escribimos para liberar el flow natural.
+    html = html.replace(/<style[^>]*>/, (m) => `${m}\n.sheet { position: static !important; overflow: visible !important; min-height: auto !important; padding: 0 !important; }\n.body { padding: 0 16mm !important; }\n`);
+
+    // 3) Inyectar CSS extra (portada + sobre-empresa + resumen + watermark).
     html = html.replace(/<\/style>/, `${_EXTRA_CSS}</style>`);
 
-    // 3) Inyectar fila Descuento si aplica.
+    // 4) Inyectar fila Descuento si aplica.
     html = _injectarDescuentoEnTotales(html, totales.descuento);
 
-    // 4) Estado badge en title-bar + watermark diagonal cuando aplique.
+    // 5) Estado badge en title-bar + watermark capas (Cotización + estado).
     const estado = dto.estado ?? 'Borrador';
     const badgeHtml = _renderEstadoBadge(estado);
     if (badgeHtml) {
@@ -654,32 +655,35 @@ function createCotizadorLibreService(deps) {
       );
     }
 
-    // Watermark diagonal: reemplaza el "Cotización" suave del template oficial
-    // por el watermark del estado actual cuando sea distinto de Enviada/Aprobada.
-    const watermarkMap = {
-      'Borrador':   { label: 'BORRADOR',   cls: 'borrador-libre' },
-      'Convertida': { label: 'CONVERTIDA', cls: 'convertida-libre' },
-      'Perdida':    { label: 'PERDIDA',    cls: 'perdida-libre' },
+    // Watermark "COTIZACIÓN" del template oficial SIEMPRE permanece (capa
+    // base). Cuando estado ∈ {Borrador, Convertida, Perdida}, AÑADIMOS otro
+    // watermark encima con el estado y color distintivo. Para Enviada y
+    // Aprobada solo queda el "Cotización" base.
+    const wmEstadoMap = {
+      'Borrador':   { label: 'BORRADOR',   cls: 'borrador' },
+      'Convertida': { label: 'CONVERTIDA', cls: 'convertida' },
+      'Perdida':    { label: 'PERDIDA',    cls: 'perdida' },
     };
-    const wmInfo = watermarkMap[estado];
-    if (wmInfo) {
+    const wmEstado = wmEstadoMap[estado];
+    if (wmEstado) {
+      const wmHtml = `<div class="watermark cotizador-estado ${wmEstado.cls}">${wmEstado.label}</div>`;
+      // Insertar inmediatamente después del watermark cotizacion base.
       html = html.replace(
-        /<div class="watermark cotizacion">Cotización<\/div>/,
-        `<div class="watermark ${wmInfo.cls}">${wmInfo.label}</div>`,
+        /(<div class="watermark cotizacion">Cotización<\/div>)/,
+        `$1\n  ${wmHtml}`,
       );
     }
 
-    // 5) Sección "Sobre nosotros" entre cliente-grid y items table.
+    // 6) Sección "Sobre nosotros" entre cliente-grid y items table.
     const sobreHtml = _renderSobreEmpresa({ sobreEmpresa: dto.sobreEmpresa });
     if (sobreHtml) {
-      // Insertar antes de la section-label "Detalle de productos y servicios".
       html = html.replace(
         /(<div style="margin-top:16px;" class="section-label">Detalle de productos y servicios<\/div>)/,
         `${sobreHtml}\n        $1`,
       );
     }
 
-    // 6) Resumen ejecutivo por categoría (antes de items table).
+    // 7) Resumen ejecutivo por categoría (antes de items table).
     if (dto.mostrarResumen) {
       const resumenHtml = _renderResumenTable({ lineas: totales.lineas });
       html = html.replace(
@@ -688,25 +692,19 @@ function createCotizadorLibreService(deps) {
       );
     }
 
-    // 7) Portada (sheet completo ANTES del primer sheet del documento).
+    // 8) Portada (section completa ANTES del documento).
     const portadaHtml = _renderPortadaSheet({
-      portada: dto.portada, empresa, numero, cliente: dto.cliente, fechaIso, qrDataUri, verifyUrl,
+      portada: dto.portada, empresa, numero, cliente: dto.cliente, fechaIso,
     });
     if (portadaHtml) {
-      // Inyectar justo después de <body> y antes del primer <div class="sheet">.
-      // El primer sheet del template oficial tiene `page-break-before: auto`,
-      // así que la portada queda en página 1 y el documento en página 2+.
       html = html.replace(/(<body[^>]*>)/, `$1\n${portadaHtml}`);
     }
 
-    // 8) Inyectar anexo fotográfico al final + CSS del anexo.
+    // 9) Anexo fotográfico al final + CSS extra.
     const { anexoHtml, anexoCss } = _renderAnexoFotos({
       lineas:    totales.lineas,
-      empresa,
       numero,
       fechaIso,
-      qrDataUri,
-      verifyUrl,
     });
     if (anexoHtml) {
       html = html.replace(/<\/style>/, `${anexoCss}</style>`);
@@ -737,9 +735,29 @@ function createCotizadorLibreService(deps) {
     const qrPayload = `${PUBLIC_VERIFY_BASE}/verify/${hash}`;
     const qrDataUri = await _qrDataUri(qrPayload);
     const html      = await _renderHtml({ dto, totales, qrDataUri, fechaIso });
-    const buffer    = await generarPdfDocumento(html, {
+
+    // Empresa para header/footer template (fetch ya hecho dentro de _renderHtml
+    // — re-fetch aquí para evitar dependencia de cache. Falla → defaults).
+    let empresaTpl = null;
+    if (repo && typeof repo.findEmpresaPerfil === 'function') {
+      try { empresaTpl = await repo.findEmpresaPerfil(); } catch {}
+    }
+    const empresaFinal = empresaTpl
+      ? { ...empresaTpl, assets: typeof inlineAssets === 'function' ? await inlineAssets(empresaTpl.assets ?? {}) : (empresaTpl.assets ?? {}) }
+      : { razonSocial: dto.empresaNombre?.trim() || NOMBRE_EMPRESA_DEFAULT, rnc: null, telefono: null, email: null, website: dto.empresaWebsite?.trim() || WEBSITE_DEFAULT, eslogan: dto.empresaTagline?.trim() || TAGLINE_DEFAULT, assets: {} };
+
+    const headerTemplate = _buildHeaderTemplate({ empresa: empresaFinal });
+    const footerTemplate = _buildFooterTemplate({ empresa: empresaFinal, qrDataUri, verifyUrl: qrPayload });
+
+    const buffer = await generarPdfDocumento(html, {
       format: 'Letter',
-      margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
+      // margin top/bottom reservan el espacio donde Puppeteer renderizará
+      // header/footer template. Header ~30mm de alto, footer ~28mm.
+      // Damos un poco de buffer (38/32) para que nunca se corten.
+      margin: { top: '38mm', right: '0mm', bottom: '32mm', left: '0mm' },
+      displayHeaderFooter: true,
+      headerTemplate,
+      footerTemplate,
     });
     if (!buffer || !buffer.length) {
       throw new CotizadorLibreError(500, 'PDF_EMPTY', 'El render generó un PDF vacío.');
