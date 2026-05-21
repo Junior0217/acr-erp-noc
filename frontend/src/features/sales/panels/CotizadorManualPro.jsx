@@ -24,7 +24,7 @@
 import { useEffect, useMemo, useReducer, useRef, useState, useCallback } from 'react'
 import {
   Plus, Trash2, FileDown, Loader2, Building2, ShieldCheck, FileText, Save,
-  Boxes, Camera, X as XIcon, Users, MapPin, ChevronDown, ChevronUp, ImageOff,
+  Boxes, Camera, X as XIcon, Users, MapPin, ImageOff,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '@shared/utils/api'
@@ -854,15 +854,19 @@ export default function CotizadorManualPro() {
   )
 }
 
-// ─── Sub-componente ItemRow: línea con expand para lugar + fotos ───────────
-// Diseñado para que la fila base se vea compacta en mobile pero permita expandir
-// la zona de "detalles técnicos" (lugar de instalación + fotos comprimidas).
+// ─── Sub-componente ItemRow: línea Excel-style con panel multimedia visible ──
+// Ciclo 14: TODOS los campos editables son visibles sin clics secundarios.
+// Layout responsive:
+//   md+: una fila spreadsheet con índice + codigo + descripción + qty + precio
+//        + ITBIS + importe + 🗑, ancho fijo por columna para alineación tabla.
+//   <md: mismos inputs apilados en grid 2-col compacto, sin truncar nada.
+// El panel multimedia (lugar de instalación + fotos) siempre se renderiza
+// debajo como bloque secundario — no hay expand/collapse.
 function ItemRow({
   idx, linea, aplicaItbisGlobal,
   onUpdate, onDelete, onAttachPhotos, onDeletePhoto,
   disabled,
 }) {
-  const [expanded, setExpanded] = useState(() => (linea.fotos?.length > 0) || !!linea.lugarInstalacion)
   const fileInputRef = useRef(null)
 
   const onPickFiles = () => fileInputRef.current?.click()
@@ -877,151 +881,176 @@ function ItemRow({
   }
 
   const fotosCount = linea.fotos?.length ?? 0
-  const tieneLugar = !!(linea.lugarInstalacion ?? '').trim()
 
   return (
     <div className="bg-slate-800/30 border border-slate-800 rounded-lg overflow-hidden">
-      {/* Fila base — grid responsive */}
-      <div className="grid grid-cols-12 gap-2 items-center p-3">
-        <div className="col-span-1 text-slate-500 text-xs font-bold">{idx + 1}</div>
-        <div className="col-span-3 sm:col-span-2">
+      {/* ─── Fila Excel-style: todos los inputs siempre visibles ──────────── */}
+      {/* En md+ usa CSS Grid con anchos explícitos para verse como tabla; en */}
+      {/* mobile colapsa a 2 columnas apiladas sin perder ningún campo.       */}
+      <div className="p-3 grid gap-2 items-center md:gap-3
+                      grid-cols-[36px_1fr_1fr]
+                      md:grid-cols-[36px_140px_1fr_80px_120px_80px_120px_40px]">
+        {/* # */}
+        <div className="text-slate-500 text-xs font-bold text-center md:text-left">
+          {idx + 1}
+        </div>
+
+        {/* Código (mobile span 2; md una sola celda) */}
+        <div className="col-span-2 md:col-span-1">
+          <label className="md:hidden text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1 block">Código / Modelo</label>
           <input
-            value={linea.codigo}
+            value={linea.codigo ?? ''}
             onChange={(e) => onUpdate({ codigo: e.target.value })}
-            placeholder="Código"
+            placeholder="Código / modelo"
             className={INPUT + ' py-1.5 text-xs'}
           />
         </div>
-        <div className="col-span-8 sm:col-span-4">
+
+        {/* Descripción */}
+        <div className="col-span-3 md:col-span-1">
+          <label className="md:hidden text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1 block">Descripción Técnica</label>
           <input
-            value={linea.descripcion}
+            value={linea.descripcion ?? ''}
             onChange={(e) => onUpdate({ descripcion: e.target.value })}
-            placeholder="Descripción del ítem"
+            placeholder="Descripción del ítem (Cámara IP 4MP Dahua HFW1239T1...)"
             className={INPUT + ' py-1.5 text-xs'}
           />
         </div>
-        <div className="col-span-3 sm:col-span-1">
+
+        {/* Cantidad */}
+        <div className="col-span-1 md:col-span-1">
+          <label className="md:hidden text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1 block">Cant.</label>
           <input
             type="number" min="0" step="1"
-            value={linea.cantidad}
+            value={linea.cantidad ?? 0}
             onChange={(e) => onUpdate({ cantidad: e.target.value })}
+            placeholder="0"
             className={INPUT + ' py-1.5 text-xs text-center'}
           />
         </div>
-        <div className="col-span-4 sm:col-span-2">
+
+        {/* Precio Unitario */}
+        <div className="col-span-2 md:col-span-1">
+          <label className="md:hidden text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1 block">Precio Unit. RD$</label>
           <input
             type="number" min="0" step="0.01"
-            value={linea.precioUnit}
+            value={linea.precioUnit ?? 0}
             onChange={(e) => onUpdate({ precioUnit: e.target.value })}
+            placeholder="0.00"
             className={INPUT + ' py-1.5 text-xs text-right'}
           />
         </div>
-        <div className="col-span-3 sm:col-span-1 text-right text-slate-200 text-xs font-medium tabular-nums">
-          {fmtRD(linea.subtotal)}
-        </div>
-        <div className="col-span-2 sm:col-span-1 flex items-center justify-end gap-1">
+
+        {/* ITBIS checkbox */}
+        <div className="col-span-1 md:col-span-1 flex items-center justify-center">
           <label
-            className="cursor-pointer text-slate-400 hover:text-blue-400 transition-colors"
+            className="cursor-pointer flex items-center gap-1 text-slate-300 hover:text-blue-400 transition-colors"
             title={aplicaItbisGlobal ? 'Aplicar ITBIS a esta línea' : 'ITBIS global desactivado'}>
             <input
               type="checkbox"
               checked={!!linea.aplicaItbis}
               onChange={(e) => onUpdate({ aplicaItbis: e.target.checked })}
               disabled={!aplicaItbisGlobal}
-              className="w-3 h-3 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500/30 disabled:opacity-40 mr-1"
+              className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500/30 disabled:opacity-40"
             />
-            <span className="text-[9px] uppercase tracking-wider">ITBIS</span>
+            <span className="text-[10px] uppercase tracking-wider font-bold">ITBIS</span>
           </label>
-          <button
-            onClick={() => setExpanded((v) => !v)}
-            title={expanded ? 'Ocultar detalles' : 'Ver lugar de instalación y fotos'}
-            className={`p-1 rounded transition-colors ${(tieneLugar || fotosCount > 0) ? 'text-amber-300 hover:text-amber-200' : 'text-slate-500 hover:text-slate-200'}`}>
-            {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          </button>
+        </div>
+
+        {/* Importe calculado */}
+        <div className="col-span-2 md:col-span-1 text-right">
+          <div className="md:hidden text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1">Importe</div>
+          <div className="text-slate-100 text-sm font-bold tabular-nums">
+            RD$ {fmtRD(linea.subtotal)}
+          </div>
+        </div>
+
+        {/* Botón eliminar */}
+        <div className="col-span-1 flex justify-end">
           <button
             onClick={onDelete}
             disabled={disabled}
             title="Eliminar línea"
-            className="text-slate-500 hover:text-red-500 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
+            className="p-1.5 rounded text-slate-500 hover:text-red-500 hover:bg-red-500/10 transition-colors disabled:opacity-30 disabled:cursor-not-allowed">
             <Trash2 size={14} />
           </button>
         </div>
       </div>
 
-      {/* Resumen visible siempre (cuando hay datos extras) */}
-      {!expanded && (tieneLugar || fotosCount > 0) && (
-        <div className="px-3 pb-2 flex items-center gap-3 text-[10px] text-slate-500">
-          {tieneLugar && (<span className="flex items-center gap-1"><MapPin size={10} /> {linea.lugarInstalacion}</span>)}
-          {fotosCount > 0 && (<span className="flex items-center gap-1"><Camera size={10} /> {fotosCount} foto{fotosCount === 1 ? '' : 's'}</span>)}
+      {/* ─── Panel multimedia SIEMPRE visible (Cristian: lugar + fotos) ───── */}
+      <div
+        className="border-t border-slate-800 bg-slate-900/50 p-3 rounded-b-lg space-y-3"
+        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+        onDrop={onDrop}
+      >
+        {/* Lugar de instalación / nota técnica */}
+        <div>
+          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+            <MapPin size={11} className="text-amber-400" />
+            Lugar de Instalación / Nota Técnica
+          </label>
+          <input
+            value={linea.lugarInstalacion ?? ''}
+            onChange={(e) => onUpdate({ lugarInstalacion: e.target.value })}
+            placeholder="Instalada en pasillo central, altura 4m, dirección hacia entrada principal..."
+            className={INPUT + ' py-1.5 text-xs'}
+            maxLength={300}
+          />
         </div>
-      )}
 
-      {/* Detalles expandidos */}
-      {expanded && (
-        <div className="border-t border-slate-800 bg-slate-900/50 p-3 space-y-3"
-             onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-             onDrop={onDrop}>
-          <div>
-            <label className={LABEL + ' flex items-center gap-1'}>
-              <MapPin size={10} /> Lugar de instalación
-            </label>
-            <input
-              value={linea.lugarInstalacion ?? ''}
-              onChange={(e) => onUpdate({ lugarInstalacion: e.target.value })}
-              placeholder="Ej: Pasillo Norte, segundo nivel — sobre puerta entrada principal"
-              className={INPUT + ' py-1.5 text-xs'}
-              maxLength={300}
-            />
-          </div>
-          <div>
-            <label className={LABEL + ' flex items-center justify-between gap-2'}>
-              <span className="flex items-center gap-1"><Camera size={10} /> Fotos del levantamiento</span>
-              <span className="normal-case text-slate-500 tracking-normal text-[10px] font-normal">
-                {fotosCount} / {MAX_FOTOS_X_ITEM} · Comprimidas a 1280px · JPEG 70%
-              </span>
-            </label>
-            <div className="flex flex-wrap gap-2">
-              {linea.fotos?.map((f, i) => (
-                <div key={i} className="relative group">
-                  <img
-                    src={f.dataUri}
-                    alt={f.nombre ?? `Foto ${i + 1}`}
-                    className="w-20 h-20 object-cover rounded border border-slate-700"
-                  />
-                  <button
-                    onClick={() => onDeletePhoto(i)}
-                    title="Eliminar foto"
-                    className="absolute -top-1 -right-1 bg-red-600 hover:bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
-                    <XIcon size={11} />
-                  </button>
-                </div>
-              ))}
-              {fotosCount < MAX_FOTOS_X_ITEM && (
+        {/* Fotos de campo (input file + miniaturas) */}
+        <div>
+          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center justify-between gap-2">
+            <span className="flex items-center gap-1.5">
+              <Camera size={11} className="text-blue-400" />
+              Fotos de Campo (Máx {MAX_FOTOS_X_ITEM})
+            </span>
+            <span className="normal-case text-slate-500 tracking-normal text-[10px] font-normal">
+              {fotosCount} / {MAX_FOTOS_X_ITEM} · Comprimidas 1280px · JPEG 70%
+            </span>
+          </label>
+          <div className="flex flex-wrap items-center gap-2">
+            {linea.fotos?.map((f, i) => (
+              <div key={i} className="relative group">
+                <img
+                  src={f.dataUri}
+                  alt={f.nombre ?? `Foto ${i + 1}`}
+                  className="w-20 h-20 object-cover rounded border border-slate-700"
+                />
                 <button
-                  onClick={onPickFiles}
-                  className="w-20 h-20 rounded border-2 border-dashed border-slate-700 hover:border-blue-500 hover:bg-blue-500/5 text-slate-500 hover:text-blue-400 flex flex-col items-center justify-center gap-1 transition-colors">
-                  <Camera size={16} />
-                  <span className="text-[9px] font-bold uppercase tracking-wider">Adjuntar</span>
+                  onClick={() => onDeletePhoto(i)}
+                  title="Eliminar foto"
+                  className="absolute -top-1 -right-1 bg-red-600 hover:bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity shadow-lg">
+                  <XIcon size={11} />
                 </button>
-              )}
-              {fotosCount === 0 && (
-                <div className="flex items-center gap-1 text-[10px] text-slate-500 italic">
-                  <ImageOff size={11} /> Sin fotos · Tap "Adjuntar" o arrastra al área
-                </div>
-              )}
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              multiple
-              capture="environment"
-              className="hidden"
-              onChange={onFileChange}
-            />
+              </div>
+            ))}
+            {fotosCount < MAX_FOTOS_X_ITEM && (
+              <button
+                onClick={onPickFiles}
+                className="w-20 h-20 rounded border-2 border-dashed border-slate-700 hover:border-blue-500 hover:bg-blue-500/5 text-slate-500 hover:text-blue-400 flex flex-col items-center justify-center gap-1 transition-colors">
+                <Camera size={16} />
+                <span className="text-[9px] font-bold uppercase tracking-wider">Adjuntar</span>
+              </button>
+            )}
+            {fotosCount === 0 && (
+              <div className="flex items-center gap-1 text-[10px] text-slate-500 italic ml-2">
+                <ImageOff size={11} /> Sin fotos · Tap "Adjuntar" o arrastra imagen aquí
+              </div>
+            )}
           </div>
+          {/* Input file siempre montado (oculto), accept image/* + capture environment para celular */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            capture="environment"
+            className="hidden"
+            onChange={onFileChange}
+          />
         </div>
-      )}
+      </div>
     </div>
   )
 }
