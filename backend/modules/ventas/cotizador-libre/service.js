@@ -305,18 +305,35 @@ function createCotizadorLibreService(deps) {
     const websiteHref = empresa.website
       ? (String(empresa.website).startsWith('http') ? empresa.website : 'https://' + empresa.website)
       : null;
-    const urlMostrar = verifyUrl || websiteHref || '';
+    const urlReal = verifyUrl || websiteHref || '';
+    // URL compacta para mostrar en el PDF (no wrap, no truncamiento de click).
+    // El anchor `<a href=...>` envuelve TODO el bloque QR+texto+URL — el
+    // cliente toca CUALQUIER parte y va al URL completo, no a una sub-string
+    // partida por wrap. El href siempre es la URL completa.
+    let urlCompacto = urlReal;
+    try {
+      if (verifyUrl) {
+        const u = new URL(verifyUrl);
+        const hashPart = u.pathname.split('/').pop() || '';
+        urlCompacto = `${u.hostname}/verify/…${hashPart.slice(-6)}`;
+      }
+    } catch { /* fallback urlReal */ }
+    const linkInner = `
+      <div style="display:flex; align-items:flex-start; gap:3mm; flex:1; min-width:0; pointer-events:auto;">
+        ${qrDataUri ? `<img src="${_esc(qrDataUri)}" style="width:16mm; height:16mm; border:1px solid #cbd5e1; padding:0.5mm; background:white; border-radius:1mm; flex-shrink:0; display:block;"/>` : ''}
+        <div style="min-width:0; max-width:80mm;">
+          <div style="font-weight:800; text-transform:uppercase; letter-spacing:0.08em; color:#0f172a; font-size:8.5px;">Verificación Anti-Fraude</div>
+          <div style="color:#475569; font-size:8px; margin-top:0.5mm;">Escanea el QR o toca aquí para validar.</div>
+          ${urlReal ? `<div style="font-family:'SF Mono','Consolas',monospace; color:#1e40af; font-size:8px; margin-top:0.5mm; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:80mm;">${_esc(urlCompacto)}</div>` : ''}
+        </div>
+      </div>`;
+    const linkWrapped = urlReal
+      ? `<a href="${_esc(urlReal)}" style="text-decoration:none; color:inherit; display:flex; align-items:flex-start; gap:3mm; flex:1; min-width:0;">${linkInner}</a>`
+      : linkInner;
     return `
 <div style="-webkit-print-color-adjust:exact; print-color-adjust:exact; width:100%; font-family:'Helvetica Neue',Arial,sans-serif; font-size:8.5px; color:#94a3b8; box-sizing:border-box;">
   <div style="padding:3mm 16mm 4mm; display:flex; align-items:flex-start; justify-content:space-between; gap:8mm; border-top:1px solid #e2e8f0;">
-    <div style="display:flex; align-items:flex-start; gap:3mm; flex:1; min-width:0;">
-      ${qrDataUri ? `<img src="${_esc(qrDataUri)}" style="width:16mm; height:16mm; border:1px solid #cbd5e1; padding:0.5mm; background:white; border-radius:1mm; flex-shrink:0;"/>` : ''}
-      <div style="min-width:0; max-width:80mm;">
-        <div style="font-weight:800; text-transform:uppercase; letter-spacing:0.08em; color:#0f172a; font-size:8.5px;">Verificación Anti-Fraude</div>
-        <div style="color:#475569; font-size:8px; margin-top:0.5mm;">Escanea el QR o copia la URL.</div>
-        ${urlMostrar ? `<div style="font-family:'SF Mono','Consolas',monospace; color:#1e40af; font-size:8px; margin-top:0.5mm; word-wrap:break-word; overflow-wrap:break-word; word-break:break-all;">${_esc(urlMostrar)}</div>` : ''}
-      </div>
-    </div>
+    ${linkWrapped}
     <div style="text-align:center; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; color:#475569; font-size:8px; flex-shrink:0; padding:0 4mm;">
       <div>Documento Electrónico Verificable</div>
       <div style="font-weight:500; text-transform:none; letter-spacing:0; color:#64748b; font-size:7.5px; margin-top:0.5mm;">${_esc(empresa.razonSocial ?? '')}${empresa.rnc ? ` · RNC ${_esc(empresa.rnc)}` : ''}</div>
@@ -697,8 +714,10 @@ function createCotizadorLibreService(deps) {
    el aire. Paridad visual exacta con cotizaciones estándar — mismo ancho
    del title-bar, client-grid e items table. */
 .body { padding: 4mm 36px 12px !important; }
-/* Title-bar pegado al header: cero margin-top, padding interno compacto. */
-.title-bar { margin-top: 0 !important; padding: 7px 36px !important; }
+/* Title-bar EXACTAMENTE igual al template oficial (padding 9px 36px,
+   font-size 17px doc-type / 19px num, background #f1f5f9). Cero margin-top
+   para pegarlo al body sin aire extra. */
+.title-bar { margin-top: 0 !important; padding: 9px 36px !important; }
 /* Section-label antes de items: aire reducido para no separar tanto el
    client-grid de la tabla de productos. */
 .section-label { margin-top: 8px !important; }
