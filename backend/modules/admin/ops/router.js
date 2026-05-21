@@ -28,6 +28,7 @@ function createOpsRouter(deps) {
     prisma, middlewares, auditReq, helpers, app,
     facturaVerifyHash, buildPdfData, renderPdfDoc, generarPdfDocumento,
     NIVEL_PROPIETARIO_ABSOLUTO,
+    cotizadorLibreRepo,
   } = deps;
   if (!prisma)                                       throw new Error('createOpsRouter: prisma required');
   if (!middlewares)                                  throw new Error('createOpsRouter: middlewares required');
@@ -43,6 +44,7 @@ function createOpsRouter(deps) {
     repo, auditReq, facturaVerifyHash,
     buildPdfData, renderPdfDoc, generarPdfDocumento,
     app, fmtPhone,
+    cotizadorLibreRepo,
   });
   const controller = createOpsController({ service, schemas: opsSchemas, helpers });
 

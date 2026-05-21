@@ -51,7 +51,7 @@ function _canonicalizarCaja(row) {
 }
 
 function createOpsService(deps) {
-  const { repo, auditReq, facturaVerifyHash, buildPdfData, renderPdfDoc, generarPdfDocumento, app, fmtPhone } = deps;
+  const { repo, auditReq, facturaVerifyHash, buildPdfData, renderPdfDoc, generarPdfDocumento, app, fmtPhone, cotizadorLibreRepo } = deps;
   if (!repo)                                          throw new Error('createOpsService: repo required');
   if (typeof auditReq !== 'function')                 throw new Error('createOpsService: auditReq required');
   if (typeof facturaVerifyHash !== 'function')        throw new Error('createOpsService: facturaVerifyHash required');
@@ -243,23 +243,72 @@ function createOpsService(deps) {
       if (match) repo.backfillFacturaVerifyHash(match.id, hash).catch(() => {});
     }
     const empresa = await repo.findEmpresaIdentidad();
-    if (!match) throw new OpsError(404, 'NOT_FOUND', 'Documento no encontrado o alterado.', { valid: false });
+    if (match) {
+      const cliente = await repo.findClienteRazonSocial(match.clienteId).catch(() => null);
+      return {
+        status: 200,
+        body: {
+          valid:        true,
+          tipo:         match.esCotizacion ? 'cotizacion' : 'factura',
+          noFactura:    match.noFactura,
+          ncf:          match.ncf,
+          fechaEmision: match.fechaEmision,
+          total:        Number(match.total),
+          estado:       match.estado,
+          cliente:      cliente?.razonSocial ?? null,
+          empresa:      empresa ? { razonSocial: empresa.razonSocial, rnc: empresa.rnc } : null,
+        },
+      };
+    }
 
-    const cliente = await repo.findClienteRazonSocial(match.clienteId).catch(() => null);
-    return {
-      status: 200,
-      body: {
-        valid:        true,
-        tipo:         match.esCotizacion ? 'cotizacion' : 'factura',
-        noFactura:    match.noFactura,
-        ncf:          match.ncf,
-        fechaEmision: match.fechaEmision,
-        total:        Number(match.total),
-        estado:       match.estado,
-        cliente:      cliente?.razonSocial ?? null,
-        empresa:      empresa ? { razonSocial: empresa.razonSocial, rnc: empresa.rnc } : null,
-      },
-    };
+    // Fallback: cotizaciones libres del cotizador pro. Tienen mismo formato
+    // de hash (facturaVerifyHash) pero NO viven en Factura — viven en
+    // CotizacionLibreDraft con `meta.verifyHash`. Mismo flujo público,
+    // distinta tabla origen.
+    if (cotizadorLibreRepo && typeof cotizadorLibreRepo.findByVerifyHash === 'function') {
+      try {
+        const drafterMatch = await cotizadorLibreRepo.findByVerifyHash(hash);
+        if (drafterMatch) {
+          const cli   = (drafterMatch.cliente && typeof drafterMatch.cliente === 'object') ? drafterMatch.cliente : {};
+          // Total se infiere de items + meta — el cotizador libre no persiste
+          // un campo total fijo (es editable). Calculamos del snapshot guardado.
+          const itemsSnap = Array.isArray(drafterMatch.items) ? drafterMatch.items : [];
+          const metaSnap  = drafterMatch.meta && typeof drafterMatch.meta === 'object' ? drafterMatch.meta : {};
+          const pct       = Number(metaSnap.porcentajeItbis ?? 18) / 100;
+          const aplicaItbis = metaSnap.aplicaItbisGlobal !== false;
+          const subtotal  = itemsSnap.reduce((s, it) => {
+            const qty = Math.max(0, Math.floor(Number(it.cantidad ?? 0)));
+            const pu  = Math.max(0, Number(it.precioUnit ?? 0));
+            return s + Math.round(qty * pu * 100) / 100;
+          }, 0);
+          const dscPct  = Math.max(0, Math.min(100, Number(metaSnap.descuentoGlobalPct ?? 0))) / 100;
+          const dscFijo = Math.max(0, Number(metaSnap.descuentoGlobalMonto ?? 0));
+          const descuento = Math.min(Math.round((subtotal * dscPct + dscFijo) * 100) / 100, subtotal);
+          const baseImp  = Math.max(0, subtotal - descuento);
+          const itbis    = aplicaItbis ? Math.round(baseImp * pct * 100) / 100 : 0;
+          const total    = Math.round((baseImp + itbis) * 100) / 100;
+          return {
+            status: 200,
+            body: {
+              valid:        true,
+              tipo:         'cotizacion-libre',
+              noFactura:    drafterMatch.numeroDocumento,
+              ncf:          null,
+              fechaEmision: metaSnap.lastPdfAt ?? drafterMatch.updatedAt,
+              total,
+              estado:       'Borrador',
+              cliente:      cli.razonSocial ?? null,
+              empresa:      empresa ? { razonSocial: empresa.razonSocial, rnc: empresa.rnc } : null,
+              emitido_por:  drafterMatch.empleado?.nombre ?? null,
+            },
+          };
+        }
+      } catch (e) {
+        console.warn('[VERIFY cotizador-libre]', e.message);
+      }
+    }
+
+    throw new OpsError(404, 'NOT_FOUND', 'Documento no encontrado o alterado.', { valid: false });
   }
 
   // ─── Portal PDF v2 ─────────────────────────────────────────────────────

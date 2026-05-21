@@ -44,6 +44,13 @@ const fotoSchema = z.object({
   modelo: z.string().max(MAX_MODELO_LEN).optional().nullable(),
 });
 
+// Categorías canónicas — usadas para el resumen ejecutivo agrupado. El
+// frontend sugiere via dropdown; el server las normaliza (lowercase).
+const CATEGORIAS_VALIDAS = [
+  'Equipos', 'Cableado', 'Servicios', 'Capacitación', 'Software',
+  'Mantenimiento', 'Garantía Extendida', 'Otros',
+];
+
 const itemSchema = z.object({
   codigo:           z.string().max(120).optional().nullable(),
   descripcion:      z.string().min(1).max(MAX_TEXT),
@@ -52,6 +59,13 @@ const itemSchema = z.object({
   aplicaItbis:      z.boolean().optional().default(true),
   lugarInstalacion: z.string().max(MAX_LUGAR_LEN).optional().nullable(),
   fotos:            z.array(fotoSchema).max(MAX_FOTOS_X_ITEM).optional().default([]),
+  categoria:        z.string().max(40).optional().nullable(),
+  // GPS auto-tag (browser geolocation al adjuntar foto). Lat/lng como floats.
+  // Opcional — falla silenciosa si el usuario denegó permisos.
+  gps:              z.object({
+    lat: z.coerce.number().gte(-90).lte(90),
+    lng: z.coerce.number().gte(-180).lte(180),
+  }).partial().optional().nullable(),
 });
 
 const clienteSchema = z.object({
@@ -79,6 +93,15 @@ const condicionesSchema = z.object({
   notas:    condicionFieldSchema,
 }).default({});
 
+// Bloques opcionales del PDF — toggleable + texto editable. Mantienen la
+// filosofía "siempre puedes escribir; el toggle solo controla aparición".
+const bloqueOpcionalSchema = z.object({
+  activa: z.boolean().optional().default(false),
+  texto:  z.string().max(8000).optional().default(''),
+}).optional();
+
+const ESTADOS_VALIDOS = ['Borrador', 'Enviada', 'Aprobada', 'Convertida', 'Perdida'];
+
 const cotizadorLibreSchema = z.object({
   // Encabezado del documento (no es la entidad Empresa de la BD — el frontend
   // lo pasa hardcoded; un cliente malicioso podría intentar inyectar otros
@@ -98,6 +121,17 @@ const cotizadorLibreSchema = z.object({
   empresaNombre:        z.string().max(120).optional().nullable(),
   empresaWebsite:       z.string().max(200).optional().nullable(),
   empresaTagline:       z.string().max(200).optional().nullable(),
+
+  // ── Bloques opcionales del PDF (ciclo 16) ────────────────────────────────
+  // Carta de presentación: página 1 dedicada antes del documento principal.
+  portada:              bloqueOpcionalSchema,
+  // Sección "Sobre RA Networks": eslogan + bullets + datos. Aparece entre
+  // cliente y items table cuando se activa.
+  sobreEmpresa:         bloqueOpcionalSchema,
+  // Resumen ejecutivo: tabla agrupada por categoría pre-tabla principal.
+  mostrarResumen:       z.boolean().optional().default(false),
+  // Estado del documento (cambia badge + watermark en el PDF).
+  estado:               z.enum(ESTADOS_VALIDOS).optional().default('Borrador'),
 });
 
 // Schema del PUT draft. Reutiliza la estructura del PDF schema pero relaja
@@ -113,6 +147,10 @@ const draftPayloadSchema = z.object({
     porcentajeItbis:      z.coerce.number().min(0).max(40).optional(),
     descuentoGlobalPct:   z.coerce.number().min(0).max(100).optional(),
     descuentoGlobalMonto: z.coerce.number().min(0).optional(),
+    portada:              bloqueOpcionalSchema,
+    sobreEmpresa:         bloqueOpcionalSchema,
+    mostrarResumen:       z.boolean().optional(),
+    estado:               z.enum(ESTADOS_VALIDOS).optional(),
   }).partial().optional().nullable(),
   // Solo usuarios con `ventas:cotizador_libre_global` / `sistema:owner` pueden
   // pasar este campo. El controller valida y lo ignora si el caller no tiene
@@ -136,4 +174,6 @@ module.exports = {
   MAX_LINEAS,
   MAX_FOTOS_X_ITEM,
   MAX_FOTO_BYTES,
+  CATEGORIAS_VALIDAS,
+  ESTADOS_VALIDOS,
 };

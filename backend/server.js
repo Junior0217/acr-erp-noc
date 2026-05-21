@@ -1244,6 +1244,9 @@ const _routerDeps = {
   // Fix de ReferenceError latente: el código original referenciaba `app` como
   // naked identifier dentro del factory, rompiendo al primer hit del endpoint.
   app,
+  // Cotizador libre repo expuesto al ops module para que /api/publico/verify/:hash
+  // pueda hacer fallback lookup en CotizacionLibreDraft (mismo HMAC que facturas).
+  cotizadorLibreRepo: _cotizadorLibreModule.repo,
 };
 app.use('/api', createAuthRouter(_routerDeps));
 app.use('/api', createCrmRouter(_routerDeps));

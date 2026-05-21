@@ -24,12 +24,14 @@
 import { useEffect, useMemo, useReducer, useRef, useState, useCallback } from 'react'
 import {
   Plus, Trash2, FileDown, Loader2, Building2, ShieldCheck, FileText, Save,
-  Boxes, Camera, X as XIcon, Users, MapPin, ImageOff,
+  Boxes, Camera, X as XIcon, Users, MapPin, ImageOff, Copy, Share2, Mail,
+  Layers, Sparkles, BookOpen, Tag,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { apiFetch } from '@shared/utils/api'
 import EditorCondiciones  from '@features/sales/panels/_shared/EditorCondiciones'
 import useCondicionesDoc  from '@features/sales/panels/_shared/useCondicionesDoc'
+import VoiceDictationButton from '@shared/components/VoiceDictationButton'
 
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5'
@@ -109,27 +111,84 @@ function nuevaLinea(over = {}) {
     aplicaItbis:       true,
     lugarInstalacion:  '',
     fotos:             [],
+    categoria:         '',
+    gps:               null,
     ...over,
   }
+}
+
+// Categorías canónicas (alineadas con backend schema CATEGORIAS_VALIDAS).
+const CATEGORIAS = [
+  '', 'Equipos', 'Cableado', 'Servicios', 'Capacitación',
+  'Software', 'Mantenimiento', 'Garantía Extendida', 'Otros',
+]
+
+const ESTADOS = ['Borrador', 'Enviada', 'Aprobada', 'Convertida', 'Perdida']
+
+const PORTADA_DEFAULT = {
+  activa: false,
+  texto: 'Estimados,\n\nReciban un cordial saludo de parte del equipo de RA Networks & Solutions.\n\nNos complace presentarles la siguiente propuesta técnico-comercial para el levantamiento e instalación del sistema de videovigilancia profesional descrito a continuación. Esta propuesta incluye equipamiento de marca reconocida, mano de obra calificada y garantía sobre los servicios prestados.\n\nQuedamos a su entera disposición para ampliar cualquier punto de la propuesta y avanzar con la firma del acuerdo cuando lo consideren oportuno.',
+}
+
+const SOBRE_EMPRESA_DEFAULT = {
+  activa: false,
+  texto: 'RA Networks & Solutions es una empresa especializada en infraestructura de redes, seguridad electrónica y fibra óptica. Diseñamos, instalamos y damos mantenimiento a soluciones para escuelas, oficinas, industrias y residenciales en todo el territorio nacional.\n\nNuestro equipo combina experiencia de campo y certificaciones de fabricantes reconocidos (Dahua, Ubiquiti, Cambium, MikroTik) para garantizar despliegues que duran años con bajo costo operativo.',
 }
 
 const ITEMS_INICIAL = [nuevaLinea()]
 
 // Plantilla CCTV híbrida — 36 cámaras Escuela Benito Juárez.
 const PLANTILLA_CCTV_36 = [
-  { codigo: 'CCTV-DAH-HFW1839T',     descripcion: 'Cámara IP Dahua 4K 8MP IPC-HFW1839T1-LED tipo bullet ColorVu 2.8mm',                cantidad: 36, precioUnit: 0, aplicaItbis: true },
-  { codigo: 'CCTV-DAH-NVR5232',      descripcion: 'NVR Dahua 32 Canales NVR5232-EI 4K H.265+ con AI (rostros + cruce de línea)',         cantidad: 2,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'STORAGE-WD-8TB-PURPLE', descripcion: 'Disco duro Western Digital Purple 8TB Surveillance WD84PURZ',                          cantidad: 4,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'NET-UBQ-USW-24-POE',    descripcion: 'Switch UniFi USW-24-POE 24-puerto gigabit con 16 PoE+ (250W total)',                   cantidad: 2,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'NET-UBQ-USW-LITE-8',    descripcion: 'Switch UniFi USW-Lite-8-POE 8-puerto gigabit con 4 PoE+ (52W)',                        cantidad: 2,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'FO-DROP-2H-1000M',      descripcion: 'Bobina Fibra Óptica Drop 2 Hilos SM G657A1 1000m (interplanta entre edificios)',     cantidad: 2,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m exterior (gel-filled) para tendido entre cámaras y rack', cantidad: 6,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'NET-RJ45-CAT6-PACK100', descripcion: 'Conectores RJ45 Cat6 blindados pack×100 con bota anti-tirón',                          cantidad: 2,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'NET-RACK-12U',          descripcion: 'Rack mural 12U 600mm con organizador y bandeja para NVR + switches',                  cantidad: 2,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'POWER-UPS-3KVA',        descripcion: 'UPS APC SmartConnect 3000VA online con respaldo 2h al rack principal',               cantidad: 1,  precioUnit: 0, aplicaItbis: true },
-  { codigo: 'SVC-INSTALACION',       descripcion: 'Servicio técnico: instalación, configuración remota DMSS, programación AI y entrega final con planos as-built', cantidad: 1, precioUnit: 0, aplicaItbis: true },
-  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 2 horas presencial al personal designado (uso de NVR, exportación de video, alertas móvil)',       cantidad: 1, precioUnit: 0, aplicaItbis: true },
+  { codigo: 'CCTV-DAH-HFW1839T',     descripcion: 'Cámara IP Dahua 4K 8MP IPC-HFW1839T1-LED tipo bullet ColorVu 2.8mm',                cantidad: 36, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'CCTV-DAH-NVR5232',      descripcion: 'NVR Dahua 32 Canales NVR5232-EI 4K H.265+ con AI (rostros + cruce de línea)',         cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'STORAGE-WD-8TB-PURPLE', descripcion: 'Disco duro Western Digital Purple 8TB Surveillance WD84PURZ',                          cantidad: 4,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'NET-UBQ-USW-24-POE',    descripcion: 'Switch UniFi USW-24-POE 24-puerto gigabit con 16 PoE+ (250W total)',                   cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'NET-UBQ-USW-LITE-8',    descripcion: 'Switch UniFi USW-Lite-8-POE 8-puerto gigabit con 4 PoE+ (52W)',                        cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'FO-DROP-2H-1000M',      descripcion: 'Bobina Fibra Óptica Drop 2 Hilos SM G657A1 1000m (interplanta entre edificios)',     cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m exterior (gel-filled) para tendido entre cámaras y rack', cantidad: 6,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'NET-RJ45-CAT6-PACK100', descripcion: 'Conectores RJ45 Cat6 blindados pack×100 con bota anti-tirón',                          cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'NET-RACK-12U',          descripcion: 'Rack mural 12U 600mm con organizador y bandeja para NVR + switches',                  cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'POWER-UPS-3KVA',        descripcion: 'UPS APC SmartConnect 3000VA online con respaldo 2h al rack principal',               cantidad: 1,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'SVC-INSTALACION',       descripcion: 'Servicio técnico: instalación, configuración remota DMSS, programación AI y entrega final con planos as-built', cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios' },
+  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 2 horas presencial al personal designado (uso de NVR, exportación de video, alertas móvil)',       cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Capacitación' },
 ]
+
+// Plantilla Fibra Óptica residencial / pequeño negocio.
+const PLANTILLA_FIBRA_RES = [
+  { codigo: 'FO-CAJA-NAP-16',        descripcion: 'Caja NAP 16 puertos para distribución de fibra óptica en poste/fachada',             cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'FO-DROP-1H-500M',       descripcion: 'Bobina Fibra Drop 1 Hilo SM G657A2 500m para acometidas',                            cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'FO-ONT-WIFI6',          descripcion: 'ONT WiFi6 dual-band 2.4/5GHz GPON para terminación de fibra en hogar',               cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'FO-CONECTOR-FAST-SC',   descripcion: 'Conector rápido SC/APC pack×10 para terminación en sitio',                            cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'SVC-INSTAL-FO',         descripcion: 'Servicio: tendido, fusión, prueba con OTDR y entrega de plano as-built',             cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios' },
+]
+
+// Plantilla Red Empresarial (oficina 30-60 puntos).
+const PLANTILLA_RED_EMP = [
+  { codigo: 'NET-UBQ-USG-PRO-4',     descripcion: 'Gateway UniFi USG Pro 4 con 4 puertos gigabit + IDS/IPS habilitado',                   cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'NET-UBQ-USW-48-POE',    descripcion: 'Switch UniFi USW-48-POE 48 puertos gigabit con 32 PoE+ (500W total)',                  cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'NET-UBQ-U6-LR',         descripcion: 'AP UniFi U6-LR WiFi6 dual-band con MU-MIMO y 4x4 MIMO',                                cantidad: 4, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m interior',                                                  cantidad: 4, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'NET-FACEPLATE-2P',      descripcion: 'Cara plate 2 puertos blanca con keystone Cat6 hembra',                                  cantidad: 40, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'NET-RACK-22U',          descripcion: 'Rack abierto 22U con bandeja, organizador horizontal y multitoma',                    cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'SVC-INSTAL-RED',        descripcion: 'Servicio: tendido estructurado certificación Cat6 + config UniFi Controller + WiFi PMK', cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios' },
+  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 1.5h al administrador IT del cliente sobre UniFi + monitoreo remoto',     cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Capacitación' },
+]
+
+// Plantilla Cerco eléctrico residencial.
+const PLANTILLA_CERCO_RES = [
+  { codigo: 'CER-ENERG-12KV',        descripcion: 'Energizador para cerco eléctrico 12kV con baterías de respaldo 12V 7Ah',              cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos' },
+  { codigo: 'CER-ALAMBRE-GALV-500',  descripcion: 'Alambre galvanizado calibre 14 para cerco eléctrico — bobina 500m',                   cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'CER-AISLA-VARILLA',     descripcion: 'Aislador para varilla cerco eléctrico — pack×100',                                     cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'CER-VARILLA-180',       descripcion: 'Varilla galvanizada 1.80m para postes de cerco',                                       cantidad: 25, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado' },
+  { codigo: 'SVC-INSTAL-CERCO',      descripcion: 'Servicio: instalación, tensado, pruebas de descarga y entrega con sirena audible',    cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios' },
+]
+
+const PLANTILLAS = {
+  CCTV_36:    { label: '36 Cámaras CCTV (Escuela)', items: PLANTILLA_CCTV_36 },
+  FIBRA_RES:  { label: 'Fibra Óptica Residencial', items: PLANTILLA_FIBRA_RES },
+  RED_EMP:    { label: 'Red Empresarial 30-60 puntos', items: PLANTILLA_RED_EMP },
+  CERCO_RES:  { label: 'Cerco Eléctrico Residencial', items: PLANTILLA_CERCO_RES },
+}
 
 const CONDICIONES_DEFAULT = {
   validez:  { incluir: true,  texto: 'Esta cotización es válida por 15 días calendarios.' },
@@ -160,6 +219,11 @@ const initialState = {
   // co-editando el borrador de otro empleado. El auto-save manda
   // `targetEmpleadoId` para que el backend escriba en el row correcto.
   editingEmpleadoId: null,
+  // Bloques opcionales del PDF (ciclo 16).
+  portada:           PORTADA_DEFAULT,
+  sobreEmpresa:      SOBRE_EMPRESA_DEFAULT,
+  mostrarResumen:    false,
+  estado:            'Borrador',
 }
 
 function reducer(state, action) {
@@ -178,6 +242,10 @@ function reducer(state, action) {
         descuentoMonto:    typeof d.meta?.descuentoGlobalMonto === 'number' ? d.meta.descuentoGlobalMonto : state.descuentoMonto,
         numeroDocumento:   d.numeroDocumento ?? state.numeroDocumento,
         editingEmpleadoId: action.editingEmpleadoId ?? null,
+        portada:           (d.meta?.portada && typeof d.meta.portada === 'object') ? { ...PORTADA_DEFAULT, ...d.meta.portada } : PORTADA_DEFAULT,
+        sobreEmpresa:      (d.meta?.sobreEmpresa && typeof d.meta.sobreEmpresa === 'object') ? { ...SOBRE_EMPRESA_DEFAULT, ...d.meta.sobreEmpresa } : SOBRE_EMPRESA_DEFAULT,
+        mostrarResumen:    typeof d.meta?.mostrarResumen === 'boolean' ? d.meta.mostrarResumen : false,
+        estado:            ESTADOS.includes(d.meta?.estado) ? d.meta.estado : 'Borrador',
       }
     }
     case 'SET_NUMERO_DOC':
@@ -217,8 +285,8 @@ function reducer(state, action) {
         ),
       }
     }
-    case 'LOAD_PLANTILLA_CCTV':
-      return { ...state, items: PLANTILLA_CCTV_36.map((p) => nuevaLinea(p)) }
+    case 'LOAD_PLANTILLA':
+      return { ...state, items: (action.items ?? PLANTILLA_CCTV_36).map((p) => nuevaLinea(p)) }
     case 'SET_APLICA_ITBIS_GLOBAL':
       return { ...state, aplicaItbisGlobal: !!action.value }
     case 'SET_PCT_ITBIS':
@@ -229,6 +297,26 @@ function reducer(state, action) {
       return { ...state, descuentoMonto: action.value }
     case 'SET_EDITING_EMPLEADO':
       return { ...state, editingEmpleadoId: action.id ?? null }
+    case 'SET_PORTADA':
+      return { ...state, portada: { ...state.portada, ...action.patch } }
+    case 'SET_SOBRE_EMPRESA':
+      return { ...state, sobreEmpresa: { ...state.sobreEmpresa, ...action.patch } }
+    case 'SET_MOSTRAR_RESUMEN':
+      return { ...state, mostrarResumen: !!action.value }
+    case 'SET_ESTADO':
+      return { ...state, estado: ESTADOS.includes(action.value) ? action.value : 'Borrador' }
+    case 'DUPLICATE_AS_NEW': {
+      // Misma data, pero numeroDocumento nuevo y editingEmpleadoId reseteado.
+      const nuevoNum = `COT-${Date.now().toString().slice(-6)}`
+      return {
+        ...state,
+        numeroDocumento:   nuevoNum,
+        editingEmpleadoId: null,
+        estado:            'Borrador',
+        // Limpiamos fotos del duplicado — no tiene sentido cargar las del original.
+        items: state.items.map((l) => ({ ...l, id: crypto.randomUUID(), fotos: [], gps: null })),
+      }
+    }
     case 'RESET_TO_NEW': {
       // Crear cotización en blanco para el caller actual.
       const nuevoNum = `COT-${Date.now().toString().slice(-6)}`
@@ -363,6 +451,8 @@ export default function CotizadorManualPro() {
       aplicaItbis:      !!l.aplicaItbis,
       lugarInstalacion: (l.lugarInstalacion ?? '').toString().slice(0, 300),
       fotos:            Array.isArray(l.fotos) ? l.fotos.slice(0, MAX_FOTOS_X_ITEM) : [],
+      categoria:        l.categoria ?? null,
+      gps:              l.gps && typeof l.gps === 'object' ? l.gps : null,
     })),
     condiciones: cond,
     meta: {
@@ -370,6 +460,10 @@ export default function CotizadorManualPro() {
       porcentajeItbis:      Number(state.porcentajeItbis),
       descuentoGlobalPct:   Number(state.descuentoPct),
       descuentoGlobalMonto: Number(state.descuentoMonto),
+      portada:              state.portada,
+      sobreEmpresa:         state.sobreEmpresa,
+      mostrarResumen:       state.mostrarResumen,
+      estado:               state.estado,
     },
     // Solo se honra server-side si el caller es global; lo enviamos siempre
     // que estemos en modo co-edición (UI solo lo permite si isGlobal=true).
@@ -451,7 +545,25 @@ export default function CotizadorManualPro() {
     }
   }, [whoami.requesterId, resetCond])
 
-  // ─── Carga de fotos por ítem (compresión + dispatch ADD_FOTO) ───────────
+  // ─── GPS auto-tag (al primer adjunto sin gps previo) ─────────────────────
+  // Solicita `navigator.geolocation` con timeout corto. Si el browser/cliente
+  // niega permisos, la falla es silenciosa — la foto se adjunta sin GPS.
+  async function _capturarGps() {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) return null
+    return new Promise((resolve) => {
+      const timeoutId = setTimeout(() => resolve(null), 5000)
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          clearTimeout(timeoutId)
+          resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude })
+        },
+        () => { clearTimeout(timeoutId); resolve(null) },
+        { enableHighAccuracy: true, timeout: 5000, maximumAge: 60_000 },
+      )
+    })
+  }
+
+  // ─── Carga de fotos por ítem (compresión + GPS auto-tag + dispatch) ─────
   const handleAttachPhotos = useCallback(async (itemId, fileList) => {
     if (!fileList || fileList.length === 0) return
     const currentLinea = state.items.find((l) => l.id === itemId)
@@ -459,6 +571,11 @@ export default function CotizadorManualPro() {
     if (slotsLibres === 0) {
       toast.error(`Cap ${MAX_FOTOS_X_ITEM} fotos por ítem.`)
       return
+    }
+    // GPS solo si el ítem todavía no tiene coords (no re-trigger por cada foto).
+    if (!currentLinea?.gps) {
+      const gps = await _capturarGps()
+      if (gps) dispatch({ type: 'UPD_ITEM', id: itemId, patch: { gps } })
     }
     const files = Array.from(fileList).slice(0, slotsLibres)
     let okCount = 0
@@ -474,15 +591,43 @@ export default function CotizadorManualPro() {
     if (okCount > 0) toast.success(`${okCount} foto${okCount === 1 ? '' : 's'} adjunta${okCount === 1 ? '' : 's'} y comprimida${okCount === 1 ? '' : 's'}.`)
   }, [state.items])
 
-  // ─── Plantilla CCTV ─────────────────────────────────────────────────────
-  const cargarPlantillaCctv = () => {
+  // ─── Plantillas (CCTV / Fibra / Red / Cerco) ────────────────────────────
+  const cargarPlantilla = useCallback((key) => {
+    const plant = PLANTILLAS[key]
+    if (!plant) return
     if (state.items.length > 1 || (state.items[0]?.descripcion?.trim())) {
-      const ok = window.confirm('¿Reemplazar las líneas actuales con la plantilla CCTV 36 cámaras? El cliente y condiciones se mantienen.')
+      const ok = window.confirm(`¿Reemplazar las líneas actuales con la plantilla "${plant.label}"? El cliente y condiciones se mantienen.`)
       if (!ok) return
     }
-    dispatch({ type: 'LOAD_PLANTILLA_CCTV' })
-    toast.success(`Plantilla CCTV cargada · ${PLANTILLA_CCTV_36.length} líneas`)
-  }
+    dispatch({ type: 'LOAD_PLANTILLA', items: plant.items })
+    toast.success(`Plantilla cargada · ${plant.label} · ${plant.items.length} líneas`)
+  }, [state.items])
+
+  // ─── Compartir cotización por WhatsApp ──────────────────────────────────
+  const compartirWhatsApp = useCallback(() => {
+    const tel = (state.cliente?.telefono ?? '').toString().replace(/\D/g, '')
+    if (!tel || tel.length < 10) {
+      toast.error('Falta teléfono válido del cliente para compartir por WhatsApp.')
+      return
+    }
+    const numCompleto = tel.length === 10 && /^(809|829|849)/.test(tel) ? `1${tel}` : tel
+    const total = totales.total
+    const msg = [
+      `Hola${state.cliente?.contacto ? ` ${state.cliente.contacto}` : ''}, adjunto cotización ${state.numeroDocumento} de RA Networks & Solutions.`,
+      `${state.items.length} ítems · Total RD$ ${fmtRD(total)}`,
+      `Quedo atento a sus comentarios.`,
+    ].join('\n\n')
+    const url = `https://wa.me/${numCompleto}?text=${encodeURIComponent(msg)}`
+    window.open(url, '_blank', 'noopener,noreferrer')
+  }, [state.cliente, state.numeroDocumento, state.items, totales])
+
+  // ─── Duplicar cotización ────────────────────────────────────────────────
+  const duplicarCotizacion = useCallback(() => {
+    const ok = window.confirm('¿Crear una nueva cotización duplicando los ítems y condiciones actuales? El número se generará nuevo y las fotos se descartarán.')
+    if (!ok) return
+    dispatch({ type: 'DUPLICATE_AS_NEW' })
+    toast.success('Cotización duplicada · ajusta cliente y precios para el nuevo proyecto.')
+  }, [])
 
   // ─── Generar PDF ────────────────────────────────────────────────────────
   const [generando, setGenerando] = useState(false)
@@ -508,7 +653,13 @@ export default function CotizadorManualPro() {
           aplicaItbis:      !!l.aplicaItbis,
           lugarInstalacion: (l.lugarInstalacion ?? '').toString().slice(0, 300),
           fotos:            Array.isArray(l.fotos) ? l.fotos.slice(0, MAX_FOTOS_X_ITEM) : [],
+          categoria:        l.categoria ?? null,
+          gps:              l.gps && typeof l.gps === 'object' ? l.gps : null,
         })),
+        portada:        state.portada,
+        sobreEmpresa:   state.sobreEmpresa,
+        mostrarResumen: state.mostrarResumen,
+        estado:         state.estado,
       }
       const res = await apiFetch('/api/ventas/cotizador-libre/pdf', {
         method:  'POST',
@@ -572,12 +723,26 @@ export default function CotizadorManualPro() {
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-2">
+            <select
+              onChange={(e) => { const v = e.target.value; if (v) { cargarPlantilla(v); e.target.value = '' } }}
+              defaultValue=""
+              className="text-xs font-bold px-3 py-2 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-300 cursor-pointer">
+              <option value="" disabled>📦 Cargar plantilla…</option>
+              {Object.entries(PLANTILLAS).map(([k, v]) => (
+                <option key={k} value={k}>{v.label}</option>
+              ))}
+            </select>
             <button
-              onClick={cargarPlantillaCctv}
-              title="Inyectar listado: 36 cámaras + 2 NVRs + discos + switches + bobinas + servicio técnico"
-              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600/15 hover:bg-emerald-600/25 border border-emerald-600/30 text-emerald-300 text-xs font-bold transition-colors">
-              <Boxes size={13} />
-              Plantilla Base CCTV (36 cám.)
+              onClick={duplicarCotizacion}
+              title="Crear nueva cotización duplicando los ítems y condiciones actuales (sin fotos)"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-violet-600/15 hover:bg-violet-600/25 border border-violet-600/30 text-violet-300 text-xs font-bold transition-colors">
+              <Copy size={13} /> Duplicar
+            </button>
+            <button
+              onClick={compartirWhatsApp}
+              title="Abre WhatsApp con un mensaje pre-llenado al teléfono del cliente"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-green-600/15 hover:bg-green-600/25 border border-green-600/30 text-green-300 text-xs font-bold transition-colors">
+              <Share2 size={13} /> WhatsApp
             </button>
             <div className="flex items-center gap-2">
               <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">N° doc:</label>
@@ -588,6 +753,13 @@ export default function CotizadorManualPro() {
                 placeholder="COT-XXXXXX"
               />
             </div>
+            <select
+              value={state.estado}
+              onChange={(e) => dispatch({ type: 'SET_ESTADO', value: e.target.value })}
+              title="Estado de la cotización — Borrador muestra badge amarillo en PDF"
+              className="text-[10px] font-bold uppercase tracking-wider px-2 py-2 rounded-lg bg-slate-800 border border-slate-700 text-slate-200">
+              {ESTADOS.map((s) => <option key={s} value={s}>{s}</option>)}
+            </select>
             <SaveStatusBadge status={saveStatus} lastSavedAt={lastSavedAt} />
           </div>
         </header>
@@ -707,6 +879,113 @@ export default function CotizadorManualPro() {
               />
             </div>
           </div>
+        </section>
+
+        {/* ─── Portada (carta de presentación) ─────────────────────────── */}
+        <section className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-100 uppercase tracking-wider">
+              <BookOpen size={16} className="text-amber-400" />
+              Carta de Presentación
+              <span className="text-[10px] font-normal text-slate-500 normal-case tracking-normal">
+                · Página 1 dedicada antes de la cotización
+              </span>
+            </h2>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className={`text-[10px] font-bold uppercase tracking-wider ${state.portada.activa ? 'text-amber-300' : 'text-slate-500'}`}>
+                {state.portada.activa ? 'En PDF' : 'Oculto'}
+              </span>
+              <input
+                type="checkbox"
+                checked={state.portada.activa}
+                onChange={(e) => dispatch({ type: 'SET_PORTADA', patch: { activa: e.target.checked } })}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-amber-500 focus:ring-amber-500/30"
+              />
+            </label>
+          </div>
+          <div className="relative">
+            <textarea
+              value={state.portada.texto}
+              onChange={(e) => dispatch({ type: 'SET_PORTADA', patch: { texto: e.target.value } })}
+              rows={6}
+              maxLength={8000}
+              placeholder="Estimados, reciban un cordial saludo..."
+              className={INPUT + ' font-normal'}
+              style={{ resize: 'vertical', minHeight: '120px' }}
+            />
+            <div className="absolute top-1 right-1">
+              <VoiceDictationButton
+                value={state.portada.texto}
+                onChange={(v) => dispatch({ type: 'SET_PORTADA', patch: { texto: v } })}
+              />
+            </div>
+          </div>
+          <div className="flex justify-between mt-1">
+            <span className="text-[10px] text-slate-500 italic">
+              {state.portada.activa ? 'Aparece como página 1 del PDF con membrete + firma del Owner' : 'Activa el toggle para que esta página salga en el PDF'}
+            </span>
+            <span className="text-[9px] text-slate-600">{state.portada.texto.length}/8000</span>
+          </div>
+        </section>
+
+        {/* ─── Sobre la empresa (bloque opcional pre-tabla items) ─────── */}
+        <section className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-lg">
+          <div className="flex items-center justify-between mb-3">
+            <h2 className="flex items-center gap-2 text-sm font-bold text-slate-100 uppercase tracking-wider">
+              <Sparkles size={16} className="text-cyan-400" />
+              Sobre Nosotros / Pitch Empresarial
+              <span className="text-[10px] font-normal text-slate-500 normal-case tracking-normal">
+                · Bloque pre-tabla de ítems
+              </span>
+            </h2>
+            <label className="flex items-center gap-2 cursor-pointer">
+              <span className={`text-[10px] font-bold uppercase tracking-wider ${state.sobreEmpresa.activa ? 'text-cyan-300' : 'text-slate-500'}`}>
+                {state.sobreEmpresa.activa ? 'En PDF' : 'Oculto'}
+              </span>
+              <input
+                type="checkbox"
+                checked={state.sobreEmpresa.activa}
+                onChange={(e) => dispatch({ type: 'SET_SOBRE_EMPRESA', patch: { activa: e.target.checked } })}
+                className="w-4 h-4 rounded border-slate-600 bg-slate-800 text-cyan-500 focus:ring-cyan-500/30"
+              />
+            </label>
+          </div>
+          <div className="relative">
+            <textarea
+              value={state.sobreEmpresa.texto}
+              onChange={(e) => dispatch({ type: 'SET_SOBRE_EMPRESA', patch: { texto: e.target.value } })}
+              rows={4}
+              maxLength={8000}
+              placeholder="RA Networks & Solutions es una empresa especializada en..."
+              className={INPUT + ' font-normal'}
+              style={{ resize: 'vertical', minHeight: '90px' }}
+            />
+            <div className="absolute top-1 right-1">
+              <VoiceDictationButton
+                value={state.sobreEmpresa.texto}
+                onChange={(v) => dispatch({ type: 'SET_SOBRE_EMPRESA', patch: { texto: v } })}
+              />
+            </div>
+          </div>
+        </section>
+
+        {/* ─── Resumen ejecutivo toggle ─────────────────────────────────── */}
+        <section className="bg-slate-900 border border-slate-800 rounded-xl p-3 shadow-lg">
+          <label className="flex items-center justify-between cursor-pointer gap-3">
+            <div className="flex items-center gap-2">
+              <Layers size={16} className="text-blue-400" />
+              <div>
+                <div className="text-sm font-bold text-slate-100">Resumen ejecutivo por categoría</div>
+                <div className="text-[10px] text-slate-500">Tabla compacta pre-detalle: total por Equipos / Cableado / Servicios / Capacitación</div>
+              </div>
+            </div>
+            <input
+              type="checkbox"
+              checked={state.mostrarResumen}
+              onChange={(e) => dispatch({ type: 'SET_MOSTRAR_RESUMEN', value: e.target.checked })}
+              className="w-5 h-5 rounded border-slate-600 bg-slate-800 text-blue-500 focus:ring-blue-500/30"
+            />
+          </label>
         </section>
 
         {/* ─── Tabla de ítems ─────────────────────────────────────────── */}
@@ -835,12 +1114,12 @@ export default function CotizadorManualPro() {
             mostrar={condMostrar}
             onChange={condOnChange}
             onMostrar={condOnMostrar}
+            editAlwaysOn
             formaPagoChildren={
               <select
                 value={condValues.pago ?? ''}
                 onChange={(e) => condOnChange('pago', e.target.value)}
-                disabled={!condMostrar.pago}
-                className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                className="w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500"
               >
                 <option value="">(Personalizado)</option>
                 {FORMA_PAGO_OPCIONES.map((o) => <option key={o} value={o}>{o}</option>)}
@@ -924,15 +1203,23 @@ function ItemRow({
           />
         </div>
 
-        {/* Descripción */}
+        {/* Descripción (con voice dictation) */}
         <div className="col-span-3 md:col-span-1">
           <label className="md:hidden text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-1 block">Descripción Técnica</label>
-          <input
-            value={linea.descripcion ?? ''}
-            onChange={(e) => onUpdate({ descripcion: e.target.value })}
-            placeholder="Descripción del ítem (Cámara IP 4MP Dahua HFW1239T1...)"
-            className={INPUT + ' py-1.5 text-xs'}
-          />
+          <div className="relative">
+            <input
+              value={linea.descripcion ?? ''}
+              onChange={(e) => onUpdate({ descripcion: e.target.value })}
+              placeholder="Descripción del ítem (Cámara IP 4MP Dahua HFW1239T1...)"
+              className={INPUT + ' py-1.5 text-xs pr-9'}
+            />
+            <div className="absolute top-0 right-0 h-full flex items-center pr-1">
+              <VoiceDictationButton
+                value={linea.descripcion ?? ''}
+                onChange={(v) => onUpdate({ descripcion: v })}
+              />
+            </div>
+          </div>
         </div>
 
         {/* Cantidad */}
@@ -1001,19 +1288,51 @@ function ItemRow({
         onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
         onDrop={onDrop}
       >
-        {/* Lugar de instalación / nota técnica */}
-        <div>
-          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
-            <MapPin size={11} className="text-amber-400" />
-            Lugar de Instalación / Nota Técnica
-          </label>
-          <input
-            value={linea.lugarInstalacion ?? ''}
-            onChange={(e) => onUpdate({ lugarInstalacion: e.target.value })}
-            placeholder="Instalada en pasillo central, altura 4m, dirección hacia entrada principal..."
-            className={INPUT + ' py-1.5 text-xs'}
-            maxLength={300}
-          />
+        {/* Categoría + Lugar de instalación + GPS coords */}
+        <div className="grid grid-cols-1 md:grid-cols-[140px_1fr] gap-2 items-end">
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center gap-1.5">
+              <Tag size={11} className="text-cyan-400" />
+              Categoría
+            </label>
+            <select
+              value={linea.categoria ?? ''}
+              onChange={(e) => onUpdate({ categoria: e.target.value || null })}
+              className={INPUT + ' py-1.5 text-xs'}>
+              <option value="">(auto)</option>
+              {CATEGORIAS.filter(Boolean).map((c) => (
+                <option key={c} value={c}>{c}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider mb-1.5 flex items-center justify-between gap-1.5">
+              <span className="flex items-center gap-1.5">
+                <MapPin size={11} className="text-amber-400" />
+                Lugar de Instalación / Nota Técnica
+              </span>
+              {linea.gps?.lat != null && (
+                <span className="text-[9px] font-normal normal-case tracking-normal text-emerald-400/80" title="Coordenadas auto-capturadas al adjuntar foto">
+                  GPS {Number(linea.gps.lat).toFixed(5)}, {Number(linea.gps.lng).toFixed(5)}
+                </span>
+              )}
+            </label>
+            <div className="relative">
+              <input
+                value={linea.lugarInstalacion ?? ''}
+                onChange={(e) => onUpdate({ lugarInstalacion: e.target.value })}
+                placeholder="Instalada en pasillo central, altura 4m, dirección hacia entrada principal..."
+                className={INPUT + ' py-1.5 text-xs pr-10'}
+                maxLength={300}
+              />
+              <div className="absolute top-0 right-0 h-full flex items-center pr-1">
+                <VoiceDictationButton
+                  value={linea.lugarInstalacion ?? ''}
+                  onChange={(v) => onUpdate({ lugarInstalacion: v })}
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Fotos de campo (input file + miniaturas) */}

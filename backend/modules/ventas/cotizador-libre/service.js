@@ -36,10 +36,23 @@
  */
 
 const { renderDocumento, fmtMoney, fechaCorta } = require('../../../services/pdf-templates');
+const { facturaVerifyHash } = require('../../../shared/services/verify-hash.service');
 
 const NOMBRE_EMPRESA_DEFAULT  = 'RA Networks & Solutions';
 const TAGLINE_DEFAULT         = 'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica';
 const WEBSITE_DEFAULT         = 'https://acrnetworks.do';
+
+// Resolver del host público — replica la lógica de `modules/ventas/pdf/service`
+// para construir el URL del QR. Sigue la misma cascada: PUBLIC_FRONTEND_URL,
+// luego RENDER_EXTERNAL_URL, luego fallback al website default.
+function _resolverPublicVerifyBase() {
+  const explicit = (process.env.PUBLIC_FRONTEND_URL ?? '').trim().replace(/\/+$/, '');
+  if (explicit) return explicit;
+  const render = (process.env.RENDER_EXTERNAL_URL ?? '').trim().replace(/\/+$/, '');
+  if (render) return render;
+  return WEBSITE_DEFAULT;
+}
+const PUBLIC_VERIFY_BASE = _resolverPublicVerifyBase();
 
 class CotizadorLibreError extends Error {
   constructor(status, code, message) {
@@ -122,43 +135,208 @@ function createCotizadorLibreService(deps) {
     } catch { return null; }
   }
 
-  // ─── Normalización de teléfono para wa.me ─────────────────────────────────
-  // wa.me/<DDIPAIS+NUMERO> sin "+", sin paréntesis, sin guiones. RD = código
-  // 1 (no 1809; el 809/829/849 es prefijo de área DENTRO del DDI 1).
-  function _telefonoParaWhatsApp(tel) {
-    if (!tel) return null;
-    const d = String(tel).replace(/\D/g, '');
-    if (d.length === 10 && /^(809|829|849)/.test(d)) return `1${d}`;  // RD 10 dígitos → +1 prepend
-    if (d.length === 11 && d.startsWith('1'))         return d;        // ya tiene +1
-    if (d.length >= 10 && d.length <= 15)             return d;        // otro país (e164)
-    return null;
+  // ─── Verify hash anti-tamper (mismo HMAC SHA256 que facturas) ─────────────
+  // Compute hash usando `facturaVerifyHash` del shared service. La función
+  // acepta `{ id, noFactura, ncf, total, fechaEmision }`. Mapeamos del shape
+  // del draft del cotizador libre. Mismo algoritmo + mismo secret → un cliente
+  // puede usar el mismo flujo /verify/:hash que con facturas y obtener
+  // respuesta autenticada.
+  function _computeVerifyHash({ draftId, numeroDocumento, total, fechaIso }) {
+    return facturaVerifyHash({
+      id:            draftId || '',
+      noFactura:     numeroDocumento || '',
+      ncf:           null,
+      total:         total,
+      fechaEmision:  fechaIso,
+    }, 'cotizador-libre');
   }
 
-  // verifyUrl: para una cotización libre (no factura DGII) no hay hash-chain
-  // ni endpoint público de validación todavía. La URL del QR apunta al canal
-  // de contacto directo del emisor en este orden de prioridad:
-  //   1) WhatsApp del teléfono empresarial — el cliente escanea y abre un
-  //      chat pre-llenado al socio, quien valida manualmente la cotización.
-  //      Experiencia VIP cero-fricción para primera cotización.
-  //   2) Email empresarial (mailto:) — fallback formal si no hay teléfono.
-  //   3) Website empresarial — fallback genérico.
-  function _construirVerifyUrl({ empresa, numero, razonSocialCliente }) {
-    const tel = _telefonoParaWhatsApp(empresa?.telefono);
-    if (tel) {
-      const msg = `Hola, quiero verificar la cotización ${numero} emitida por ${empresa?.razonSocial ?? 'RA Networks'}${razonSocialCliente ? ` a nombre de ${razonSocialCliente}` : ''}.`;
-      return `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`;
+  // Persiste el hash dentro del JSON `meta` del draft. El endpoint público
+  // `/api/publico/verify/:hash` busca primero en `Factura.verifyHash` y luego
+  // hace fallback al `meta.verifyHash` de cotizaciones libres (ver
+  // modules/admin/ops/repo.js).
+  async function _persistirHashEnDraft({ numeroDocumento, hash }) {
+    if (!repo || !numeroDocumento || !hash) return;
+    try {
+      // findOne sin empleadoId → cualquier draft con ese numeroDocumento.
+      const draft = await repo.findOne({ numeroDocumento });
+      if (!draft) return;  // PDF generado sobre data no persistida (preview); skip
+      const metaPrev = (draft.meta && typeof draft.meta === 'object') ? draft.meta : {};
+      const meta = { ...metaPrev, verifyHash: hash, lastPdfAt: new Date().toISOString() };
+      await repo.upsertByEmpleadoYNumero(draft.empleadoId, numeroDocumento, {
+        cliente:     draft.cliente,
+        items:       draft.items,
+        condiciones: draft.condiciones,
+        meta,
+      });
+    } catch (e) {
+      console.warn('[COTIZADOR-LIBRE] persist hash failed:', e.message);
     }
-    if (empresa?.email) {
-      const subject = encodeURIComponent(`Verificación de cotización ${numero}`);
-      const body    = encodeURIComponent(`Buen día,\n\nDeseo verificar la cotización ${numero}${razonSocialCliente ? ` emitida a ${razonSocialCliente}` : ''}.\n\nGracias.`);
-      return `mailto:${empresa.email}?subject=${subject}&body=${body}`;
-    }
-    if (empresa?.website) {
-      const w = String(empresa.website).trim().replace(/\/+$/, '');
-      return w.startsWith('http') ? w : `https://${w}`;
-    }
-    return WEBSITE_DEFAULT;
   }
+
+  // ─── Heurística de categorización (cuando ítem no trae .categoria) ────────
+  function _detectarCategoria(item) {
+    if (item.categoria) return item.categoria;
+    const codigo = (item.codigo ?? '').toUpperCase();
+    const desc   = (item.descripcion ?? '').toUpperCase();
+    if (/^SVC|SERVICIO|INSTAL/.test(codigo) || /\bINSTALACI[ÓO]N\b|\bSERVICIO\b|\bMANO DE OBRA\b/.test(desc)) return 'Servicios';
+    if (/CAPACIT/.test(codigo)              || /CAPACITACI[ÓO]N|ENTRENAMIENTO/.test(desc))                  return 'Capacitación';
+    if (/^CCTV|CAMARA|^NVR|^DVR/.test(codigo) || /CÁMARA|CAMARA|NVR|DVR/.test(desc))                       return 'Equipos';
+    if (/^FO-|FIBRA|^CAB|UTP|CAT6/.test(codigo) || /CABLE|FIBRA|UTP|CAT.?6/.test(desc))                   return 'Cableado';
+    if (/^NET-|SWITCH|ROUTER|^USW|^UBQ/.test(codigo) || /SWITCH|ROUTER/.test(desc))                       return 'Equipos';
+    if (/SOFTWARE|LICENCIA|^SW-/.test(codigo) || /SOFTWARE|LICENCIA|SUSCRIPCI[ÓO]N/.test(desc))           return 'Software';
+    if (/MANTENIM/.test(desc))                                                                            return 'Mantenimiento';
+    return 'Otros';
+  }
+
+  // ─── Resumen ejecutivo: tabla agrupada por categoría ─────────────────────
+  function _renderResumenTable({ lineas }) {
+    const grupos = new Map();
+    for (const l of lineas) {
+      const cat = _detectarCategoria(l);
+      const prev = grupos.get(cat) ?? { count: 0, subtotal: 0 };
+      grupos.set(cat, {
+        count:    prev.count + 1,
+        subtotal: prev.subtotal + (l.subtotal ?? 0),
+      });
+    }
+    if (grupos.size === 0) return '';
+    const rows = [...grupos.entries()].map(([cat, v]) => `
+      <tr>
+        <td><strong>${_esc(cat)}</strong></td>
+        <td class="center mono">${v.count}</td>
+        <td class="right mono"><strong>RD$ ${fmtMoney(v.subtotal)}</strong></td>
+      </tr>`).join('');
+    return `
+      <div class="section-label" style="margin-top:14px;">Resumen ejecutivo por categoría</div>
+      <table class="items resumen-exec">
+        <thead>
+          <tr>
+            <th>Categoría</th>
+            <th class="col-cant center">Ítems</th>
+            <th class="col-amt right">Subtotal</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>`;
+  }
+
+  function _renderPortadaSheet({ portada, empresa, numero, cliente, fechaIso, qrDataUri, verifyUrl }) {
+    if (!portada?.activa || !(portada.texto ?? '').trim()) return '';
+    const repFull = [empresa.representanteNombre, empresa.representanteApellido].filter(Boolean).join(' ').trim();
+    const corpRows = [
+      empresa.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${_esc(empresa.rnc)}</span></div>` : '',
+      empresa.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${_esc(empresa.telefono)}</span></div>` : '',
+      empresa.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${_esc(empresa.email)}</span></div>` : '',
+      empresa.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${_esc(empresa.website)}</span></div>` : '',
+    ].filter(Boolean).join('');
+    const assets = empresa.assets ?? {};
+    const fechaStr = fechaCorta(fechaIso);
+    // Convertir saltos de línea del texto editable a <p>, escapando HTML.
+    const textoHtml = String(portada.texto).split(/\n{2,}/).map(parr =>
+      `<p>${_esc(parr).replace(/\n/g, '<br/>')}</p>`
+    ).join('');
+    return `
+<div class="sheet portada-sheet">
+  <div class="band"></div>
+  <header class="header">
+    <div class="brand">
+      ${assets.logoClaro ? `<div class="logo"><img src="${_esc(assets.logoClaro)}" alt=""/></div>` : ''}
+      <div class="brand-info">
+        <div class="razon">${_esc(empresa.razonSocial ?? '—')}</div>
+        ${empresa.nombreComercial ? `<div class="nombre-comercial">${_esc(empresa.nombreComercial)}</div>` : ''}
+        ${empresa.eslogan ? `<div class="eslogan">${_esc(empresa.eslogan)}</div>` : ''}
+      </div>
+    </div>
+    <div class="corp-meta">${corpRows}</div>
+  </header>
+  <div class="title-bar">
+    <div class="doc-type">Carta de Presentación<span class="sub">Propuesta Comercial</span></div>
+    <div class="doc-meta">
+      <div class="num mono">${_esc(numero)}</div>
+      <div style="margin-top:6px; font-size:9px; opacity:0.85;">${_esc(fechaStr)}</div>
+    </div>
+  </div>
+  <main class="body portada-body">
+    <div class="section-label">Estimado(a)</div>
+    <div class="portada-cliente">
+      <div class="razon-cli">${_esc(cliente?.razonSocial ?? '—')}</div>
+      ${cliente?.contacto ? `<div class="contacto-cli">A la atención de: <strong>${_esc(cliente.contacto)}</strong></div>` : ''}
+    </div>
+    <div class="portada-texto">${textoHtml}</div>
+    <div class="portada-firma">
+      ${repFull ? `<div class="firma-nombre">${_esc(repFull)}</div>` : ''}
+      ${empresa.representanteCargo ? `<div class="firma-cargo">${_esc(empresa.representanteCargo)}</div>` : ''}
+      <div class="firma-empresa">${_esc(empresa.razonSocial ?? '—')}</div>
+    </div>
+  </main>
+  <footer class="footer">
+    <div class="qr-block">
+      ${verifyUrl
+        ? `<a class="qr-anchor" href="${_esc(verifyUrl)}"><img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/></a>`
+        : `<img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/>`}
+      <div class="qr-text">
+        <div class="qr-ttl">Verificación Anti-Fraude</div>
+        <div>Escanea el QR o toca la URL para validar.</div>
+        ${verifyUrl ? `<div class="qr-url"><a href="${_esc(verifyUrl)}" style="text-decoration:none;color:inherit;">${_esc(verifyUrl)}</a></div>` : ''}
+      </div>
+    </div>
+    <div class="ctr">
+      <div>Documento Electrónico Verificable</div>
+      <div class="verify-line">${_esc(empresa.razonSocial ?? '')}${empresa.rnc ? ` · RNC ${_esc(empresa.rnc)}` : ''}</div>
+    </div>
+    <div class="right mono">${_esc(fechaStr)}</div>
+  </footer>
+</div>`;
+  }
+
+  function _renderSobreEmpresa({ sobreEmpresa }) {
+    if (!sobreEmpresa?.activa || !(sobreEmpresa.texto ?? '').trim()) return '';
+    const textoHtml = String(sobreEmpresa.texto).split(/\n{2,}/).map(parr =>
+      `<p>${_esc(parr).replace(/\n/g, '<br/>')}</p>`
+    ).join('');
+    return `
+      <div class="section-label" style="margin-top:14px;">Sobre nosotros</div>
+      <div class="sobre-empresa-box">${textoHtml}</div>`;
+  }
+
+  function _renderEstadoBadge(estado) {
+    if (!estado || estado === 'Enviada' || estado === 'Aprobada') return '';
+    // Solo mostramos badge BORRADOR / CONVERTIDA / PERDIDA — los estados que el
+    // cliente no debería confundir con "esta es la oferta final".
+    const colorMap = {
+      'Borrador':   { bg: '#fef3c7', fg: '#92400e', border: '#fcd34d' },
+      'Convertida': { bg: '#dcfce7', fg: '#166534', border: '#86efac' },
+      'Perdida':    { bg: '#fee2e2', fg: '#991b1b', border: '#fca5a5' },
+    };
+    const c = colorMap[estado] ?? colorMap['Borrador'];
+    return `<span class="estado-cotizador-libre" style="display:inline-block; margin-top:6px; padding:3px 10px; border-radius:3px; font-size:9px; font-weight:800; text-transform:uppercase; letter-spacing:0.12em; background:${c.bg}; color:${c.fg}; border:1px solid ${c.border};">${_esc(estado)}</span>`;
+  }
+
+  const _EXTRA_CSS = `
+/* ── Cotizador libre — bloques extra (portada, sobre-empresa, resumen) ─── */
+.portada-sheet .portada-body { padding: 36px 50px 24px; }
+.portada-cliente { margin-top: 6px; }
+.portada-cliente .razon-cli { font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.005em; }
+.portada-cliente .contacto-cli { font-size: 11px; color: #475569; margin-top: 2px; }
+.portada-texto { margin-top: 28px; font-size: 12px; line-height: 1.7; color: #1e293b; max-width: 100%; }
+.portada-texto p { margin-bottom: 14px; }
+.portada-firma { margin-top: 48px; padding-top: 28px; border-top: 1px solid #cbd5e1; max-width: 320px; }
+.portada-firma .firma-nombre { font-size: 12px; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.04em; }
+.portada-firma .firma-cargo { font-size: 9.5px; color: #475569; margin-top: 2px; letter-spacing: 0.06em; }
+.portada-firma .firma-empresa { font-size: 9.5px; color: #1e40af; font-weight: 700; margin-top: 4px; }
+
+.sobre-empresa-box {
+  border: 1px solid #e2e8f0; border-left: 3px solid #1e40af;
+  background: #f8fafc; border-radius: 4px;
+  padding: 12px 16px; font-size: 9.5px; color: #334155; line-height: 1.55;
+  page-break-inside: avoid;
+}
+.sobre-empresa-box p { margin-bottom: 6px; }
+
+.items.resumen-exec { margin-top: 4px; }
+.items.resumen-exec tbody td { font-size: 10px; }
+`;
 
   // ─── Inyección de fila Descuento en la sección de totales ─────────────────
   // El template oficial tiene Subtotal → ITBIS → Total. Insertamos una fila
@@ -378,11 +556,21 @@ function createCotizadorLibreService(deps) {
       precioUnitario: l.pu,
     }));
 
-    const verifyUrl = _construirVerifyUrl({
-      empresa,
-      numero,
-      razonSocialCliente: dto.cliente?.razonSocial,
+    // Verify URL = mismo formato que facturas: PUBLIC_VERIFY_BASE/verify/<hash>.
+    // Si tenemos el draft persistido, incluimos su id en el hash para garantizar
+    // unicidad. El hash se persiste en draft.meta para que /api/publico/verify/:hash
+    // pueda hacer lookup.
+    let draftPersistido = null;
+    if (repo && typeof repo.findOne === 'function') {
+      try { draftPersistido = await repo.findOne({ numeroDocumento: numero }); } catch {}
+    }
+    const verifyHashCalc = _computeVerifyHash({
+      draftId:         draftPersistido?.id ?? null,
+      numeroDocumento: numero,
+      total:           totales.total,
+      fechaIso,
     });
+    const verifyUrl = `${PUBLIC_VERIFY_BASE}/verify/${verifyHashCalc}`;
 
     const opts = {
       tipo:                    'cotizacion',
@@ -419,10 +607,54 @@ function createCotizadorLibreService(deps) {
     // 1) Render del documento oficial.
     let html = renderDocumento(opts);
 
-    // 2) Inyectar fila Descuento si aplica.
+    // 2) Inyectar CSS extra (portada + sobre-empresa + resumen) en <style>.
+    html = html.replace(/<\/style>/, `${_EXTRA_CSS}</style>`);
+
+    // 3) Inyectar fila Descuento si aplica.
     html = _injectarDescuentoEnTotales(html, totales.descuento);
 
-    // 3) Inyectar anexo fotográfico + CSS extra.
+    // 4) Estado badge en title-bar (Borrador / Convertida / Perdida).
+    const estado = dto.estado ?? 'Borrador';
+    const badgeHtml = _renderEstadoBadge(estado);
+    if (badgeHtml) {
+      // Inyectar dentro del .doc-meta del title-bar (debajo del num + fecha).
+      html = html.replace(
+        /(<div class="doc-meta">[\s\S]*?<\/div>\s*<\/div>\s*<main)/,
+        (m) => m.replace(/(<\/div>\s*<\/div>\s*<main)/, `${badgeHtml}$1`),
+      );
+    }
+
+    // 5) Sección "Sobre nosotros" entre cliente-grid y items table.
+    const sobreHtml = _renderSobreEmpresa({ sobreEmpresa: dto.sobreEmpresa });
+    if (sobreHtml) {
+      // Insertar antes de la section-label "Detalle de productos y servicios".
+      html = html.replace(
+        /(<div style="margin-top:16px;" class="section-label">Detalle de productos y servicios<\/div>)/,
+        `${sobreHtml}\n        $1`,
+      );
+    }
+
+    // 6) Resumen ejecutivo por categoría (antes de items table).
+    if (dto.mostrarResumen) {
+      const resumenHtml = _renderResumenTable({ lineas: totales.lineas });
+      html = html.replace(
+        /(<div style="margin-top:16px;" class="section-label">Detalle de productos y servicios<\/div>)/,
+        `${resumenHtml}\n        $1`,
+      );
+    }
+
+    // 7) Portada (sheet completo ANTES del primer sheet del documento).
+    const portadaHtml = _renderPortadaSheet({
+      portada: dto.portada, empresa, numero, cliente: dto.cliente, fechaIso, qrDataUri, verifyUrl,
+    });
+    if (portadaHtml) {
+      // Inyectar justo después de <body> y antes del primer <div class="sheet">.
+      // El primer sheet del template oficial tiene `page-break-before: auto`,
+      // así que la portada queda en página 1 y el documento en página 2+.
+      html = html.replace(/(<body[^>]*>)/, `$1\n${portadaHtml}`);
+    }
+
+    // 8) Inyectar anexo fotográfico al final + CSS del anexo.
     const { anexoHtml, anexoCss } = _renderAnexoFotos({
       lineas:    totales.lineas,
       empresa,
@@ -432,9 +664,7 @@ function createCotizadorLibreService(deps) {
       verifyUrl,
     });
     if (anexoHtml) {
-      // Inyectar CSS del anexo justo antes del cierre del <style> oficial.
       html = html.replace(/<\/style>/, `${anexoCss}</style>`);
-      // Inyectar el bloque de páginas del anexo antes del cierre del último sheet.
       html = html.replace('</body></html>', `${anexoHtml}\n</body></html>`);
     }
 
@@ -445,22 +675,21 @@ function createCotizadorLibreService(deps) {
   async function generarPdf(dto) {
     const totales   = _calcularTotales(dto);
     const fechaIso  = new Date().toISOString();
-    // QR del primer sheet usa el mismo verifyUrl que _renderHtml construirá
-    // adentro — pero como aquí no tenemos empresa fetcheada, pre-calculamos
-    // un payload aproximado. _renderHtml regenera el qrDataUri exacto si
-    // tiene EmpresaPerfil con teléfono real.
-    let qrPayload = `${(dto.empresaWebsite?.trim() || WEBSITE_DEFAULT).replace(/\/+$/, '')}`;
-    let empresaPreview = null;
-    if (repo && typeof repo.findEmpresaPerfil === 'function') {
-      try { empresaPreview = await repo.findEmpresaPerfil(); } catch {}
+    const numero    = dto.numeroDocumento || `COT-${Date.now().toString().slice(-6)}`;
+
+    // Hash precomputado para el QR del primer sheet. _renderHtml lo recalcula
+    // adentro con el mismo seed, así QR y verifyUrl quedan sincronizados.
+    let draftPreview = null;
+    if (repo && typeof repo.findOne === 'function') {
+      try { draftPreview = await repo.findOne({ numeroDocumento: numero }); } catch {}
     }
-    if (empresaPreview) {
-      qrPayload = _construirVerifyUrl({
-        empresa: empresaPreview,
-        numero:  dto.numeroDocumento || 'COT',
-        razonSocialCliente: dto.cliente?.razonSocial,
-      });
-    }
+    const hash = _computeVerifyHash({
+      draftId:         draftPreview?.id ?? null,
+      numeroDocumento: numero,
+      total:           totales.total,
+      fechaIso,
+    });
+    const qrPayload = `${PUBLIC_VERIFY_BASE}/verify/${hash}`;
     const qrDataUri = await _qrDataUri(qrPayload);
     const html      = await _renderHtml({ dto, totales, qrDataUri, fechaIso });
     const buffer    = await generarPdfDocumento(html, {
@@ -470,7 +699,12 @@ function createCotizadorLibreService(deps) {
     if (!buffer || !buffer.length) {
       throw new CotizadorLibreError(500, 'PDF_EMPTY', 'El render generó un PDF vacío.');
     }
-    return { buffer, totales, numeroDocumento: dto.numeroDocumento || `COT-${Date.now().toString().slice(-6)}` };
+    // Side-effect: persist hash en el draft para que /verify/:hash lo encuentre.
+    // No bloquea el response — si falla, el PDF ya está generado y el QR todavía
+    // funciona si el hash matchea algún draft persistido posteriormente con auto-save.
+    _persistirHashEnDraft({ numeroDocumento: numero, hash }).catch(() => {});
+
+    return { buffer, totales, numeroDocumento: numero, verifyHash: hash };
   }
 
   // ─── Drafts (persistencia opcional — repo puede no estar inyectado) ──────

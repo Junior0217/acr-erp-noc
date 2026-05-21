@@ -44,6 +44,7 @@ export default function EditorCondiciones({
   obligatorios = {}, locked = false, onRequestUnlock,
   formaPagoChildren, placeholders = {},
   keys,
+  editAlwaysOn = false,
 }) {
   const renderKeys = Array.isArray(keys) && keys.length > 0
     ? keys.filter(k => ALL_KEYS.includes(k))
@@ -70,6 +71,7 @@ export default function EditorCondiciones({
             maxLength={meta.maxLength}
             placeholder={placeholder}
             variant={isPago && formaPagoChildren ? 'select' : 'default'}
+            editAlwaysOn={editAlwaysOn}
           >
             {isPago && formaPagoChildren}
           </CondicionToggle>

@@ -21,6 +21,11 @@
  *   variant         : 'default' | 'select' — si 'select', el children es un
  *                     <select> u otro control en lugar del input de texto
  *   children        : ReactNode — render alternativo (si variant='select')
+ *   editAlwaysOn    : boolean — si true, el input se muestra SIEMPRE (aunque
+ *                     toggle esté en "Oculto"). El toggle solo decide si la
+ *                     condición sale en el PDF; el texto siempre es editable.
+ *                     Usado por el Cotizador Libre — filosofía "documento
+ *                     completamente abierto al usuario".
  */
 
 import { Lock } from 'lucide-react'
@@ -31,12 +36,19 @@ export default function CondicionToggle({
   locked = false, onRequestUnlock,
   variant = 'default',
   children,
+  editAlwaysOn = false,
 }) {
   const on = obligatorio ? true : mostrar
   const textoLocked = locked
+  // Cuando `editAlwaysOn`, el input se renderiza incluso si `on=false`. El
+  // toggle entonces solo decide visibilidad en el PDF (no si el campo existe
+  // en el editor). El borde del wrapper sigue reflejando el estado del toggle
+  // para que el usuario sepa visualmente "esto está oculto en el PDF pero
+  // puedo seguir tipeando".
+  const showInput = on || editAlwaysOn
 
   return (
-    <div className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : 'border-slate-800 bg-slate-900/40'}`}>
+    <div className={`w-full overflow-hidden rounded-lg border px-2.5 py-1.5 transition-colors ${on ? 'border-blue-600/30 bg-blue-600/5' : (editAlwaysOn ? 'border-slate-700 bg-slate-900/60' : 'border-slate-800 bg-slate-900/40')}`}>
       <div className="flex w-full items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="truncate text-[11px] font-medium text-slate-200">{label}</span>
@@ -60,19 +72,19 @@ export default function CondicionToggle({
           <span className={`absolute top-0.5 left-0.5 h-3 w-3 rounded-full bg-white shadow transition-transform ${on ? 'translate-x-4' : 'translate-x-0'}`} />
         </button>
       </div>
-      {on && variant === 'select' && (
+      {showInput && variant === 'select' && (
         <div className={`mt-1 ${textoLocked ? 'opacity-60 pointer-events-none' : ''}`}>
           {children}
         </div>
       )}
-      {on && variant === 'default' && (multiline ? (
+      {showInput && variant === 'default' && (multiline ? (
         <textarea
           rows={2} maxLength={maxLength} value={texto}
           onChange={e => onTexto(e.target.value)}
           placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor (clic en el switch)' : placeholder}
           disabled={textoLocked}
           onClick={() => { if (textoLocked) onRequestUnlock?.() }}
-          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y disabled:opacity-40 disabled:cursor-not-allowed"
+          className={`mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 resize-y disabled:opacity-40 disabled:cursor-not-allowed ${!on && editAlwaysOn ? 'opacity-70' : ''}`}
         />
       ) : (
         <input
@@ -81,11 +93,16 @@ export default function CondicionToggle({
           placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor' : placeholder}
           disabled={textoLocked}
           onClick={() => { if (textoLocked) onRequestUnlock?.() }}
-          className="mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed"
+          className={`mt-1 w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed ${!on && editAlwaysOn ? 'opacity-70' : ''}`}
         />
       ))}
-      {on && multiline && variant === 'default' && (
+      {showInput && multiline && variant === 'default' && (
         <span className="text-[9px] text-slate-600">{(texto?.length ?? 0)}/{maxLength}</span>
+      )}
+      {!on && editAlwaysOn && (
+        <div className="mt-1 text-[9px] text-slate-500 italic">
+          Texto editable · activa el toggle para que aparezca en el PDF
+        </div>
       )}
     </div>
   )

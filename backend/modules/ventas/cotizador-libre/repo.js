@@ -110,12 +110,28 @@ function createCotizadorLibreRepo(prisma) {
     return prisma.empresaPerfil.findFirst();
   }
 
+  /**
+   * findByVerifyHash — lookup público para el endpoint /api/publico/verify/:hash.
+   * El hash se persiste en `meta.verifyHash` (JSONB) tras cada render de PDF.
+   * Como el campo no está indexado, usamos un filtro raw con `path:` de Postgres.
+   * Para volúmenes <10K drafts es aceptable; con más debería añadirse índice
+   * GIN parcial `WHERE meta ? 'verifyHash'`.
+   */
+  async function findByVerifyHash(hash) {
+    if (!hash) return null;
+    return prisma.cotizacionLibreDraft.findFirst({
+      where:  { meta: { path: ['verifyHash'], equals: hash } },
+      include: { empleado: { select: { id: true, nombre: true, cargo: true } } },
+    });
+  }
+
   return {
     findOne,
     list,
     upsertByEmpleadoYNumero,
     deleteByEmpleadoYNumero,
     findEmpresaPerfil,
+    findByVerifyHash,
   };
 }
 
