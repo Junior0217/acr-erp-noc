@@ -122,6 +122,44 @@ function createCotizadorLibreService(deps) {
     } catch { return null; }
   }
 
+  // ─── Normalización de teléfono para wa.me ─────────────────────────────────
+  // wa.me/<DDIPAIS+NUMERO> sin "+", sin paréntesis, sin guiones. RD = código
+  // 1 (no 1809; el 809/829/849 es prefijo de área DENTRO del DDI 1).
+  function _telefonoParaWhatsApp(tel) {
+    if (!tel) return null;
+    const d = String(tel).replace(/\D/g, '');
+    if (d.length === 10 && /^(809|829|849)/.test(d)) return `1${d}`;  // RD 10 dígitos → +1 prepend
+    if (d.length === 11 && d.startsWith('1'))         return d;        // ya tiene +1
+    if (d.length >= 10 && d.length <= 15)             return d;        // otro país (e164)
+    return null;
+  }
+
+  // verifyUrl: para una cotización libre (no factura DGII) no hay hash-chain
+  // ni endpoint público de validación todavía. La URL del QR apunta al canal
+  // de contacto directo del emisor en este orden de prioridad:
+  //   1) WhatsApp del teléfono empresarial — el cliente escanea y abre un
+  //      chat pre-llenado al socio, quien valida manualmente la cotización.
+  //      Experiencia VIP cero-fricción para primera cotización.
+  //   2) Email empresarial (mailto:) — fallback formal si no hay teléfono.
+  //   3) Website empresarial — fallback genérico.
+  function _construirVerifyUrl({ empresa, numero, razonSocialCliente }) {
+    const tel = _telefonoParaWhatsApp(empresa?.telefono);
+    if (tel) {
+      const msg = `Hola, quiero verificar la cotización ${numero} emitida por ${empresa?.razonSocial ?? 'RA Networks'}${razonSocialCliente ? ` a nombre de ${razonSocialCliente}` : ''}.`;
+      return `https://wa.me/${tel}?text=${encodeURIComponent(msg)}`;
+    }
+    if (empresa?.email) {
+      const subject = encodeURIComponent(`Verificación de cotización ${numero}`);
+      const body    = encodeURIComponent(`Buen día,\n\nDeseo verificar la cotización ${numero}${razonSocialCliente ? ` emitida a ${razonSocialCliente}` : ''}.\n\nGracias.`);
+      return `mailto:${empresa.email}?subject=${subject}&body=${body}`;
+    }
+    if (empresa?.website) {
+      const w = String(empresa.website).trim().replace(/\/+$/, '');
+      return w.startsWith('http') ? w : `https://${w}`;
+    }
+    return WEBSITE_DEFAULT;
+  }
+
   // ─── Inyección de fila Descuento en la sección de totales ─────────────────
   // El template oficial tiene Subtotal → ITBIS → Total. Insertamos una fila
   // "Descuento" antes de Total cuando aplica. Usa la misma clase `.tot-row`
@@ -340,7 +378,11 @@ function createCotizadorLibreService(deps) {
       precioUnitario: l.pu,
     }));
 
-    const verifyUrl = `${(empresa.website || WEBSITE_DEFAULT).replace(/\/+$/, '')}/cotizador-pro?doc=${encodeURIComponent(numero)}`;
+    const verifyUrl = _construirVerifyUrl({
+      empresa,
+      numero,
+      razonSocialCliente: dto.cliente?.razonSocial,
+    });
 
     const opts = {
       tipo:                    'cotizacion',
@@ -403,7 +445,22 @@ function createCotizadorLibreService(deps) {
   async function generarPdf(dto) {
     const totales   = _calcularTotales(dto);
     const fechaIso  = new Date().toISOString();
-    const qrPayload = `${(dto.empresaWebsite?.trim() || WEBSITE_DEFAULT).replace(/\/+$/, '')}/cotizador-pro?doc=${encodeURIComponent(dto.numeroDocumento || 'COT')}`;
+    // QR del primer sheet usa el mismo verifyUrl que _renderHtml construirá
+    // adentro — pero como aquí no tenemos empresa fetcheada, pre-calculamos
+    // un payload aproximado. _renderHtml regenera el qrDataUri exacto si
+    // tiene EmpresaPerfil con teléfono real.
+    let qrPayload = `${(dto.empresaWebsite?.trim() || WEBSITE_DEFAULT).replace(/\/+$/, '')}`;
+    let empresaPreview = null;
+    if (repo && typeof repo.findEmpresaPerfil === 'function') {
+      try { empresaPreview = await repo.findEmpresaPerfil(); } catch {}
+    }
+    if (empresaPreview) {
+      qrPayload = _construirVerifyUrl({
+        empresa: empresaPreview,
+        numero:  dto.numeroDocumento || 'COT',
+        razonSocialCliente: dto.cliente?.razonSocial,
+      });
+    }
     const qrDataUri = await _qrDataUri(qrPayload);
     const html      = await _renderHtml({ dto, totales, qrDataUri, fechaIso });
     const buffer    = await generarPdfDocumento(html, {
