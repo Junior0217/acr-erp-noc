@@ -43,6 +43,29 @@ const rateLimit = require('express-rate-limit');
 // Convención: `rl:<dominio>:<accion>:` — separadores `:` para que Redis
 // pueda hacer `KEYS rl:auth:*` durante incidentes. Sin sufijo numérico
 // (que rate-limit-redis añade automáticamente con el contador).
+//
+// Tipado JSDoc:
+//   - `@typedef {keyof typeof LIMITER_PREFIXES} LimiterName` — unión literal
+//     `'login' | 'totp' | 'backupCode' | ...`. IDE-friendly: VS Code y otros
+//     editores autocompletan los nombres válidos y subrayan typos.
+//   - Las factorías declaran `opts.prefix` como string (override libre) pero
+//     internamente usan `LIMITER_PREFIXES[name]` para defaults — el `as const`
+//     virtual via Object.freeze + JSDoc da seguridad de tipos sin migrar a TS.
+//
+/**
+ * @typedef {('login' | 'totp' | 'backupCode' | 'webhookApprove' | 'telemetry' | 'billing' | 'upload' | 'portalLogin')} LimiterName
+ *
+ * Nombres válidos de limiters declarados en este módulo. Si un consumer
+ * pasa `opts.prefix` manual, debe respetar la convención `rl:<dominio>:<accion>:`
+ * para no romper queries `KEYS rl:*` de diagnóstico.
+ */
+
+/**
+ * Mapa de prefixes Redis por limiter. Llaves estables = LimiterName. Valores
+ * son strings frozen — mutación lanza TypeError en strict mode (Node CJS).
+ *
+ * @type {Readonly<Record<LimiterName, string>>}
+ */
 const LIMITER_PREFIXES = Object.freeze({
   login:          'rl:auth:login:',
   totp:           'rl:auth:totp:',
@@ -53,6 +76,20 @@ const LIMITER_PREFIXES = Object.freeze({
   upload:         'rl:upload:',
   portalLogin:    'rl:portal:login:',
 });
+
+/**
+ * Opciones comunes a todas las factorías de limiters. Se documenta aquí para
+ * que cada factory consume `@param {LimiterOptions} opts` y herede el shape
+ * sin duplicar la firma.
+ *
+ * @typedef {Object} LimiterOptions
+ * @property {number}                                 [windowMs] - ventana en ms.
+ * @property {number}                                 [max]      - límite de hits en la ventana.
+ * @property {(req: import('express').Request) => string} [keyGenerator] - función para particionar el contador.
+ * @property {boolean}                                [skipSuccessfulRequests] - los 2xx no cuentan al contador.
+ * @property {string}                                 [prefix]   - override de prefix Redis (usa LIMITER_PREFIXES por default).
+ * @property {(opts: { prefix?: string }) => object | undefined} [makeStore] - factoría de store distribuido.
+ */
 
 // Validación al boot: si dos prefixes son iguales por error de copy-paste,
 // fallamos inmediatamente con mensaje claro. No esperamos a producción para

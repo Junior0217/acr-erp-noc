@@ -853,6 +853,7 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
     mostrar:  condMostrar,
     onChange: condOnChange,
     onMostrar: condOnMostrar,
+    isDirty:  condIsDirty,
   } = useCondicionesDoc()
   const [savingCond, setSavingCond] = useState(false)
   // Paridad POS/Carrito: editar condiciones de un documento ya emitido también
@@ -1021,8 +1022,10 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
                         className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
                         Cancelar
                       </button>
-                      <button onClick={guardarCondiciones} disabled={savingCond}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40">
+                      <button onClick={guardarCondiciones}
+                        disabled={savingCond || !condIsDirty}
+                        title={!condIsDirty ? 'No hay cambios para guardar' : undefined}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
                         {savingCond ? <Loader2 size={11} className="animate-spin" /> : <Save size={11} />}
                         Guardar
                       </button>

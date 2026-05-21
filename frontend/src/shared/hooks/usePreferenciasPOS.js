@@ -48,12 +48,19 @@ const BC_NAME = 'acr.preferenciasPOS'
 //     diagnóstico. fetch crudo nos permite swallow el 403 sin colateral.
 const _telemetrySent = new Set()
 
+// Match exacto del cookie nombrado `csrf` (no `my_csrf`, no `xcsrf_token`).
+// El split por '; ' respeta el separador estándar de document.cookie. La
+// comparación `startsWith('csrf=')` garantiza que solo cae sobre la cookie
+// cuyo nombre completo es `csrf`. Regex match parcial sería vulnerable a
+// otra cookie con sufijo similar definida por extensiones o terceros.
 function _readCsrfCookie() {
   try {
     if (typeof document === 'undefined') return null
     const raw = document.cookie ?? ''
-    const m = raw.match(/(?:^|;\s*)csrf=([^;]+)/)
-    return m ? decodeURIComponent(m[1]) : null
+    if (!raw) return null
+    const found = raw.split('; ').find((r) => r.startsWith('csrf='))
+    if (!found) return null
+    return decodeURIComponent(found.slice('csrf='.length))
   } catch { return null }
 }
 

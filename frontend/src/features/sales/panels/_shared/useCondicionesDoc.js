@@ -21,7 +21,7 @@
  *   cada campo puede ser string legacy o { incluir, texto }.
  */
 
-import { useCallback, useState } from 'react'
+import { useCallback, useRef, useState } from 'react'
 
 const KEYS = ['validez', 'pago', 'entrega', 'garantia']
 
@@ -37,8 +37,29 @@ export function buildCondState(initial = {}) {
   return out
 }
 
+// Comparación dirty: dos estados son iguales si todas las claves tienen el
+// mismo `texto` e `incluir`. Solo 4 claves × 2 props → comparación manual es
+// O(8) y evita la indirección de JSON.stringify (que puede serializar
+// distinto si los objetos tienen propiedades en orden diferente).
+function condEquals(a, b) {
+  if (a === b) return true
+  if (!a || !b) return false
+  for (const k of KEYS) {
+    const av = a[k] ?? { incluir: false, texto: '' }
+    const bv = b[k] ?? { incluir: false, texto: '' }
+    if (av.incluir !== bv.incluir) return false
+    if ((av.texto ?? '') !== (bv.texto ?? '')) return false
+  }
+  return true
+}
+
 export default function useCondicionesDoc(initial) {
   const [cond, setCond] = useState(() => buildCondState(initial))
+  // `baseline`: snapshot del último estado "persistido" / "cargado". Se actualiza
+  // SOLO en `reset()`. `isDirty` compara `cond` contra `baseline` — apagar el
+  // botón Guardar cuando el usuario aún no ha cambiado nada evita PATCH no-op
+  // (gasto de cuota billingLimiter + audit-log innecesario).
+  const baselineRef = useRef(buildCondState(initial))
 
   // setters.texto[k]?.(v) — análogo al patrón usado en PanelPOS. Inyecta
   // texto en la condición `k` y auto-marca incluir si pasa de vacío a no-vacío.
@@ -57,7 +78,9 @@ export default function useCondicionesDoc(initial) {
   }, [])
 
   const reset = useCallback((next) => {
-    setCond(buildCondState(next))
+    const fresh = buildCondState(next)
+    baselineRef.current = fresh
+    setCond(fresh)
   }, [])
 
   // Derivados para pasar tal cual a <EditorCondiciones />:
@@ -82,5 +105,7 @@ export default function useCondicionesDoc(initial) {
     return out
   }, [cond])
 
-  return { cond, setCond, values, mostrar, onChange, onMostrar, reset, serialize }
+  const isDirty = !condEquals(cond, baselineRef.current)
+
+  return { cond, setCond, values, mostrar, onChange, onMostrar, reset, serialize, isDirty }
 }
