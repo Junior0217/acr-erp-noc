@@ -319,7 +319,14 @@ function createCotizadorLibreService(deps) {
 
   const _EXTRA_CSS = `
 /* ── Cotizador libre — bloques extra (portada, sobre-empresa, resumen) ─── */
-.portada-sheet .portada-body { padding: 36px 50px 24px; }
+/* CRITICO: el footer del template oficial es position:absolute bottom:0,
+   por lo que NO empuja el contenido del body, flota encima. Cualquier .body
+   con contenido extenso (anexo de fotos, portada larga) debe tener
+   padding-bottom suficiente para no quedar solapado por el footer. Altura
+   del footer ~90px (qr 64 + padding 8+12 + texto). Reservamos 120-140px. */
+.portada-sheet .portada-body { padding: 36px 50px 140px; }
+.cotizador-libre-body        { padding-bottom: 130px !important; }
+.anexo > main.body           { padding-bottom: 140px !important; }
 .portada-cliente { margin-top: 6px; }
 .portada-cliente .razon-cli { font-size: 18px; font-weight: 800; color: #0f172a; letter-spacing: -0.005em; }
 .portada-cliente .contacto-cli { font-size: 11px; color: #475569; margin-top: 2px; }
