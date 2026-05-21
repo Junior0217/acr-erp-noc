@@ -47,6 +47,75 @@ const FOTO_QUALITY     = 0.7
 const MAX_FOTOS_X_ITEM = 5
 const MAX_FOTO_BYTES   = 320 * 1024  // alineado con backend MAX_FOTO_BYTES
 
+// ─── Generador de fotos placeholder ──────────────────────────────────────────
+// Crea fotos demo a 800x600 JPEG cuando una plantilla las requiere — útil para
+// previsualizar el anexo fotográfico del PDF sin tener que adjuntar archivos
+// reales. Cada placeholder muestra un glyph (CCTV/NVR/cable) + título +
+// subtítulo sobre un gradient slate→accent. Output: dataURI image/jpeg, válido
+// para el schema backend (image/(jpeg|png|webp) regex).
+async function _generarFotoPlaceholder({ titulo, subtitulo = '', glyph = '◉', accent = '#1e40af' }) {
+  const W = 800, H = 600
+  const canvas = document.createElement('canvas')
+  canvas.width = W
+  canvas.height = H
+  const ctx = canvas.getContext('2d')
+
+  // Fondo gradient slate → accent.
+  const g = ctx.createLinearGradient(0, 0, W, H)
+  g.addColorStop(0,    '#0f172a')
+  g.addColorStop(0.55, '#1e293b')
+  g.addColorStop(1,    accent)
+  ctx.fillStyle = g
+  ctx.fillRect(0, 0, W, H)
+
+  // Vignette sutil radial para profundidad.
+  const r = ctx.createRadialGradient(W / 2, H / 2, 100, W / 2, H / 2, W * 0.7)
+  r.addColorStop(0, 'rgba(0,0,0,0)')
+  r.addColorStop(1, 'rgba(0,0,0,0.45)')
+  ctx.fillStyle = r
+  ctx.fillRect(0, 0, W, H)
+
+  // Glyph central grande (puede ser emoji o símbolo unicode).
+  ctx.fillStyle    = 'rgba(255,255,255,0.92)'
+  ctx.textAlign    = 'center'
+  ctx.textBaseline = 'middle'
+  ctx.font         = 'bold 220px "Helvetica Neue", Arial, "Segoe UI Emoji", sans-serif'
+  ctx.fillText(glyph, W / 2, H / 2 - 60)
+
+  // Título.
+  ctx.fillStyle = '#ffffff'
+  ctx.font      = 'bold 38px "Helvetica Neue", Arial, sans-serif'
+  ctx.fillText(titulo || 'Foto referencial', W / 2, H / 2 + 140)
+
+  // Subtítulo.
+  if (subtitulo) {
+    ctx.fillStyle = 'rgba(255,255,255,0.65)'
+    ctx.font      = '20px "Helvetica Neue", Arial, sans-serif'
+    ctx.fillText(subtitulo, W / 2, H / 2 + 180)
+  }
+
+  // Watermark "DEMO" esquina inferior derecha.
+  ctx.fillStyle = 'rgba(255,255,255,0.35)'
+  ctx.font      = 'bold 14px "Helvetica Neue", Arial, sans-serif'
+  ctx.textAlign = 'right'
+  ctx.fillText('FOTO DE REFERENCIA · REEMPLAZAR EN OBRA', W - 24, H - 24)
+
+  // Borde delgado.
+  ctx.strokeStyle = 'rgba(255,255,255,0.18)'
+  ctx.lineWidth   = 4
+  ctx.strokeRect(2, 2, W - 4, H - 4)
+
+  // Encode a JPEG y a dataURI.
+  const blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', 0.72))
+  if (!blob) return null
+  return new Promise((res) => {
+    const reader = new FileReader()
+    reader.onload  = () => res(reader.result)
+    reader.onerror = () => res(null)
+    reader.readAsDataURL(blob)
+  })
+}
+
 async function comprimirImagen(file) {
   if (!file || !file.type?.startsWith('image/')) {
     throw new Error('No es una imagen')
@@ -125,14 +194,18 @@ const CATEGORIAS = [
 
 const ESTADOS = ['Borrador', 'Enviada', 'Aprobada', 'Convertida', 'Perdida']
 
+// Default INICIAL del editor — vacío. El usuario pulsa "↻ Texto sugerido"
+// para que se rellene con el texto generado a partir de `EmpresaPerfil` real
+// (razón social, eslogan, representante). Esto evita acarrear cualquier
+// nombre comercial hardcoded en el cliente — la fuente de verdad es BD.
 const PORTADA_DEFAULT = {
   activa: false,
-  texto: 'Estimados,\n\nReciban un cordial saludo de parte del equipo de ACR Networks & Solutions.\n\nNos complace presentarles la siguiente propuesta técnico-comercial para el levantamiento e instalación del sistema de videovigilancia profesional descrito a continuación. Esta propuesta incluye equipamiento de marca reconocida, mano de obra calificada y garantía sobre los servicios prestados.\n\nQuedamos a su entera disposición para ampliar cualquier punto de la propuesta y avanzar con la firma del acuerdo cuando lo consideren oportuno.',
+  texto:  '',
 }
 
 const SOBRE_EMPRESA_DEFAULT = {
   activa: false,
-  texto: 'ACR Networks & Solutions es una empresa especializada en infraestructura de redes, seguridad electrónica y fibra óptica. Diseñamos, instalamos y damos mantenimiento a soluciones para escuelas, oficinas, industrias y residenciales en todo el territorio nacional.\n\nNuestro equipo combina experiencia de campo y certificaciones de fabricantes reconocidos (Dahua, Ubiquiti, Cambium, MikroTik) para garantizar despliegues que duran años con bajo costo operativo.',
+  texto:  '',
 }
 
 const ITEMS_INICIAL = [nuevaLinea()]
@@ -141,49 +214,53 @@ const ITEMS_INICIAL = [nuevaLinea()]
 // Cada ítem trae un ejemplo de `lugarInstalacion` para que Cristian solo
 // ajuste especificaciones del sitio (altura, dirección de mira, etc.) en
 // vez de pensar desde cero.
+//
+// `_placeholder` define la configuración para auto-generar 1 foto demo al
+// cargar la plantilla — útil para previsualizar el anexo fotográfico
+// completo del PDF sin tener fotos reales aún.
 const PLANTILLA_CCTV_36 = [
-  { codigo: 'CCTV-DAH-HFW1839T',     descripcion: 'Cámara IP Dahua 4K 8MP IPC-HFW1839T1-LED tipo bullet ColorVu 2.8mm',                cantidad: 36, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Distribuidas en aulas, pasillos, patio principal y perímetro exterior. Altura promedio 3.5m, ángulo de mira 35° hacia abajo.' },
-  { codigo: 'CCTV-DAH-NVR5232',      descripcion: 'NVR Dahua 32 Canales NVR5232-EI 4K H.265+ con AI (rostros + cruce de línea)',         cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Rack principal en cuarto de servidores (Dirección Administrativa, planta baja). Conexión UPS + red privada.' },
-  { codigo: 'STORAGE-WD-8TB-PURPLE', descripcion: 'Disco duro Western Digital Purple 8TB Surveillance WD84PURZ',                          cantidad: 4,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: '2 discos por NVR en RAID 1 — redundancia para 30 días de grabación continua a 4K H.265+.' },
-  { codigo: 'NET-UBQ-USW-24-POE',    descripcion: 'Switch UniFi USW-24-POE 24-puerto gigabit con 16 PoE+ (250W total)',                   cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Rack principal junto al NVR. Alimenta 16 cámaras vía PoE+ (clase 4, 30W por puerto).' },
-  { codigo: 'NET-UBQ-USW-LITE-8',    descripcion: 'Switch UniFi USW-Lite-8-POE 8-puerto gigabit con 4 PoE+ (52W)',                        cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Edificio anexo (cancha cubierta + canchas exteriores). Conectado por fibra al rack principal.' },
-  { codigo: 'FO-DROP-2H-1000M',      descripcion: 'Bobina Fibra Óptica Drop 2 Hilos SM G657A1 1000m (interplanta entre edificios)',     cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',      lugarInstalacion: 'Tendido subterráneo (canalización existente) desde rack principal hasta edificios B y C. Fusiones en cajas NAP.' },
-  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m exterior (gel-filled) para tendido entre cámaras y rack', cantidad: 6,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',      lugarInstalacion: 'Bandejas portacables existentes + tubería conduit nueva en exteriores. Etiquetado por cámara según plano as-built.' },
-  { codigo: 'NET-RJ45-CAT6-PACK100', descripcion: 'Conectores RJ45 Cat6 blindados pack×100 con bota anti-tirón',                          cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',      lugarInstalacion: 'Crimpado en ambos extremos de cada cable UTP — patch panel del rack + caja de cámara.' },
-  { codigo: 'NET-RACK-12U',          descripcion: 'Rack mural 12U 600mm con organizador y bandeja para NVR + switches',                  cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Cuarto técnico principal + caseta de vigilancia. Montaje sobre pared con cierre con llave.' },
-  { codigo: 'POWER-UPS-3KVA',        descripcion: 'UPS APC SmartConnect 3000VA online con respaldo 2h al rack principal',               cantidad: 1,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Pie de rack principal. Conectado a circuito eléctrico dedicado 20A con descarga a tierra dedicada.' },
-  { codigo: 'SVC-INSTALACION',       descripcion: 'Servicio técnico: instalación, configuración remota DMSS, programación AI y entrega final con planos as-built', cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios',     lugarInstalacion: 'In situ. Incluye levantamiento del sitio, montaje de cámaras, tendido, pruebas funcionales y documentación.' },
-  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 2 horas presencial al personal designado (uso de NVR, exportación de video, alertas móvil)',       cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Capacitación',  lugarInstalacion: 'Sala de reuniones del cliente. Para 3-5 personas designadas (director, subdirector, encargado de seguridad).' },
+  { codigo: 'CCTV-DAH-HFW1839T',     descripcion: 'Cámara IP Dahua 4K 8MP IPC-HFW1839T1-LED tipo bullet ColorVu 2.8mm',                cantidad: 36, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Distribuidas en aulas, pasillos, patio principal y perímetro exterior. Altura promedio 3.5m, ángulo de mira 35° hacia abajo.', _placeholder: { titulo: 'Cámara IP Bullet 4K',     subtitulo: 'Dahua HFW1839T · ColorVu 2.8mm',     glyph: '📹', accent: '#1d4ed8' } },
+  { codigo: 'CCTV-DAH-NVR5232',      descripcion: 'NVR Dahua 32 Canales NVR5232-EI 4K H.265+ con AI (rostros + cruce de línea)',         cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Rack principal en cuarto de servidores (Dirección Administrativa, planta baja). Conexión UPS + red privada.',        _placeholder: { titulo: 'NVR 32 Canales 4K',     subtitulo: 'Dahua NVR5232-EI · AI integrada',     glyph: '🖥️', accent: '#0e7490' } },
+  { codigo: 'STORAGE-WD-8TB-PURPLE', descripcion: 'Disco duro Western Digital Purple 8TB Surveillance WD84PURZ',                          cantidad: 4,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: '2 discos por NVR en RAID 1 — redundancia para 30 días de grabación continua a 4K H.265+.',                              _placeholder: { titulo: 'Disco 8TB Surveillance', subtitulo: 'WD Purple WD84PURZ',                  glyph: '💾', accent: '#7c3aed' } },
+  { codigo: 'NET-UBQ-USW-24-POE',    descripcion: 'Switch UniFi USW-24-POE 24-puerto gigabit con 16 PoE+ (250W total)',                   cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Rack principal junto al NVR. Alimenta 16 cámaras vía PoE+ (clase 4, 30W por puerto).',                                 _placeholder: { titulo: 'Switch UniFi 24P PoE+',  subtitulo: 'USW-24-POE · 250W total',             glyph: '🔌', accent: '#0369a1' } },
+  { codigo: 'NET-UBQ-USW-LITE-8',    descripcion: 'Switch UniFi USW-Lite-8-POE 8-puerto gigabit con 4 PoE+ (52W)',                        cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Edificio anexo (cancha cubierta + canchas exteriores). Conectado por fibra al rack principal.',                       _placeholder: { titulo: 'Switch UniFi Lite-8',   subtitulo: 'USW-Lite-8-POE · 4 PoE+',             glyph: '🔌', accent: '#0284c7' } },
+  { codigo: 'FO-DROP-2H-1000M',      descripcion: 'Bobina Fibra Óptica Drop 2 Hilos SM G657A1 1000m (interplanta entre edificios)',     cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',      lugarInstalacion: 'Tendido subterráneo (canalización existente) desde rack principal hasta edificios B y C. Fusiones en cajas NAP.',     _placeholder: { titulo: 'Fibra Óptica Drop 2H',  subtitulo: 'SM G657A1 · Bobina 1000m',            glyph: '🧵', accent: '#16a34a' } },
+  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m exterior (gel-filled) para tendido entre cámaras y rack', cantidad: 6,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',      lugarInstalacion: 'Bandejas portacables existentes + tubería conduit nueva en exteriores. Etiquetado por cámara según plano as-built.', _placeholder: { titulo: 'Cable UTP Cat6 305m',   subtitulo: 'Exterior gel-filled · Cat6 PE',       glyph: '🪢', accent: '#65a30d' } },
+  { codigo: 'NET-RJ45-CAT6-PACK100', descripcion: 'Conectores RJ45 Cat6 blindados pack×100 con bota anti-tirón',                          cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',      lugarInstalacion: 'Crimpado en ambos extremos de cada cable UTP — patch panel del rack + caja de cámara.',                                 _placeholder: { titulo: 'RJ45 Cat6 Blindados',   subtitulo: 'Pack ×100 con bota anti-tirón',       glyph: '🧷', accent: '#a16207' } },
+  { codigo: 'NET-RACK-12U',          descripcion: 'Rack mural 12U 600mm con organizador y bandeja para NVR + switches',                  cantidad: 2,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Cuarto técnico principal + caseta de vigilancia. Montaje sobre pared con cierre con llave.',                            _placeholder: { titulo: 'Rack Mural 12U',        subtitulo: '600mm · Con organizador',             glyph: '🗄️', accent: '#475569' } },
+  { codigo: 'POWER-UPS-3KVA',        descripcion: 'UPS APC SmartConnect 3000VA online con respaldo 2h al rack principal',               cantidad: 1,  precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',       lugarInstalacion: 'Pie de rack principal. Conectado a circuito eléctrico dedicado 20A con descarga a tierra dedicada.',                  _placeholder: { titulo: 'UPS Online 3KVA',       subtitulo: 'APC SmartConnect · 2h respaldo',      glyph: '🔋', accent: '#f59e0b' } },
+  { codigo: 'SVC-INSTALACION',       descripcion: 'Servicio técnico: instalación, configuración remota DMSS, programación AI y entrega final con planos as-built', cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios',     lugarInstalacion: 'In situ. Incluye levantamiento del sitio, montaje de cámaras, tendido, pruebas funcionales y documentación.',          _placeholder: { titulo: 'Servicio Instalación',  subtitulo: 'Mano de obra especializada',          glyph: '🛠️', accent: '#dc2626' } },
+  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 2 horas presencial al personal designado (uso de NVR, exportación de video, alertas móvil)',       cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Capacitación',  lugarInstalacion: 'Sala de reuniones del cliente. Para 3-5 personas designadas (director, subdirector, encargado de seguridad).',          _placeholder: { titulo: 'Capacitación Presencial', subtitulo: '2h al personal del cliente',         glyph: '🎓', accent: '#ea580c' } },
 ]
 
 // Plantilla Fibra Óptica residencial / pequeño negocio.
 const PLANTILLA_FIBRA_RES = [
-  { codigo: 'FO-CAJA-NAP-16',        descripcion: 'Caja NAP 16 puertos para distribución de fibra óptica en poste/fachada',             cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',   lugarInstalacion: 'Poste de tendido del cliente, altura 4m. Splitter 1:8 instalado dentro de la caja para distribución secundaria.' },
-  { codigo: 'FO-DROP-1H-500M',       descripcion: 'Bobina Fibra Drop 1 Hilo SM G657A2 500m para acometidas',                            cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Acometida aérea desde caja NAP hasta fachada del cliente. Sujeción con grapas cada 5m.' },
-  { codigo: 'FO-ONT-WIFI6',          descripcion: 'ONT WiFi6 dual-band 2.4/5GHz GPON para terminación de fibra en hogar',               cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',   lugarInstalacion: 'Sala principal del cliente, sobre repisa o pared a altura media. Conexión eléctrica 110V + ventilación pasiva.' },
-  { codigo: 'FO-CONECTOR-FAST-SC',   descripcion: 'Conector rápido SC/APC pack×10 para terminación en sitio',                            cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Terminación en ambos extremos del drop: poste (lado proveedor) y ONT (lado cliente).' },
-  { codigo: 'SVC-INSTAL-FO',         descripcion: 'Servicio: tendido, fusión, prueba con OTDR y entrega de plano as-built',             cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios', lugarInstalacion: 'In situ. Incluye empalme, certificación OTDR (atenuación máx 0.3 dB/empalme) y prueba de potencia óptica.' },
+  { codigo: 'FO-CAJA-NAP-16',        descripcion: 'Caja NAP 16 puertos para distribución de fibra óptica en poste/fachada',             cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',   lugarInstalacion: 'Poste de tendido del cliente, altura 4m. Splitter 1:8 instalado dentro de la caja para distribución secundaria.', _placeholder: { titulo: 'Caja NAP 16 Puertos',  subtitulo: 'Distribución FO en poste',         glyph: '📦', accent: '#0d9488' } },
+  { codigo: 'FO-DROP-1H-500M',       descripcion: 'Bobina Fibra Drop 1 Hilo SM G657A2 500m para acometidas',                            cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Acometida aérea desde caja NAP hasta fachada del cliente. Sujeción con grapas cada 5m.',                            _placeholder: { titulo: 'Drop FO 1H 500m',      subtitulo: 'SM G657A2 · Acometida',            glyph: '🧵', accent: '#0891b2' } },
+  { codigo: 'FO-ONT-WIFI6',          descripcion: 'ONT WiFi6 dual-band 2.4/5GHz GPON para terminación de fibra en hogar',               cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',   lugarInstalacion: 'Sala principal del cliente, sobre repisa o pared a altura media. Conexión eléctrica 110V + ventilación pasiva.',   _placeholder: { titulo: 'ONT WiFi6 GPON',       subtitulo: 'Dual-band 2.4/5GHz · Hogar',      glyph: '📶', accent: '#7c3aed' } },
+  { codigo: 'FO-CONECTOR-FAST-SC',   descripcion: 'Conector rápido SC/APC pack×10 para terminación en sitio',                            cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Terminación en ambos extremos del drop: poste (lado proveedor) y ONT (lado cliente).',                                _placeholder: { titulo: 'Conector SC/APC ×10',  subtitulo: 'Fast connect · Sin fusión',       glyph: '🧷', accent: '#16a34a' } },
+  { codigo: 'SVC-INSTAL-FO',         descripcion: 'Servicio: tendido, fusión, prueba con OTDR y entrega de plano as-built',             cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios', lugarInstalacion: 'In situ. Incluye empalme, certificación OTDR (atenuación máx 0.3 dB/empalme) y prueba de potencia óptica.',         _placeholder: { titulo: 'Servicio Tendido FO',  subtitulo: 'Fusión + certificación OTDR',     glyph: '🛠️', accent: '#dc2626' } },
 ]
 
 // Plantilla Red Empresarial (oficina 30-60 puntos).
 const PLANTILLA_RED_EMP = [
-  { codigo: 'NET-UBQ-USG-PRO-4',     descripcion: 'Gateway UniFi USG Pro 4 con 4 puertos gigabit + IDS/IPS habilitado',                   cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Rack principal en cuarto de comunicaciones. Conexión WAN al ISP + LAN al switch de distribución.' },
-  { codigo: 'NET-UBQ-USW-48-POE',    descripcion: 'Switch UniFi USW-48-POE 48 puertos gigabit con 32 PoE+ (500W total)',                  cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Rack principal. Alimenta APs UniFi + cámaras IP + teléfonos IP vía PoE+.' },
-  { codigo: 'NET-UBQ-U6-LR',         descripcion: 'AP UniFi U6-LR WiFi6 dual-band con MU-MIMO y 4x4 MIMO',                                cantidad: 4, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Montaje techo en zonas de alta densidad (recepción, sala de reuniones, área operativa, comedor).' },
-  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m interior',                                                  cantidad: 4, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',     lugarInstalacion: 'Tendido por bandejas portacables sobre cielo raso, evitando cruces con luminarias y aire acondicionado.' },
-  { codigo: 'NET-FACEPLATE-2P',      descripcion: 'Cara plate 2 puertos blanca con keystone Cat6 hembra',                                  cantidad: 40, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',     lugarInstalacion: 'Una toma doble por estación de trabajo a 30 cm del piso. Etiquetadas según plano de cableado.' },
-  { codigo: 'NET-RACK-22U',          descripcion: 'Rack abierto 22U con bandeja, organizador horizontal y multitoma',                    cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Cuarto de comunicaciones, montaje al piso con anclaje sísmico + tomas eléctricas dedicadas 20A.' },
-  { codigo: 'SVC-INSTAL-RED',        descripcion: 'Servicio: tendido estructurado certificación Cat6 + config UniFi Controller + WiFi PMK', cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios',    lugarInstalacion: 'In situ. Incluye certificación con tester Cat6, etiquetado, documentación, configuración VLAN y políticas WiFi.' },
-  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 1.5h al administrador IT del cliente sobre UniFi + monitoreo remoto',     cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Capacitación', lugarInstalacion: 'Sala de reuniones del cliente. Para 1-2 administradores IT designados.' },
+  { codigo: 'NET-UBQ-USG-PRO-4',     descripcion: 'Gateway UniFi USG Pro 4 con 4 puertos gigabit + IDS/IPS habilitado',                   cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Rack principal en cuarto de comunicaciones. Conexión WAN al ISP + LAN al switch de distribución.',                _placeholder: { titulo: 'Gateway UniFi USG',     subtitulo: 'USG Pro 4 · IDS/IPS',              glyph: '🛡️', accent: '#1d4ed8' } },
+  { codigo: 'NET-UBQ-USW-48-POE',    descripcion: 'Switch UniFi USW-48-POE 48 puertos gigabit con 32 PoE+ (500W total)',                  cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Rack principal. Alimenta APs UniFi + cámaras IP + teléfonos IP vía PoE+.',                                          _placeholder: { titulo: 'Switch UniFi 48P',      subtitulo: 'USW-48-POE · 500W',                glyph: '🔌', accent: '#0369a1' } },
+  { codigo: 'NET-UBQ-U6-LR',         descripcion: 'AP UniFi U6-LR WiFi6 dual-band con MU-MIMO y 4x4 MIMO',                                cantidad: 4, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Montaje techo en zonas de alta densidad (recepción, sala de reuniones, área operativa, comedor).',                _placeholder: { titulo: 'AP UniFi U6-LR',        subtitulo: 'WiFi6 · 4x4 MIMO',                 glyph: '📡', accent: '#0e7490' } },
+  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m interior',                                                  cantidad: 4, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',     lugarInstalacion: 'Tendido por bandejas portacables sobre cielo raso, evitando cruces con luminarias y aire acondicionado.',         _placeholder: { titulo: 'Cable UTP Cat6 305m',   subtitulo: 'Interior · CMR',                   glyph: '🪢', accent: '#65a30d' } },
+  { codigo: 'NET-FACEPLATE-2P',      descripcion: 'Cara plate 2 puertos blanca con keystone Cat6 hembra',                                  cantidad: 40, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',     lugarInstalacion: 'Una toma doble por estación de trabajo a 30 cm del piso. Etiquetadas según plano de cableado.',                    _placeholder: { titulo: 'Faceplate 2P + Keystone', subtitulo: 'Cat6 hembra · Pared',           glyph: '🔲', accent: '#a16207' } },
+  { codigo: 'NET-RACK-22U',          descripcion: 'Rack abierto 22U con bandeja, organizador horizontal y multitoma',                    cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',      lugarInstalacion: 'Cuarto de comunicaciones, montaje al piso con anclaje sísmico + tomas eléctricas dedicadas 20A.',                  _placeholder: { titulo: 'Rack Abierto 22U',      subtitulo: 'Piso · Anclaje sísmico',           glyph: '🗄️', accent: '#475569' } },
+  { codigo: 'SVC-INSTAL-RED',        descripcion: 'Servicio: tendido estructurado certificación Cat6 + config UniFi Controller + WiFi PMK', cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios',    lugarInstalacion: 'In situ. Incluye certificación con tester Cat6, etiquetado, documentación, configuración VLAN y políticas WiFi.', _placeholder: { titulo: 'Servicio Red Estructurada', subtitulo: 'Cat6 + UniFi Controller',     glyph: '🛠️', accent: '#dc2626' } },
+  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 1.5h al administrador IT del cliente sobre UniFi + monitoreo remoto',     cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Capacitación', lugarInstalacion: 'Sala de reuniones del cliente. Para 1-2 administradores IT designados.',                                            _placeholder: { titulo: 'Capacitación IT',       subtitulo: 'UniFi + monitoreo remoto',         glyph: '🎓', accent: '#ea580c' } },
 ]
 
 // Plantilla Cerco eléctrico residencial.
 const PLANTILLA_CERCO_RES = [
-  { codigo: 'CER-ENERG-12KV',        descripcion: 'Energizador para cerco eléctrico 12kV con baterías de respaldo 12V 7Ah',              cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',   lugarInstalacion: 'Interior del cuarto técnico o pared del garaje, protegido de la intemperie. Conexión 110V con tierra dedicada.' },
-  { codigo: 'CER-ALAMBRE-GALV-500',  descripcion: 'Alambre galvanizado calibre 14 para cerco eléctrico — bobina 500m',                   cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Perímetro completo del lote — 7 hilos paralelos a alturas escalonadas (1.8m / 2.0m / 2.2m / 2.4m / 2.6m / 2.8m / 3.0m).' },
-  { codigo: 'CER-AISLA-VARILLA',     descripcion: 'Aislador para varilla cerco eléctrico — pack×100',                                     cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Sujeción del alambre a cada varilla, uno por hilo. Espaciamiento entre varillas: 3m promedio.' },
-  { codigo: 'CER-VARILLA-180',       descripcion: 'Varilla galvanizada 1.80m para postes de cerco',                                       cantidad: 25, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado', lugarInstalacion: 'Empotradas sobre la pared perimetral existente, cada 3m. Total ~75m de perímetro.' },
-  { codigo: 'SVC-INSTAL-CERCO',      descripcion: 'Servicio: instalación, tensado, pruebas de descarga y entrega con sirena audible',    cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios', lugarInstalacion: 'In situ. Tensado mecánico del alambre + prueba de continuidad + medición de salida >9kV + entrega con manual.' },
+  { codigo: 'CER-ENERG-12KV',        descripcion: 'Energizador para cerco eléctrico 12kV con baterías de respaldo 12V 7Ah',              cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Equipos',   lugarInstalacion: 'Interior del cuarto técnico o pared del garaje, protegido de la intemperie. Conexión 110V con tierra dedicada.',  _placeholder: { titulo: 'Energizador 12kV',      subtitulo: 'Respaldo 12V 7Ah',                 glyph: '⚡', accent: '#f59e0b' } },
+  { codigo: 'CER-ALAMBRE-GALV-500',  descripcion: 'Alambre galvanizado calibre 14 para cerco eléctrico — bobina 500m',                   cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Perímetro completo del lote — 7 hilos paralelos a alturas escalonadas (1.8m / 2.0m / 2.2m / 2.4m / 2.6m / 2.8m / 3.0m).', _placeholder: { titulo: 'Alambre Galv. Cal. 14', subtitulo: 'Bobina 500m · Galvanizado',     glyph: '🧵', accent: '#64748b' } },
+  { codigo: 'CER-AISLA-VARILLA',     descripcion: 'Aislador para varilla cerco eléctrico — pack×100',                                     cantidad: 2, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado',  lugarInstalacion: 'Sujeción del alambre a cada varilla, uno por hilo. Espaciamiento entre varillas: 3m promedio.',                  _placeholder: { titulo: 'Aislador Cerco ×100',   subtitulo: 'PVC reforzado · Pack',             glyph: '⭕', accent: '#a16207' } },
+  { codigo: 'CER-VARILLA-180',       descripcion: 'Varilla galvanizada 1.80m para postes de cerco',                                       cantidad: 25, precioUnit: 0, aplicaItbis: true, categoria: 'Cableado', lugarInstalacion: 'Empotradas sobre la pared perimetral existente, cada 3m. Total ~75m de perímetro.',                              _placeholder: { titulo: 'Varilla Galv. 1.80m',   subtitulo: 'Postes de cerco',                  glyph: '🪵', accent: '#475569' } },
+  { codigo: 'SVC-INSTAL-CERCO',      descripcion: 'Servicio: instalación, tensado, pruebas de descarga y entrega con sirena audible',    cantidad: 1, precioUnit: 0, aplicaItbis: true, categoria: 'Servicios', lugarInstalacion: 'In situ. Tensado mecánico del alambre + prueba de continuidad + medición de salida >9kV + entrega con manual.',  _placeholder: { titulo: 'Servicio Instalación',  subtitulo: 'Tensado + prueba descarga',        glyph: '🛠️', accent: '#dc2626' } },
 ]
 
 const PLANTILLAS = {
@@ -371,21 +448,71 @@ export default function CotizadorManualPro() {
   const [whoami, setWhoami] = useState({ requesterId: null, isGlobal: false })
   const [borradoresGlobales, setBorradoresGlobales] = useState([])     // solo si isGlobal
   const [cargandoBorradores, setCargandoBorradores] = useState(false)
+  // EmpresaPerfil real (singleton id=1) — datos para auto-rellenar portada
+  // + sobre empresa con razón social, eslogan, dirección, representante.
+  // Si la API no responde, queda null y usamos defaults hardcoded ACR.
+  const [empresaPerfil, setEmpresaPerfil] = useState(null)
 
   useEffect(() => {
     let cancel = false
     ;(async () => {
       try {
-        const r = await apiFetch('/api/ventas/cotizador-libre/whoami')
+        const [rWho, rEmp] = await Promise.all([
+          apiFetch('/api/ventas/cotizador-libre/whoami'),
+          apiFetch('/api/configuracion/empresa/publico'),
+        ])
         if (cancel) return
-        if (r.ok) {
-          const w = await r.json()
+        if (rWho?.ok) {
+          const w = await rWho.json()
           setWhoami(w)
         }
-      } catch { /* whoami no es crítico — defaults se mantienen */ }
+        if (rEmp?.ok) {
+          const e = await rEmp.json()
+          setEmpresaPerfil(e ?? null)
+        }
+      } catch { /* fail-soft — defaults */ }
     })()
     return () => { cancel = true }
   }, [])
+
+  // ─── Defaults dinámicos basados en EmpresaPerfil real ───────────────────
+  // Si la BD tiene la razón social actual, usamos esa (evita "RA" hardcoded
+  // en drafts viejos que aún tengan el texto antiguo). Si no, fallback ACR.
+  const empresaDefaults = useMemo(() => {
+    const razon  = empresaPerfil?.razonSocial?.trim() || 'ACR Networks & Solutions'
+    const eslog  = empresaPerfil?.eslogan?.trim()     || 'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica'
+    const repFull = [empresaPerfil?.representanteNombre, empresaPerfil?.representanteApellido].filter(Boolean).join(' ').trim()
+    return { razon, eslog, representante: repFull }
+  }, [empresaPerfil])
+
+  const portadaTextoDefault = useCallback(() => {
+    const cliRazon = state.cliente?.razonSocial?.trim() || 'estimado cliente'
+    const firma    = empresaDefaults.representante ? `Cordialmente,\n${empresaDefaults.representante}` : 'Cordialmente,'
+    return [
+      `Estimados de ${cliRazon},`,
+      `Reciban un cordial saludo de parte del equipo de ${empresaDefaults.razon}.`,
+      `Nos complace presentarles la siguiente propuesta técnico-comercial para el levantamiento e instalación del sistema descrito a continuación. Esta propuesta incluye equipamiento de marca reconocida, mano de obra calificada, certificación de pruebas funcionales y garantía sobre los servicios prestados.`,
+      `Quedamos a su entera disposición para ampliar cualquier punto de la propuesta y avanzar con la firma del acuerdo cuando lo consideren oportuno.`,
+      firma,
+    ].join('\n\n')
+  }, [empresaDefaults, state.cliente?.razonSocial])
+
+  const sobreEmpresaTextoDefault = useCallback(() => {
+    return [
+      `${empresaDefaults.razon} es una empresa especializada en infraestructura de redes, seguridad electrónica y fibra óptica. Diseñamos, instalamos y damos mantenimiento a soluciones para escuelas, oficinas, industrias y residenciales en todo el territorio nacional.`,
+      `Nuestro equipo combina experiencia de campo y certificaciones de fabricantes reconocidos (Dahua, Ubiquiti, Cambium, MikroTik) para garantizar despliegues que duran años con bajo costo operativo.`,
+    ].join('\n\n')
+  }, [empresaDefaults])
+
+  const restaurarPortadaDefault = useCallback(() => {
+    dispatch({ type: 'SET_PORTADA', patch: { texto: portadaTextoDefault() } })
+    toast.success('Texto de portada restaurado con datos actuales de la empresa.')
+  }, [portadaTextoDefault])
+
+  const restaurarSobreEmpresaDefault = useCallback(() => {
+    dispatch({ type: 'SET_SOBRE_EMPRESA', patch: { texto: sobreEmpresaTextoDefault() } })
+    toast.success('Texto "Sobre nosotros" restaurado con datos actuales de la empresa.')
+  }, [sobreEmpresaTextoDefault])
 
   // ─── Carga inicial: hidrata desde un draft existente ────────────────────
   const isReadyRef  = useRef(false)
@@ -600,15 +727,31 @@ export default function CotizadorManualPro() {
   }, [state.items])
 
   // ─── Plantillas (CCTV / Fibra / Red / Cerco) ────────────────────────────
-  const cargarPlantilla = useCallback((key) => {
+  // Async: cada ítem con `_placeholder` config recibe 1 foto demo generada
+  // en canvas al momento de cargar. Permite previsualizar el anexo
+  // fotográfico del PDF sin tener que adjuntar fotos reales aún.
+  const cargarPlantilla = useCallback(async (key) => {
     const plant = PLANTILLAS[key]
     if (!plant) return
     if (state.items.length > 1 || (state.items[0]?.descripcion?.trim())) {
       const ok = window.confirm(`¿Reemplazar las líneas actuales con la plantilla "${plant.label}"? El cliente y condiciones se mantienen.`)
       if (!ok) return
     }
-    dispatch({ type: 'LOAD_PLANTILLA', items: plant.items })
-    toast.success(`Plantilla cargada · ${plant.label} · ${plant.items.length} líneas`)
+    toast.info(`Generando fotos de demostración para ${plant.items.length} ítems…`)
+    const itemsConFotos = await Promise.all(plant.items.map(async (it) => {
+      const fotos = []
+      if (it._placeholder) {
+        try {
+          const dataUri = await _generarFotoPlaceholder(it._placeholder)
+          if (dataUri) fotos.push({ dataUri, nombre: `placeholder-${(it.codigo || 'item').toLowerCase()}.jpg`, modelo: it.codigo ?? null })
+        } catch { /* sin foto, sigue */ }
+      }
+      // Limpiar `_placeholder` antes de pasar al reducer (no es parte del shape).
+      const { _placeholder, ...rest } = it
+      return { ...rest, fotos }
+    }))
+    dispatch({ type: 'LOAD_PLANTILLA', items: itemsConFotos })
+    toast.success(`Plantilla cargada · ${plant.label} · ${plant.items.length} líneas con fotos demo`)
   }, [state.items])
 
   // ─── Compartir cotización por WhatsApp ──────────────────────────────────
@@ -939,11 +1082,19 @@ export default function CotizadorManualPro() {
               />
             </div>
           </div>
-          <div className="flex justify-between mt-1">
+          <div className="flex justify-between items-center mt-1 gap-2">
             <span className="text-[10px] text-slate-500 italic">
               {state.portada.activa ? 'Aparece como página 1 del PDF con membrete + firma del Owner' : 'Activa el toggle para que esta página salga en el PDF'}
             </span>
-            <span className="text-[9px] text-slate-600">{state.portada.texto.length}/8000</span>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={restaurarPortadaDefault}
+                title={empresaPerfil ? `Usar texto sugerido con datos actuales de ${empresaDefaults.razon}` : 'Reescribir con texto sugerido por defecto'}
+                className="text-[10px] font-semibold text-amber-300 hover:text-amber-200 uppercase tracking-wider px-2 py-1 rounded border border-amber-500/30 hover:bg-amber-500/10 transition-colors">
+                ↻ Texto sugerido
+              </button>
+              <span className="text-[9px] text-slate-600">{state.portada.texto.length}/8000</span>
+            </div>
           </div>
         </section>
 
@@ -985,6 +1136,15 @@ export default function CotizadorManualPro() {
                 onChange={(v) => dispatch({ type: 'SET_SOBRE_EMPRESA', patch: { texto: v } })}
               />
             </div>
+          </div>
+          <div className="flex justify-end items-center mt-1 gap-2">
+            <button
+              onClick={restaurarSobreEmpresaDefault}
+              title={empresaPerfil ? `Usar texto sugerido con datos actuales de ${empresaDefaults.razon}` : 'Reescribir con texto sugerido por defecto'}
+              className="text-[10px] font-semibold text-cyan-300 hover:text-cyan-200 uppercase tracking-wider px-2 py-1 rounded border border-cyan-500/30 hover:bg-cyan-500/10 transition-colors">
+              ↻ Texto sugerido
+            </button>
+            <span className="text-[9px] text-slate-600">{state.sobreEmpresa.texto.length}/8000</span>
           </div>
         </section>
 

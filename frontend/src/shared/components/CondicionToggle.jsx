@@ -73,8 +73,20 @@ export default function CondicionToggle({
         </button>
       </div>
       {showInput && variant === 'select' && (
-        <div className={`mt-1 ${textoLocked ? 'opacity-60 pointer-events-none' : ''}`}>
+        <div className={`mt-1 space-y-1 ${textoLocked ? 'opacity-60 pointer-events-none' : ''}`}>
+          {/* Select sugiere opciones predefinidas (forma de pago canónicas). */}
           {children}
+          {/* Input de texto EDITABLE — siempre disponible para personalizar. */}
+          {/* Si user selecciona del select, este input refleja el valor. Si */}
+          {/* user prefiere escribir libre, escribe directo aquí.            */}
+          <input
+            type="text" maxLength={maxLength} value={texto ?? ''}
+            onChange={e => onTexto(e.target.value)}
+            placeholder={textoLocked ? 'Override bloqueado · requiere PIN supervisor' : 'O escribe un valor personalizado…'}
+            disabled={textoLocked}
+            onClick={() => { if (textoLocked) onRequestUnlock?.() }}
+            className={`w-full bg-slate-800 border border-slate-700 rounded px-2 py-1 text-xs text-slate-100 focus:outline-none focus:border-blue-500 disabled:opacity-40 disabled:cursor-not-allowed ${!on && editAlwaysOn ? 'opacity-70' : ''}`}
+          />
         </div>
       )}
       {showInput && variant === 'default' && (multiline ? (
