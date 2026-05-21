@@ -2,31 +2,40 @@
  * backend/modules/ventas/cotizador-libre/service.js
  *
  * Lógica del Cotizador Libre. Render PDF puro en memoria — sin NCF, sin
- * descuento de stock, sin AuditCaja. Es una herramienta de cotización
- * editable libre para proyectos de infraestructura/CCTV donde los precios
- * y descripciones se manejan fuera del catálogo rígido.
+ * descuento de stock, sin AuditCaja. Herramienta de cotización editable
+ * para proyectos de infraestructura/CCTV.
  *
- * Ciclo 13:
- *   - Acepta `scope` en list/get/upsert/delete:
- *       { requesterId, isGlobal, targetEmpleadoId? }
- *     `isGlobal` se deriva de los permisos del JWT en el controller.
- *     Cuando `isGlobal` está activo, las queries NO filtran por empleadoId
- *     (modo Owner/Socios: ver y co-editar borradores de otros técnicos).
- *     Cuando NO, fuerza filtro por requesterId (fail-closed).
- *   - PDF incluye anexo fotográfico de Ítems con `fotos[]`. Se renderiza en
- *     una nueva página (page-break-before: always) con grid 2-col y captions
- *     "Lugar: …" + "Modelo: …" para cada foto.
+ * Ciclo 15: el PDF ahora HEREDA el template corporativo oficial
+ * (`backend/services/pdf-templates.js → renderDocumento`) — la misma
+ * plantilla usada por Facturas y Cotizaciones estándar. Esto garantiza
+ * 100% paridad estética (header con logo + banda corporativa, title-bar
+ * con número + estado, client-grid con bordes finos, tabla densa, totales
+ * contables, footer con QR de verificación).
+ *
+ * Sobre el template oficial se inyectan DOS extensiones específicas del
+ * cotizador libre, vía post-procesamiento del HTML retornado:
+ *   1. Fila "Descuento" en la sección de totales si totales.descuento > 0.
+ *      El template oficial no la trae porque facturas DGII no descuentan
+ *      línea — pero en cotizaciones libres es un caso común.
+ *   2. Anexo Técnico al final con grid 2-col de fotos comprimidas en
+ *      base64 + lugar de instalación. Cada sheet del anexo replica el
+ *      `.band`, `.header`, `.title-bar`, `.body`, `.footer` del template
+ *      para mantener membrete superior y pie de página corporativo unificado.
  *
  * Pipeline render:
  *   1. Recibe dto validado por schema.js.
  *   2. Calcula subtotal/itbis/total en backend (defensa-en-profundidad).
- *   3. Genera QR para validación (link público).
- *   4. Renderiza HTML inline-template con CSS Cyber-Industrial.
- *   5. Renderiza ANEXO FOTOGRÁFICO si hay fotos en algún ítem.
- *   6. Devuelve Buffer al controller.
+ *   3. Genera QR del payload de validación (link público al portal).
+ *   4. Fetcha EmpresaPerfil (opcional — si está disponible vía repo).
+ *   5. Llama a renderDocumento del template oficial.
+ *   6. Post-procesa: inyecta fila Descuento + anexo fotográfico.
+ *   7. Devuelve Buffer al controller.
  *
- * Factory: createCotizadorLibreService({ generarPdfDocumento, QRCode, repo })
+ * Factory: createCotizadorLibreService({ generarPdfDocumento, QRCode, repo,
+ *   inlineAssets? })
  */
+
+const { renderDocumento, fmtMoney, fechaCorta } = require('../../../services/pdf-templates');
 
 const NOMBRE_EMPRESA_DEFAULT  = 'RA Networks & Solutions';
 const TAGLINE_DEFAULT         = 'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica';
@@ -40,15 +49,23 @@ class CotizadorLibreError extends Error {
   }
 }
 
+// Local escape — duplicado intencional del helper de pdf-templates.js que NO
+// se exporta. Mantenerlo local nos da independencia del módulo oficial.
+function _esc(s) {
+  if (s == null) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
 function createCotizadorLibreService(deps) {
-  const { generarPdfDocumento, QRCode, repo } = deps;
+  const { generarPdfDocumento, QRCode, repo, inlineAssets } = deps;
   if (typeof generarPdfDocumento !== 'function') throw new Error('createCotizadorLibreService: generarPdfDocumento required');
 
   // ─── Helpers de cálculo (defensa-en-profundidad) ──────────────────────────
   function _calcularTotales(dto) {
     const pct = Number(dto.porcentajeItbis ?? 18) / 100;
 
-    // Subtotal por línea = cantidad × precio.
     const lineas = (dto.items ?? []).map((it) => {
       const qty   = Math.max(0, Math.floor(Number(it.cantidad ?? 0)));
       const pu    = Math.max(0, Number(it.precioUnit ?? 0));
@@ -61,15 +78,13 @@ function createCotizadorLibreService(deps) {
     const subtotal = lineas.reduce((s, l) => s + l.subtotal, 0);
 
     // Descuento global (porcentaje O monto, lo que sea mayor — pero solo uno
-    // a la vez en práctica. Si ambos vienen, ganamos al porcentaje y dejamos
-    // el monto como adicional para no penalizar al cliente).
+    // a la vez en práctica). El descuento NUNCA produce baseImponible negativa.
     const dscPct  = Math.max(0, Math.min(100, Number(dto.descuentoGlobalPct ?? 0))) / 100;
     const dscFijo = Math.max(0, Number(dto.descuentoGlobalMonto ?? 0));
     const descuentoCalc = Math.round((subtotal * dscPct + dscFijo) * 100) / 100;
-    const descuento = Math.min(descuentoCalc, subtotal); // no negative neto
+    const descuento = Math.min(descuentoCalc, subtotal);
 
     const baseImponible = Math.max(0, subtotal - descuento);
-    // ITBIS recalculado sobre baseImponible (no sobre subtotal sin descuento).
     const itbis = dto.aplicaItbisGlobal
       ? Math.round(baseImponible * pct * 100) / 100
       : 0;
@@ -78,22 +93,21 @@ function createCotizadorLibreService(deps) {
     return { lineas, subtotal, descuento, baseImponible, itbis, total };
   }
 
-  function _fmt(n) {
-    return Number(n ?? 0).toLocaleString('es-DO', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  }
-
-  function _esc(s) {
-    if (s == null) return '';
-    return String(s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-  }
-
-  function _normCond(v) {
+  function _normCondToString(v) {
     if (v == null) return null;
-    if (typeof v === 'string') return v.trim() ? { texto: v.trim(), incluir: true } : null;
-    if (v.incluir && v.texto?.trim()) return { texto: v.texto.trim(), incluir: true };
+    if (typeof v === 'string') return v.trim() || null;
+    if (v.incluir && v.texto?.trim()) return v.texto.trim();
     return null;
+  }
+
+  function _serializeCond(condRaw) {
+    const c = condRaw ?? {};
+    return {
+      validez:  _normCondToString(c.validez),
+      pago:     _normCondToString(c.pago),
+      entrega:  _normCondToString(c.entrega),
+      garantia: _normCondToString(c.garantia),
+    };
   }
 
   async function _qrDataUri(payloadUrl) {
@@ -108,12 +122,122 @@ function createCotizadorLibreService(deps) {
     } catch { return null; }
   }
 
-  // ─── Anexo fotográfico: si algún ítem trae fotos[], se renderiza una nueva
-  // página al final del PDF con grid 2-col. Las captions referencian el ítem
-  // (#N + descripción truncada) + Lugar de Instalación + Modelo opcional.
-  function _renderAnexoFotos({ lineas, numDoc }) {
-    // Aplanar: cada foto se renderiza con sus metadatos contextuales del ítem
-    // padre (lugar de instalación, número de ítem, descripción).
+  // ─── Inyección de fila Descuento en la sección de totales ─────────────────
+  // El template oficial tiene Subtotal → ITBIS → Total. Insertamos una fila
+  // "Descuento" antes de Total cuando aplica. Usa la misma clase `.tot-row`
+  // que ya está estilizada por el template oficial.
+  function _injectarDescuentoEnTotales(html, descuento) {
+    if (!(descuento > 0)) return html;
+    const filaDescuento = `<div class="tot-row">
+            <span class="lbl">Descuento</span>
+            <span class="val mono" style="color:#b91c1c;">− RD$ ${fmtMoney(descuento)}</span>
+          </div>`;
+    // Insertar antes de la tot-row.grand (la primera y única en el template).
+    return html.replace(/(<div class="tot-row grand">)/, `${filaDescuento}\n          $1`);
+  }
+
+  // ─── Anexo fotográfico (nueva página con membrete corporativo unificado) ──
+  // Cada `.sheet` del anexo replica band + header + title-bar + body + footer
+  // del template oficial. Reusa las clases CSS ya inyectadas en el <head> por
+  // renderDocumento, así que la apariencia es 100% consistente sin duplicar
+  // CSS. `page-break-before: always` fuerza salto de página limpio.
+  function _renderAnexoSheet({ tilesHtml, empresa, numero, fechaIso, qrDataUri, verifyUrl, totalFotos, paginaNum, paginasTotales }) {
+    const repFull = [empresa.representanteNombre, empresa.representanteApellido].filter(Boolean).join(' ').trim();
+    const corpRows = [
+      empresa.rnc      ? `<div class="row"><span class="lbl">RNC</span><span class="val mono">${_esc(empresa.rnc)}</span></div>` : '',
+      empresa.telefono ? `<div class="row"><span class="lbl">Tel.</span><span class="val mono">${_esc(empresa.telefono)}</span></div>` : '',
+      empresa.email    ? `<div class="row"><span class="lbl">Email</span><span class="val">${_esc(empresa.email)}</span></div>` : '',
+      empresa.website  ? `<div class="row"><span class="lbl">Web</span><span class="val">${_esc(empresa.website)}</span></div>` : '',
+    ].filter(Boolean).join('');
+    const assets = empresa.assets ?? {};
+    const fechaCortaStr = fechaCorta(fechaIso);
+
+    return `
+<div class="sheet" style="page-break-before: always;">
+  <div class="band"></div>
+
+  <header class="header">
+    <div class="brand">
+      ${assets.logoClaro ? `<div class="logo"><img src="${_esc(assets.logoClaro)}" alt=""/></div>` : ''}
+      <div class="brand-info">
+        <div class="razon">${_esc(empresa.razonSocial ?? '—')}</div>
+        ${empresa.nombreComercial ? `<div class="nombre-comercial">${_esc(empresa.nombreComercial)}</div>` : ''}
+        ${empresa.eslogan ? `<div class="eslogan">${_esc(empresa.eslogan)}</div>` : ''}
+      </div>
+    </div>
+    <div class="corp-meta">${corpRows}</div>
+  </header>
+
+  <div class="title-bar">
+    <div class="doc-type">
+      Anexo Técnico
+      <span class="sub">Levantamiento Fotográfico</span>
+    </div>
+    <div class="doc-meta">
+      <div class="num mono">${_esc(numero)}</div>
+      <div style="margin-top:6px; font-size:9px; opacity:0.85;">
+        ${totalFotos} imagen${totalFotos === 1 ? '' : 'es'} · ${_esc(fechaCortaStr)}
+        ${paginasTotales > 1 ? ` · Página ${paginaNum}/${paginasTotales}` : ''}
+      </div>
+    </div>
+  </div>
+
+  <main class="body">
+    <div class="section-label">Capturas de campo</div>
+    <div class="anexo-grid">${tilesHtml}</div>
+  </main>
+
+  <footer class="footer">
+    <div class="qr-block">
+      ${verifyUrl
+        ? `<a class="qr-anchor" href="${_esc(verifyUrl)}"><img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/></a>`
+        : `<img class="qr-img" src="${_esc(qrDataUri || '')}" alt="QR de verificación"/>`}
+      <div class="qr-text">
+        <div class="qr-ttl">Verificación Anti-Fraude</div>
+        <div>Escanea el QR o toca la URL para validar.</div>
+        ${verifyUrl
+          ? `<div class="qr-url" title="${_esc(verifyUrl)}"><a href="${_esc(verifyUrl)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${_esc(verifyUrl)}</a></div>`
+          : (empresa.website ? `<div class="qr-url" title="${_esc(empresa.website)}"><a href="${_esc(empresa.website.startsWith('http') ? empresa.website : 'https://' + empresa.website)}" style="text-decoration:none; color:inherit; display:block; word-wrap:break-word; overflow-wrap:break-word; white-space:normal;">${_esc(empresa.website)}</a></div>` : '')}
+      </div>
+    </div>
+    <div class="ctr">
+      <div>Documento Electrónico Verificable</div>
+      <div class="verify-line">${_esc(empresa.razonSocial ?? '')}${empresa.rnc ? ` · RNC ${_esc(empresa.rnc)}` : ''}</div>
+    </div>
+    <div class="right mono">${_esc(fechaCortaStr)}</div>
+  </footer>
+</div>`;
+  }
+
+  // CSS extra que el template oficial NO trae (grid de fotos, foto-card). Se
+  // inyecta dentro del <style>...</style> existente vía replace al final.
+  const _ANEXO_CSS = `
+/* ── Anexo fotográfico (cotizador libre) ───────────────────────────────── */
+.anexo-grid {
+  display: grid; grid-template-columns: 1fr 1fr;
+  gap: 14px 10px; margin-top: 6px;
+}
+.foto-card {
+  border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden;
+  background: #f8fafc; page-break-inside: avoid; break-inside: avoid;
+}
+.foto-card .foto-wrap {
+  width: 100%; aspect-ratio: 4 / 3;
+  background: #0f172a;
+  display: flex; align-items: center; justify-content: center; overflow: hidden;
+}
+.foto-card .foto-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.foto-card figcaption { padding: 7px 10px 8px; font-size: 9px; color: #334155; line-height: 1.4; }
+.foto-meta { font-size: 8px; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px; font-weight: 700; }
+.foto-meta strong { color: #1e40af; }
+.foto-desc { color: #475569; margin-bottom: 4px; font-size: 9px; }
+.foto-lugar { color: #0f172a; font-size: 9px; }
+.foto-lugar .lbl { color: #64748b; font-size: 7.5px; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 4px; font-weight: 700; }
+.foto-nombre { color: #94a3b8; font-size: 8.5px; margin-top: 2px; font-style: italic; }
+`;
+
+  function _renderAnexoFotos({ lineas, empresa, numero, fechaIso, qrDataUri, verifyUrl }) {
+    // Aplanar: cada foto se renderiza con metadatos contextuales del ítem padre.
     const tiles = [];
     lineas.forEach((l, i) => {
       const fotos = Array.isArray(l.fotos) ? l.fotos : [];
@@ -131,208 +255,148 @@ function createCotizadorLibreService(deps) {
       });
     });
 
-    if (tiles.length === 0) return '';
+    if (tiles.length === 0) return { anexoHtml: '', anexoCss: '' };
 
-    const cells = tiles.map((t) => `
+    // Paginación: 6 fotos por sheet (3 filas × 2 cols) para mantener buena
+    // densidad visual sin overflow. Si hay 7+, generamos múltiples sheets.
+    const FOTOS_X_PAGINA = 6;
+    const paginas = [];
+    for (let i = 0; i < tiles.length; i += FOTOS_X_PAGINA) {
+      paginas.push(tiles.slice(i, i + FOTOS_X_PAGINA));
+    }
+
+    const renderTile = (t) => `
       <figure class="foto-card">
         <div class="foto-wrap"><img src="${t.dataUri}" alt="Foto ${t.itemIdx}.${t.fotoIdx}" /></div>
         <figcaption>
           <div class="foto-meta">Ítem ${t.itemIdx}.${t.fotoIdx} ${t.modelo ? `· <strong>${_esc(t.modelo)}</strong>` : ''}</div>
           <div class="foto-desc">${_esc(t.descripcion)}</div>
-          ${t.lugar ? `<div class="foto-lugar"><strong>Lugar:</strong> ${_esc(t.lugar)}</div>` : ''}
+          ${t.lugar ? `<div class="foto-lugar"><span class="lbl">Lugar:</span>${_esc(t.lugar)}</div>` : ''}
           ${t.nombre ? `<div class="foto-nombre">${_esc(t.nombre)}</div>` : ''}
         </figcaption>
       </figure>
-    `).join('');
-
-    return `
-      <section class="anexo">
-        <header class="anexo-head">
-          <div class="anexo-title">Anexo Técnico — Fotografías del Levantamiento</div>
-          <div class="anexo-sub">Documento ${_esc(numDoc)} · ${tiles.length} imagen${tiles.length === 1 ? '' : 'es'}</div>
-        </header>
-        <div class="anexo-grid">${cells}</div>
-      </section>
     `;
+
+    const anexoHtml = paginas.map((pag, idx) => _renderAnexoSheet({
+      tilesHtml:       pag.map(renderTile).join(''),
+      empresa,
+      numero,
+      fechaIso,
+      qrDataUri,
+      verifyUrl,
+      totalFotos:      tiles.length,
+      paginaNum:       idx + 1,
+      paginasTotales:  paginas.length,
+    })).join('\n');
+
+    return { anexoHtml, anexoCss: _ANEXO_CSS };
   }
 
-  // ─── HTML template (Cyber-Industrial, omitido SKU / Registro Mercantil) ───
-  function _renderHtml({ dto, totales, qrDataUri, fechaIso }) {
-    const empNombre   = dto.empresaNombre?.trim() || NOMBRE_EMPRESA_DEFAULT;
-    const empTagline  = dto.empresaTagline?.trim() || TAGLINE_DEFAULT;
-    const empWebsite  = dto.empresaWebsite?.trim() || WEBSITE_DEFAULT;
-    const cli = dto.cliente;
-    const cond = dto.condiciones ?? {};
-    const numDoc = dto.numeroDocumento || `COT-${Date.now().toString().slice(-6)}`;
-    const fechaCorta = new Date(fechaIso).toLocaleDateString('es-DO', { day: '2-digit', month: 'long', year: 'numeric' });
+  // ─── _renderHtml: ahora delega a renderDocumento del template oficial ────
+  async function _renderHtml({ dto, totales, qrDataUri, fechaIso }) {
+    // Empresa: prioridad BD (EmpresaPerfil singleton) > overrides del dto >
+    // defaults hardcoded. Esto da paridad visual con facturas oficiales en
+    // prod (logo + RNC + dirección reales) y degrada limpio si no hay BD
+    // (tests, ambientes vacíos).
+    let empresaPerfil = null;
+    if (repo && typeof repo.findEmpresaPerfil === 'function') {
+      try { empresaPerfil = await repo.findEmpresaPerfil(); } catch { /* sin BD */ }
+    }
 
-    // En la tabla principal mostramos también lugarInstalacion debajo de la
-    // descripción si el ítem tiene fotos asociadas — así el lector ve la
-    // referencia del anexo sin tener que pasar página.
-    const filasItems = totales.lineas.map((l, i) => {
-      const lugar = (l.lugarInstalacion ?? '').toString().trim();
-      const tieneFotos = Array.isArray(l.fotos) && l.fotos.length > 0;
-      const sufijo = lugar
-        ? `<div class="lugar-inline">📍 ${_esc(lugar)}${tieneFotos ? ` · <span class="fotos-ref">ver anexo</span>` : ''}</div>`
-        : (tieneFotos ? `<div class="lugar-inline">📎 <span class="fotos-ref">ver anexo</span></div>` : '');
-      return `
-      <tr>
-        <td class="num">${i + 1}</td>
-        <td class="codigo">${_esc(l.codigo ?? '')}</td>
-        <td class="desc">${_esc(l.descripcion ?? '')}${sufijo}</td>
-        <td class="qty">${l.qty}</td>
-        <td class="num">RD$ ${_fmt(l.pu)}</td>
-        <td class="num">RD$ ${_fmt(l.subtotal)}</td>
-      </tr>
-    `;
-    }).join('');
+    const empresa = empresaPerfil
+      ? {
+          ...empresaPerfil,
+          assets: typeof inlineAssets === 'function'
+            ? await inlineAssets(empresaPerfil.assets ?? {})
+            : (empresaPerfil.assets ?? {}),
+          // overrides del frontend tienen prioridad sobre BD (modos especiales)
+          razonSocial: dto.empresaNombre?.trim() || empresaPerfil.razonSocial || NOMBRE_EMPRESA_DEFAULT,
+          eslogan:     dto.empresaTagline?.trim() || empresaPerfil.eslogan || TAGLINE_DEFAULT,
+          website:     dto.empresaWebsite?.trim() || empresaPerfil.website || WEBSITE_DEFAULT,
+        }
+      : {
+          razonSocial: dto.empresaNombre?.trim() || NOMBRE_EMPRESA_DEFAULT,
+          nombreComercial: null,
+          eslogan:     dto.empresaTagline?.trim() || TAGLINE_DEFAULT,
+          website:     dto.empresaWebsite?.trim() || WEBSITE_DEFAULT,
+          rnc:         null,
+          telefono:    null,
+          email:       null,
+          direccion:   null,
+          assets:      {},
+          representanteNombre:    null,
+          representanteApellido:  null,
+          representanteCargo:     null,
+        };
 
-    const condRow = (label, v) => {
-      const c = _normCond(v);
-      if (!c) return '';
-      return `<div class="cond"><span class="cond-label">${label}</span><span class="cond-text">${_esc(c.texto)}</span></div>`;
+    const numero = dto.numeroDocumento || `COT-${Date.now().toString().slice(-6)}`;
+
+    // Items: del shape del cotizador (codigo/descripcion/qty/pu) al shape
+    // que espera el template oficial (codigo/descripcion/cantidad/precioUnitario).
+    const items = totales.lineas.map((l) => ({
+      codigo:         l.codigo?.trim() || null,
+      descripcion:    l.descripcion ?? '',
+      cantidad:       l.qty,
+      precioUnitario: l.pu,
+    }));
+
+    const verifyUrl = `${(empresa.website || WEBSITE_DEFAULT).replace(/\/+$/, '')}/cotizador-pro?doc=${encodeURIComponent(numero)}`;
+
+    const opts = {
+      tipo:                    'cotizacion',
+      numero,
+      ncf:                     null,
+      tipoNcf:                 null,
+      tipoComposicion:         null,
+      empresa,
+      cliente: {
+        razonSocial: dto.cliente?.razonSocial ?? 'Consumidor Final',
+        rnc:         dto.cliente?.rnc ?? null,
+        contacto:    dto.cliente?.contacto ?? null,
+        direccion:   dto.cliente?.direccion ?? null,
+        telefono:    dto.cliente?.telefono ?? null,
+        email:       null,
+      },
+      items,
+      subtotal:                totales.baseImponible,   // baseImponible (subtotal − descuento)
+      itbis:                   totales.itbis,
+      total:                   totales.total,
+      fechaEmision:            fechaIso,
+      fechaVence:              null,
+      estado:                  null,
+      notas:                   null,
+      condiciones:             _serializeCond(dto.condiciones),
+      verify:                  { hash: null, url: verifyUrl },
+      verifyQrDataUri:         qrDataUri,
+      esNotaCredito:           false,
+      esNotaDebito:            false,
+      facturaOrigen:           null,
+      motivoNotaModificatoria: null,
     };
 
-    const qrBlock = qrDataUri
-      ? `<img class="qr" src="${qrDataUri}" alt="QR validación" />`
-      : '<div class="qr-placeholder">QR</div>';
+    // 1) Render del documento oficial.
+    let html = renderDocumento(opts);
 
-    const anexoHtml = _renderAnexoFotos({ lineas: totales.lineas, numDoc });
+    // 2) Inyectar fila Descuento si aplica.
+    html = _injectarDescuentoEnTotales(html, totales.descuento);
 
-    return `<!doctype html>
-<html lang="es">
-<head>
-<meta charset="utf-8" />
-<title>${_esc(dto.titulo || 'Cotización')} ${_esc(numDoc)}</title>
-<style>
-  *,*:before,*:after { box-sizing: border-box; }
-  html,body { margin:0; padding:0; font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color:#0f172a; }
-  body { padding: 24mm 16mm 22mm 16mm; font-size: 10pt; }
-  .header { text-align:center; border-bottom: 2px solid #1e293b; padding-bottom: 12px; margin-bottom: 18px; }
-  .header h1 { margin:0; font-size: 20pt; letter-spacing: 0.06em; color:#1e293b; }
-  .header .tagline { margin: 4px 0 0; font-size: 9pt; color:#475569; letter-spacing: 0.05em; }
-  .header .doc-meta { margin-top: 12px; display:flex; justify-content: space-between; font-size: 9.5pt; }
-  .header .doc-meta strong { color:#1e293b; }
-  .doc-title { display:inline-block; font-weight:700; font-size: 12pt; padding: 6px 14px; border: 1.5px solid #1e293b; background:#0f172a; color:#fff; letter-spacing: 0.12em; }
+    // 3) Inyectar anexo fotográfico + CSS extra.
+    const { anexoHtml, anexoCss } = _renderAnexoFotos({
+      lineas:    totales.lineas,
+      empresa,
+      numero,
+      fechaIso,
+      qrDataUri,
+      verifyUrl,
+    });
+    if (anexoHtml) {
+      // Inyectar CSS del anexo justo antes del cierre del <style> oficial.
+      html = html.replace(/<\/style>/, `${anexoCss}</style>`);
+      // Inyectar el bloque de páginas del anexo antes del cierre del último sheet.
+      html = html.replace('</body></html>', `${anexoHtml}\n</body></html>`);
+    }
 
-  .cliente-box { background:#f8fafc; border: 1px solid #cbd5e1; padding: 10px 12px; margin: 14px 0 18px; border-radius: 4px; }
-  .cliente-box .label { font-size: 8.5pt; text-transform: uppercase; letter-spacing: 0.1em; color:#64748b; }
-  .cliente-box .razon { font-size: 12pt; font-weight: 700; margin-top: 2px; color:#0f172a; }
-  .cliente-box .row { display:flex; flex-wrap: wrap; gap: 18px; margin-top: 4px; font-size: 9.5pt; color:#334155; }
-  .cliente-box .row span { display:inline-block; }
-
-  table.items { width:100%; border-collapse: collapse; margin-top: 4px; }
-  table.items thead th { background:#0f172a; color:#fff; padding: 7px 8px; font-size: 8.5pt; letter-spacing: 0.08em; text-transform: uppercase; text-align: left; }
-  table.items thead th.num { text-align: right; }
-  table.items thead th.qty { text-align: center; width: 6%; }
-  table.items thead th.codigo { width: 14%; }
-  table.items thead th.desc { width: 46%; }
-  table.items tbody td { padding: 6px 8px; border-bottom: 1px solid #e2e8f0; vertical-align: top; font-size: 10pt; }
-  table.items tbody td.num { text-align: right; font-variant-numeric: tabular-nums; }
-  table.items tbody td.qty { text-align: center; }
-  table.items tbody td.codigo { color:#475569; font-family: 'Menlo','Consolas',monospace; font-size: 9pt; }
-  table.items tbody td.desc { color:#0f172a; }
-  .lugar-inline { font-size: 8.5pt; color: #475569; margin-top: 3px; letter-spacing: 0.02em; }
-  .fotos-ref { color: #0f172a; font-weight: 600; text-decoration: underline dotted; }
-
-  .totales { margin-left: auto; width: 38%; margin-top: 14px; }
-  .totales .row { display:flex; justify-content: space-between; padding: 4px 10px; font-size: 10pt; }
-  .totales .row.sub { border-bottom: 1px dashed #cbd5e1; }
-  .totales .row.itbis { border-bottom: 1px dashed #cbd5e1; }
-  .totales .row.total { background:#0f172a; color:#fff; font-weight: 700; font-size: 11.5pt; padding: 8px 10px; margin-top: 4px; letter-spacing: 0.04em; }
-
-  .condiciones { margin-top: 22px; border-top: 1px solid #cbd5e1; padding-top: 12px; }
-  .condiciones h3 { margin: 0 0 8px; font-size: 10pt; text-transform: uppercase; letter-spacing: 0.12em; color:#475569; }
-  .cond { display:flex; gap: 10px; margin-bottom: 4px; font-size: 9.5pt; }
-  .cond-label { min-width: 92px; font-weight: 700; text-transform: uppercase; font-size: 8.5pt; letter-spacing: 0.08em; color:#1e293b; }
-  .cond-text { color:#334155; flex:1; }
-
-  /* Footer fijo en cada página */
-  .footer { position: fixed; bottom: 8mm; left: 16mm; right: 16mm; border-top: 1px solid #cbd5e1; padding-top: 6px; display:flex; justify-content: space-between; align-items: flex-end; font-size: 8.5pt; color:#64748b; }
-  .footer .url { font-weight: 600; color:#1e293b; }
-  .footer .url small { display:block; font-weight: 400; font-size: 7.5pt; color:#94a3b8; letter-spacing: 0.05em; }
-  .footer .qr { width: 60px; height: 60px; display: block; }
-  .footer .qr-placeholder { width: 60px; height: 60px; border:1px dashed #cbd5e1; display:flex; align-items: center; justify-content: center; font-size: 7pt; color:#94a3b8; }
-
-  /* ─── Anexo fotográfico (página separada) ────────────────────────────── */
-  .anexo { page-break-before: always; padding-top: 0; }
-  .anexo-head { border-bottom: 2px solid #1e293b; padding-bottom: 8px; margin-bottom: 14px; }
-  .anexo-title { font-size: 14pt; font-weight: 700; color: #0f172a; letter-spacing: 0.04em; }
-  .anexo-sub { font-size: 9pt; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4px; }
-  .anexo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10mm 8mm; }
-  .foto-card { margin: 0; page-break-inside: avoid; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background: #f8fafc; }
-  .foto-wrap { width: 100%; aspect-ratio: 4 / 3; background: #0f172a; display: flex; align-items: center; justify-content: center; overflow: hidden; }
-  .foto-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .foto-card figcaption { padding: 8px 10px 10px; font-size: 8.5pt; color: #334155; line-height: 1.35; }
-  .foto-meta { font-size: 8pt; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px; }
-  .foto-desc { color: #334155; margin-bottom: 4px; }
-  .foto-lugar { color: #0f172a; }
-  .foto-lugar strong { color: #475569; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 3px; }
-  .foto-nombre { color: #94a3b8; font-size: 8pt; margin-top: 2px; font-style: italic; }
-</style>
-</head>
-<body>
-  <div class="header">
-    <h1>${_esc(empNombre)}</h1>
-    <p class="tagline">${_esc(empTagline)}</p>
-    <div class="doc-meta">
-      <div><strong>Documento:</strong> <span class="doc-title">${_esc(dto.titulo || 'COTIZACIÓN')} ${_esc(numDoc)}</span></div>
-      <div><strong>Fecha:</strong> ${_esc(fechaCorta)}</div>
-    </div>
-  </div>
-
-  <div class="cliente-box">
-    <div class="label">Cotizado para</div>
-    <div class="razon">${_esc(cli.razonSocial)}</div>
-    <div class="row">
-      ${cli.contacto  ? `<span><strong>Contacto:</strong> ${_esc(cli.contacto)}</span>` : ''}
-      ${cli.rnc       ? `<span><strong>RNC:</strong> ${_esc(cli.rnc)}</span>` : ''}
-      ${cli.telefono  ? `<span><strong>Tel:</strong> ${_esc(cli.telefono)}</span>` : ''}
-    </div>
-    ${cli.direccion ? `<div class="row"><span><strong>Dirección:</strong> ${_esc(cli.direccion)}</span></div>` : ''}
-  </div>
-
-  <table class="items">
-    <thead>
-      <tr>
-        <th class="num">#</th>
-        <th class="codigo">Código</th>
-        <th class="desc">Descripción</th>
-        <th class="qty">Cant.</th>
-        <th class="num">Precio Unit.</th>
-        <th class="num">Importe</th>
-      </tr>
-    </thead>
-    <tbody>${filasItems}</tbody>
-  </table>
-
-  <div class="totales">
-    <div class="row sub"><span>Subtotal</span><span>RD$ ${_fmt(totales.subtotal)}</span></div>
-    ${totales.descuento > 0 ? `<div class="row sub"><span>Descuento</span><span>− RD$ ${_fmt(totales.descuento)}</span></div>` : ''}
-    ${dto.aplicaItbisGlobal ? `<div class="row itbis"><span>ITBIS ${Number(dto.porcentajeItbis ?? 18).toFixed(0)}%</span><span>RD$ ${_fmt(totales.itbis)}</span></div>` : ''}
-    <div class="row total"><span>Total RD$</span><span>RD$ ${_fmt(totales.total)}</span></div>
-  </div>
-
-  <div class="condiciones">
-    <h3>Condiciones del documento</h3>
-    ${condRow('Validez', cond.validez)}
-    ${condRow('Forma de pago', cond.pago)}
-    ${condRow('Tiempo de entrega', cond.entrega)}
-    ${condRow('Garantía', cond.garantia)}
-    ${condRow('Notas', cond.notas)}
-  </div>
-
-  <div class="footer">
-    <div class="url">
-      ${_esc(empWebsite)}
-      <small>Cotización electrónica · Documento no fiscal</small>
-    </div>
-    ${qrBlock}
-  </div>
-
-  ${anexoHtml}
-</body>
-</html>`;
+    return html;
   }
 
   // ─── API pública del service ──────────────────────────────────────────────
@@ -341,7 +405,7 @@ function createCotizadorLibreService(deps) {
     const fechaIso  = new Date().toISOString();
     const qrPayload = `${(dto.empresaWebsite?.trim() || WEBSITE_DEFAULT).replace(/\/+$/, '')}/cotizador-pro?doc=${encodeURIComponent(dto.numeroDocumento || 'COT')}`;
     const qrDataUri = await _qrDataUri(qrPayload);
-    const html      = _renderHtml({ dto, totales, qrDataUri, fechaIso });
+    const html      = await _renderHtml({ dto, totales, qrDataUri, fechaIso });
     const buffer    = await generarPdfDocumento(html, {
       format: 'Letter',
       margin: { top: '0mm', right: '0mm', bottom: '0mm', left: '0mm' },
@@ -373,18 +437,12 @@ function createCotizadorLibreService(deps) {
     return { requesterId, isGlobal, targetEmpleadoId: target };
   }
 
-  /**
-   * listDrafts — si caller es global puede pasar opcionalmente targetEmpleadoId
-   * para filtrar a un técnico específico (típico: Owner buscando los drafts de
-   * Cristian). Si NO se pasa, lista todos los drafts (cross-user) ordenados
-   * por updatedAt DESC.
-   */
   async function listDrafts(scope, query = {}) {
     _assertRepo();
     const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
     const empleadoFiltro = isGlobal
-      ? (targetEmpleadoId ?? null)   // global: puede filtrar a un target o ver todo
-      : requesterId;                 // no-global: SIEMPRE forzado a su propio id
+      ? (targetEmpleadoId ?? null)
+      : requesterId;
     const drafts = await repo.list({ empleadoId: empleadoFiltro, limit: query.limit });
     return { drafts, scope: { isGlobal, filteredBy: empleadoFiltro } };
   }
@@ -392,8 +450,6 @@ function createCotizadorLibreService(deps) {
   async function getDraft(scope, numeroDocumento) {
     _assertRepo();
     const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
-    // Global con targetEmpleadoId → unique. Global sin target → findFirst.
-    // No-global → siempre por su propio id (fail-closed).
     const empleadoFiltro = isGlobal
       ? (targetEmpleadoId ?? null)
       : requesterId;
@@ -405,8 +461,6 @@ function createCotizadorLibreService(deps) {
   async function upsertDraft(scope, dto) {
     _assertRepo();
     const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
-    // Si caller es global y pasa targetEmpleadoId, el upsert apunta al dueño
-    // target (co-edición en vivo del draft de Cristian). Sino, dueño = caller.
     const ownerEmpleadoId = (isGlobal && targetEmpleadoId)
       ? targetEmpleadoId
       : requesterId;

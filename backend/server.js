@@ -845,6 +845,7 @@ const _cotizadorLibreModule = buildCotizadorLibreModule({
   middlewares: _sharedMw,
   auditReq,
   generarPdfDocumento,
+  inlineAssets,
   QRCode: QRCode_pdfStack,
   billingLimiter,
 });

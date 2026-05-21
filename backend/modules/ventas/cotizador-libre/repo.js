@@ -100,11 +100,22 @@ function createCotizadorLibreRepo(prisma) {
     });
   }
 
+  /**
+   * findEmpresaPerfil — singleton id=1. Lo usa el render PDF para heredar el
+   * logo, RNC corporativo, eslogan, dirección, teléfono, etc. del template
+   * oficial de Facturas/Cotizaciones. Si no existe, el caller debe degradar
+   * a defaults hardcodeados (sin logo).
+   */
+  async function findEmpresaPerfil() {
+    return prisma.empresaPerfil.findFirst();
+  }
+
   return {
     findOne,
     list,
     upsertByEmpleadoYNumero,
     deleteByEmpleadoYNumero,
+    findEmpresaPerfil,
   };
 }
 
