@@ -236,7 +236,7 @@ function createCotizadorLibreService(deps) {
       `<p>${_esc(parr).replace(/\n/g, '<br/>')}</p>`
     ).join('');
     return `
-<section class="portada-sheet" style="page-break-after: always; break-after: page; padding: 0 16mm;">
+<section class="portada-sheet">
   <div class="title-bar">
     <div class="doc-type">Carta de Presentación<span class="sub">Propuesta Comercial</span></div>
     <div class="doc-meta">
@@ -427,7 +427,7 @@ function createCotizadorLibreService(deps) {
   function _renderAnexoSheet({ tilesHtml, numero, fechaIso, totalFotos, paginaNum, paginasTotales }) {
     const fechaCortaStr = fechaCorta(fechaIso);
     return `
-<section style="page-break-before: always; break-before: page; padding: 0 16mm;">
+<section class="anexo-sheet">
   <div class="title-bar">
     <div class="doc-type">
       Anexo Técnico
@@ -635,9 +635,27 @@ function createCotizadorLibreService(deps) {
     html = html.replace(/<div class="band"><\/div>\s*/g, '');
     html = html.replace(/<header class="header">[\s\S]*?<\/header>\s*/g, '');
     html = html.replace(/<footer class="footer">[\s\S]*?<\/footer>\s*/g, '');
+
+    // El template oficial fija `@page { size: Letter; margin: 0; }` — esa
+    // regla CSS @page invalida el `margin` que pasamos a Puppeteer y hace
+    // que el body llegue al borde físico de la hoja (= solapa con header /
+    // footer template de Puppeteer). Cambiamos la regla @page para que el
+    // browser respete los margins que reserva Puppeteer.
+    html = html.replace(
+      /@page\s*\{[^}]*\}/g,
+      '@page { size: Letter; margin: 48mm 0 38mm 0; }',
+    );
     // Sheet ya no necesita overflow:hidden ni position:relative para anclar
-    // footer absolute. Sobre-escribimos para liberar el flow natural.
-    html = html.replace(/<style[^>]*>/, (m) => `${m}\n.sheet { position: static !important; overflow: visible !important; min-height: auto !important; padding: 0 !important; }\n.body { padding: 0 16mm !important; }\n`);
+    // footer absolute. Sobre-escribimos para liberar el flow natural. Body
+    // padding lateral se mantiene desde el template — sin top/bottom (lo
+    // maneja @page margin + Puppeteer headerTemplate/footerTemplate).
+    html = html.replace(/<style[^>]*>/, (m) => `${m}
+.sheet { position: static !important; overflow: visible !important; min-height: 0 !important; padding: 0 !important; width: 100% !important; }
+.body { padding: 4mm 16mm 4mm !important; }
+/* page-break helpers — cada sub-sección del cotizador libre inicia en su propia hoja */
+.portada-sheet { page-break-before: avoid; break-before: auto; page-break-after: always; break-after: page; padding: 0 16mm; }
+.anexo-sheet   { page-break-before: always; break-before: page; padding: 0 16mm; }
+`);
 
     // 3) Inyectar CSS extra (portada + sobre-empresa + resumen + watermark).
     html = html.replace(/<\/style>/, `${_EXTRA_CSS}</style>`);
@@ -751,10 +769,14 @@ function createCotizadorLibreService(deps) {
 
     const buffer = await generarPdfDocumento(html, {
       format: 'Letter',
-      // margin top/bottom reservan el espacio donde Puppeteer renderizará
-      // header/footer template. Header ~30mm de alto, footer ~28mm.
-      // Damos un poco de buffer (38/32) para que nunca se corten.
-      margin: { top: '38mm', right: '0mm', bottom: '32mm', left: '0mm' },
+      // margin top/bottom DEBE coincidir con la regla @page del HTML (48/38)
+      // para que el body inicie EXACTAMENTE donde termina el header template
+      // y termine donde empieza el footer template. Nunca overlap.
+      //   Header alto ≈ 32mm (3mm band + 5mm padding + 16mm logo + texto)
+      //   Footer alto ≈ 28mm (qr 16mm + verify text + padding + página N/M)
+      // 48mm top deja 16mm de aire entre header y body — visualmente limpio.
+      // 38mm bottom deja 10mm de aire entre body y footer.
+      margin: { top: '48mm', right: '0mm', bottom: '38mm', left: '0mm' },
       displayHeaderFooter: true,
       headerTemplate,
       footerTemplate,
@@ -837,7 +859,20 @@ function createCotizadorLibreService(deps) {
     return { deleted: r.count };
   }
 
-  return { generarPdf, listDrafts, getDraft, upsertDraft, deleteDraft };
+  /**
+   * getStats — fail-closed: solo se invoca via endpoint con permiso global.
+   * Devuelve agregaciones puras (sin PII del cliente) para panel admin.
+   */
+  async function getStats(scope) {
+    _assertRepo();
+    const { isGlobal } = _normScope(scope);
+    if (!isGlobal) {
+      throw new CotizadorLibreError(403, 'NO_SCOPE', 'Stats requiere permiso ventas:cotizador_libre_global.');
+    }
+    return repo.getStats();
+  }
+
+  return { generarPdf, listDrafts, getDraft, upsertDraft, deleteDraft, getStats };
 }
 
 module.exports = createCotizadorLibreService;

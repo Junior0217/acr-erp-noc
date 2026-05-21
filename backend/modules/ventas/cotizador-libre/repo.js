@@ -125,6 +125,74 @@ function createCotizadorLibreRepo(prisma) {
     });
   }
 
+  /**
+   * getStats — agregaciones del cotizador libre para panel admin.
+   * Solo Owner / global permission accede. Devuelve:
+   *   - totalDrafts
+   *   - porEstado: { [Borrador, Enviada, Aprobada, Convertida, Perdida]: count }
+   *   - porEmpleado: top 10 técnicos por cantidad de drafts
+   *   - drafterMasAntiguo: { updatedAt, numeroDocumento } del más viejo en
+   *     Borrador (señal "se quedó dormido — seguimiento sugerido").
+   *
+   * Usa el índice GIN sobre meta para que `meta.estado=X` sea index scan.
+   */
+  async function getStats() {
+    const all = await prisma.cotizacionLibreDraft.findMany({
+      select: {
+        id:              true,
+        empleadoId:      true,
+        numeroDocumento: true,
+        updatedAt:       true,
+        createdAt:       true,
+        meta:            true,
+        empleado:        { select: { id: true, nombre: true } },
+      },
+    });
+
+    const totalDrafts = all.length;
+    const porEstado = { Borrador: 0, Enviada: 0, Aprobada: 0, Convertida: 0, Perdida: 0 };
+    const porEmpleadoMap = new Map();
+    let drafterMasAntiguo = null;
+
+    for (const d of all) {
+      const estado = (d.meta && typeof d.meta === 'object' && d.meta.estado) || 'Borrador';
+      if (porEstado[estado] != null) porEstado[estado]++;
+
+      const empKey = `${d.empleadoId}|${d.empleado?.nombre ?? '—'}`;
+      porEmpleadoMap.set(empKey, (porEmpleadoMap.get(empKey) ?? 0) + 1);
+
+      if (estado === 'Borrador') {
+        if (!drafterMasAntiguo || d.updatedAt < drafterMasAntiguo.updatedAt) {
+          drafterMasAntiguo = {
+            id: d.id,
+            empleadoId: d.empleadoId,
+            empleadoNombre: d.empleado?.nombre ?? null,
+            numeroDocumento: d.numeroDocumento,
+            updatedAt: d.updatedAt,
+            createdAt: d.createdAt,
+            diasInactividad: Math.floor((Date.now() - d.updatedAt.getTime()) / (1000 * 60 * 60 * 24)),
+          };
+        }
+      }
+    }
+
+    const porEmpleado = [...porEmpleadoMap.entries()]
+      .map(([k, count]) => {
+        const [empleadoId, nombre] = k.split('|');
+        return { empleadoId: Number(empleadoId), nombre, count };
+      })
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10);
+
+    return {
+      totalDrafts,
+      porEstado,
+      porEmpleado,
+      drafterMasAntiguo,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
   return {
     findOne,
     list,
@@ -132,6 +200,7 @@ function createCotizadorLibreRepo(prisma) {
     deleteByEmpleadoYNumero,
     findEmpresaPerfil,
     findByVerifyHash,
+    getStats,
   };
 }
 

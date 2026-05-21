@@ -67,6 +67,14 @@ function createCotizadorLibreRouter({ controller, middlewares, billingLimiter })
     controller.whoami,
   );
 
+  // Stats: solo permiso supervisor o sistema:owner. El service rechaza si
+  // isGlobal=false (fail-closed). Útil para panel admin del Owner.
+  router.get('/cotizador-libre/stats',
+    verificarJWT,
+    requerirCotizadorLibre,
+    controller.getStats,
+  );
+
   router.get('/cotizador-libre/drafts',
     verificarJWT,
     requerirCotizadorLibre,

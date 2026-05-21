@@ -147,6 +147,14 @@ function createCotizadorLibreController({ service, auditReq }) {
     res.json(out);
   });
 
+  // ─── Stats (solo permiso global) ──────────────────────────────────────
+  const getStats = _wrap(async (req, res) => {
+    const requesterId = Number(req.user?.sub);
+    const isGlobal    = _isGlobalCaller(req);
+    const out         = await service.getStats({ requesterId, isGlobal });
+    res.json(out);
+  });
+
   // Helper expuesto para que el frontend pueda saber si está en modo global
   // (oculta/muestra selectores) sin tener que mirar permisos por sí mismo.
   const whoami = _wrap(async (req, res) => {
@@ -157,7 +165,7 @@ function createCotizadorLibreController({ service, auditReq }) {
     });
   });
 
-  return { postPdf, listDrafts, getDraft, upsertDraft, deleteDraft, whoami };
+  return { postPdf, listDrafts, getDraft, upsertDraft, deleteDraft, whoami, getStats };
 }
 
 module.exports = createCotizadorLibreController;
