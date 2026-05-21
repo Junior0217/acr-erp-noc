@@ -38,19 +38,23 @@
 const { renderDocumento, fmtMoney, fechaCorta } = require('../../../services/pdf-templates');
 const { facturaVerifyHash } = require('../../../shared/services/verify-hash.service');
 
-const NOMBRE_EMPRESA_DEFAULT  = 'RA Networks & Solutions';
+const NOMBRE_EMPRESA_DEFAULT  = 'ACR Networks & Solutions';
 const TAGLINE_DEFAULT         = 'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica';
 const WEBSITE_DEFAULT         = 'https://acrnetworks.do';
 
-// Resolver del host público — replica la lógica de `modules/ventas/pdf/service`
-// para construir el URL del QR. Sigue la misma cascada: PUBLIC_FRONTEND_URL,
-// luego RENDER_EXTERNAL_URL, luego fallback al website default.
+// Resolver idéntico al de `modules/ventas/pdf/service` (las facturas). Si
+// divergen, los QRs apuntan a hosts distintos y solo uno funciona. Cascada:
+//   1. PUBLIC_FRONTEND_URL — preferida, configurada explícitamente.
+//   2. CORS_ORIGIN — primer origen https de la lista (típicamente frontend prod).
+//   3. localhost:5173 — dev. (NUNCA RENDER_EXTERNAL_URL — apunta al backend, 404.)
 function _resolverPublicVerifyBase() {
   const explicit = (process.env.PUBLIC_FRONTEND_URL ?? '').trim().replace(/\/+$/, '');
   if (explicit) return explicit;
-  const render = (process.env.RENDER_EXTERNAL_URL ?? '').trim().replace(/\/+$/, '');
-  if (render) return render;
-  return WEBSITE_DEFAULT;
+  const corsList = (process.env.CORS_ORIGIN ?? '').split(',').map(s => s.trim()).filter(Boolean);
+  const httpsCors = corsList.find(o => /^https:\/\//i.test(o));
+  if (httpsCors) return httpsCors.replace(/\/+$/, '');
+  if (corsList[0]) return corsList[0].replace(/\/+$/, '');
+  return 'http://localhost:5173';
 }
 const PUBLIC_VERIFY_BASE = _resolverPublicVerifyBase();
 
@@ -336,6 +340,26 @@ function createCotizadorLibreService(deps) {
 
 .items.resumen-exec { margin-top: 4px; }
 .items.resumen-exec tbody td { font-size: 10px; }
+
+/* ── Watermark BORRADOR (cuando estado='Borrador') ─────────────────────── */
+/* Reemplaza el watermark suave "Cotización" del template oficial por uno  */
+/* más visible en ámbar para señalar al cliente que NO es oferta final.    */
+.watermark.borrador-libre {
+  color: #f59e0b !important;
+  opacity: 0.13 !important;
+  font-size: 130px !important;
+  letter-spacing: 0.1em;
+}
+.watermark.convertida-libre {
+  color: #16a34a !important;
+  opacity: 0.10 !important;
+  font-size: 130px !important;
+}
+.watermark.perdida-libre {
+  color: #dc2626 !important;
+  opacity: 0.10 !important;
+  font-size: 130px !important;
+}
 `;
 
   // ─── Inyección de fila Descuento en la sección de totales ─────────────────
@@ -613,14 +637,28 @@ function createCotizadorLibreService(deps) {
     // 3) Inyectar fila Descuento si aplica.
     html = _injectarDescuentoEnTotales(html, totales.descuento);
 
-    // 4) Estado badge en title-bar (Borrador / Convertida / Perdida).
+    // 4) Estado badge en title-bar + watermark diagonal cuando aplique.
     const estado = dto.estado ?? 'Borrador';
     const badgeHtml = _renderEstadoBadge(estado);
     if (badgeHtml) {
-      // Inyectar dentro del .doc-meta del title-bar (debajo del num + fecha).
       html = html.replace(
         /(<div class="doc-meta">[\s\S]*?<\/div>\s*<\/div>\s*<main)/,
         (m) => m.replace(/(<\/div>\s*<\/div>\s*<main)/, `${badgeHtml}$1`),
+      );
+    }
+
+    // Watermark diagonal: reemplaza el "Cotización" suave del template oficial
+    // por el watermark del estado actual cuando sea distinto de Enviada/Aprobada.
+    const watermarkMap = {
+      'Borrador':   { label: 'BORRADOR',   cls: 'borrador-libre' },
+      'Convertida': { label: 'CONVERTIDA', cls: 'convertida-libre' },
+      'Perdida':    { label: 'PERDIDA',    cls: 'perdida-libre' },
+    };
+    const wmInfo = watermarkMap[estado];
+    if (wmInfo) {
+      html = html.replace(
+        /<div class="watermark cotizacion">Cotización<\/div>/,
+        `<div class="watermark ${wmInfo.cls}">${wmInfo.label}</div>`,
       );
     }
 

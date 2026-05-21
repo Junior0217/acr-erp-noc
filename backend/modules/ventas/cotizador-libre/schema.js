@@ -117,7 +117,7 @@ const cotizadorLibreSchema = z.object({
   descuentoGlobalMonto: z.coerce.number().min(0).optional().default(0),
   condiciones:          condicionesSchema,
   // Override del nombre comercial que va al header del PDF. Si está vacío,
-  // service usa 'RA Networks & Solutions' como default.
+  // service usa 'ACR Networks & Solutions' como default.
   empresaNombre:        z.string().max(120).optional().nullable(),
   empresaWebsite:       z.string().max(200).optional().nullable(),
   empresaTagline:       z.string().max(200).optional().nullable(),
@@ -125,7 +125,7 @@ const cotizadorLibreSchema = z.object({
   // ── Bloques opcionales del PDF (ciclo 16) ────────────────────────────────
   // Carta de presentación: página 1 dedicada antes del documento principal.
   portada:              bloqueOpcionalSchema,
-  // Sección "Sobre RA Networks": eslogan + bullets + datos. Aparece entre
+  // Sección "Sobre ACR Networks": eslogan + bullets + datos. Aparece entre
   // cliente y items table cuando se activa.
   sobreEmpresa:         bloqueOpcionalSchema,
   // Resumen ejecutivo: tabla agrupada por categoría pre-tabla principal.
