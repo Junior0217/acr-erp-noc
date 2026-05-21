@@ -492,27 +492,34 @@ function createCotizadorLibreService(deps) {
 }
 .foto-card {
   width: 100%;
-  height: 75mm;              /* ALTO FIJO — defensa absoluta vs overflow */
+  /* Dimensiones FIJAS calibradas al límite de hoja Letter:
+       Espacio útil: 190mm (279.4 - 38mm header - 35mm footer - 16mm body)
+       Página 1: -18mm title-bar compacto = 172mm para grid
+       2 filas × 80mm card + 1 gap 8mm = 168mm → cabe con 4mm aire ✓
+       Páginas 2+ (sin title-bar): 168mm en 190mm → 22mm aire ✓
+     Pedido user: height 110mm — matemáticamente desborda. Aplicamos el
+     valor MÁXIMO que cumple "4 fotos por hoja" sin overflow: 80mm. */
+  height: 80mm;
   border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden;
   background: #f8fafc; page-break-inside: avoid; break-inside: avoid;
   display: flex; flex-direction: column;
 }
 .foto-card .foto-wrap {
-  width: 100%; height: 52mm;  /* ALTO FIJO de imagen */
+  width: 100%; height: 56mm;  /* ALTO FIJO de imagen (pedido user: 70mm) */
   background: #0f172a;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
   flex-shrink: 0;
 }
 .foto-card .foto-wrap img {
   width: 100%; height: 100%;
-  max-height: 52mm;
+  max-height: 56mm;
   object-fit: cover;
   display: block;
 }
 .foto-card figcaption {
   padding: 5px 8px 6px;
   font-size: 8px; color: #334155; line-height: 1.3;
-  max-height: 23mm; overflow: hidden;   /* corta texto excedente */
+  max-height: 24mm; overflow: hidden;   /* defensa abs anti-overflow texto */
   flex: 1 1 auto;
 }
 .foto-meta { font-size: 7.5px; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 1px; font-weight: 700; }
