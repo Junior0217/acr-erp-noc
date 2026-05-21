@@ -457,32 +457,57 @@ function createCotizadorLibreService(deps) {
   // inyecta dentro del <style>...</style> existente vía replace al final.
   const _ANEXO_CSS = `
 /* ── Anexo fotográfico (cotizador libre) ───────────────────────────────── */
-/* Grid 2x2 con cards aspect 4:3 garantiza que 4 fotos quepan en una hoja
-   Letter con margin 48mm top + 38mm bottom + 36px lateral. Verticales:
-   - 2 cards × (66mm img + 22mm caption) + 1 gap 12mm = 188mm
-   - Espacio disponible: 193mm — quedan 5mm de aire al final. */
+/* Grid 2x2 con dimensiones FIJAS — defensa absoluta para que SIEMPRE quepan
+   EXACTAMENTE 4 imágenes por hoja, sin importar el largo del texto en el
+   caption (lugarInstalacion / descripcion / modelo).
+   Cálculo de espacio:
+     - Letter útil: 279.4mm - margin top 38 - bottom 35 = 206.4mm
+     - Body padding 4mm top + 12mm bottom = 16mm → grid disponible ~190mm
+     - Página 1: 25mm title-bar + 12mm section-label = 37mm chrome
+     - Restante para grid página 1: ~153mm
+     - 2 filas × 75mm card + 1 gap 10mm = 160mm  → AJUSTAR title-bar más compacto
+     - O usar card 70mm: 2 × 70 + 10 = 150mm ✓ con 3mm de aire
+   Páginas 2+ (sin title-bar): ~190mm → 2 × 70 + 10 = 150mm → 40mm aire al final.
+   Card altura FIJA 75mm garantiza no overflow incluso si caption es largo. */
 .anexo-grid {
   display: grid; grid-template-columns: 1fr 1fr;
-  gap: 12px 12px; margin-top: 6px;
+  gap: 8mm 8mm; margin-top: 2mm;
 }
 .foto-card {
+  width: 100%;
+  height: 75mm;              /* ALTO FIJO — defensa absoluta vs overflow */
   border: 1px solid #cbd5e1; border-radius: 4px; overflow: hidden;
   background: #f8fafc; page-break-inside: avoid; break-inside: avoid;
+  display: flex; flex-direction: column;
 }
 .foto-card .foto-wrap {
-  width: 100%; aspect-ratio: 4 / 3;
+  width: 100%; height: 52mm;  /* ALTO FIJO de imagen */
   background: #0f172a;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
-  max-height: 66mm;
+  flex-shrink: 0;
 }
-.foto-card .foto-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.foto-card figcaption { padding: 6px 9px 7px; font-size: 8.5px; color: #334155; line-height: 1.35; max-height: 22mm; overflow: hidden; }
-.foto-meta { font-size: 7.5px; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 2px; font-weight: 700; }
+.foto-card .foto-wrap img {
+  width: 100%; height: 100%;
+  max-height: 52mm;
+  object-fit: cover;
+  display: block;
+}
+.foto-card figcaption {
+  padding: 5px 8px 6px;
+  font-size: 8px; color: #334155; line-height: 1.3;
+  max-height: 23mm; overflow: hidden;   /* corta texto excedente */
+  flex: 1 1 auto;
+}
+.foto-meta { font-size: 7.5px; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 1px; font-weight: 700; }
 .foto-meta strong { color: #1e40af; }
-.foto-desc { color: #475569; margin-bottom: 3px; font-size: 8.5px; line-height: 1.3; }
-.foto-lugar { color: #0f172a; font-size: 8.5px; line-height: 1.3; }
+.foto-desc { color: #475569; margin-bottom: 2px; font-size: 8px; line-height: 1.25; max-height: 10mm; overflow: hidden; }
+.foto-lugar { color: #0f172a; font-size: 8px; line-height: 1.25; max-height: 10mm; overflow: hidden; }
 .foto-lugar .lbl { color: #64748b; font-size: 7px; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 3px; font-weight: 700; }
-.foto-nombre { color: #94a3b8; font-size: 7.5px; margin-top: 1px; font-style: italic; }
+.foto-nombre { color: #94a3b8; font-size: 7.5px; margin-top: 1px; font-style: italic; max-height: 4mm; overflow: hidden; }
+/* Title-bar del anexo más compacto para liberar espacio para el grid. */
+.anexo-sheet .title-bar { padding: 5px 36px !important; }
+.anexo-sheet .doc-type  { font-size: 14px !important; }
+.anexo-sheet .doc-meta .num { font-size: 16px !important; padding: 3px 10px !important; }
 `;
 
   function _renderAnexoFotos({ lineas, numero, fechaIso }) {
@@ -625,7 +650,10 @@ function createCotizadorLibreService(deps) {
       itbis:                   totales.itbis,
       total:                   totales.total,
       fechaEmision:            fechaIso,
-      fechaVence:              null,
+      // Vigencia 30 días por defecto (estándar cotizaciones ACR). El template
+      // oficial renderiza la línea "Emisión: X · Válida hasta: Y" dentro del
+      // title-bar cuando fechaVence está set.
+      fechaVence:              new Date(new Date(fechaIso).getTime() + 30 * 24 * 60 * 60 * 1000).toISOString(),
       estado:                  null,
       notas:                   null,
       condiciones:             _serializeCond(dto.condiciones),
@@ -656,7 +684,7 @@ function createCotizadorLibreService(deps) {
     // browser respete los margins que reserva Puppeteer.
     html = html.replace(
       /@page\s*\{[^}]*\}/g,
-      '@page { size: Letter; margin: 48mm 0 38mm 0; }',
+      '@page { size: Letter; margin: 38mm 0 35mm 0; }',
     );
     // Sheet ya no necesita overflow:hidden ni position:relative para anclar
     // footer absolute. Sobre-escribimos para liberar el flow natural. Body
@@ -664,10 +692,18 @@ function createCotizadorLibreService(deps) {
     // maneja @page margin + Puppeteer headerTemplate/footerTemplate).
     html = html.replace(/<style[^>]*>/, (m) => `${m}
 .sheet { position: static !important; overflow: visible !important; min-height: 0 !important; padding: 0 !important; width: 100% !important; }
-/* Body padding lateral IGUAL al template oficial (36px). Mantiene paridad
-   visual exacta con cotizaciones estándar — mismo ancho del title-bar, del
-   client-grid y de la items table. Sin padding vertical (lo maneja @page). */
-.body { padding: 0 36px 12px !important; }
+/* Body padding lateral IGUAL al template oficial (36px). Top mínimo (4mm)
+   para que el title-bar quede pegado al header de Puppeteer y no flote en
+   el aire. Paridad visual exacta con cotizaciones estándar — mismo ancho
+   del title-bar, client-grid e items table. */
+.body { padding: 4mm 36px 12px !important; }
+/* Title-bar pegado al header: cero margin-top, padding interno compacto. */
+.title-bar { margin-top: 0 !important; padding: 7px 36px !important; }
+/* Section-label antes de items: aire reducido para no separar tanto el
+   client-grid de la tabla de productos. */
+.section-label { margin-top: 8px !important; }
+/* Items table: margin top reducido para acercarla al section-label. */
+.items { margin-top: 6px !important; }
 /* Sub-secciones del cotizador libre usan el MISMO padding lateral 36px que
    el template oficial. Title-bar dentro de portada/anexo queda alineado. */
 .portada-sheet, .anexo-sheet { padding: 0 36px; }
@@ -787,14 +823,14 @@ function createCotizadorLibreService(deps) {
 
     const buffer = await generarPdfDocumento(html, {
       format: 'Letter',
-      // margin top/bottom DEBE coincidir con la regla @page del HTML (48/38)
+      // margin top/bottom DEBE coincidir con la regla @page del HTML (38/35)
       // para que el body inicie EXACTAMENTE donde termina el header template
       // y termine donde empieza el footer template. Nunca overlap.
       //   Header alto ≈ 32mm (3mm band + 5mm padding + 16mm logo + texto)
       //   Footer alto ≈ 28mm (qr 16mm + verify text + padding + página N/M)
-      // 48mm top deja 16mm de aire entre header y body — visualmente limpio.
-      // 38mm bottom deja 10mm de aire entre body y footer.
-      margin: { top: '48mm', right: '0mm', bottom: '38mm', left: '0mm' },
+      // 38mm top: 32mm header + 6mm aire — title-bar pegado al header.
+      // 35mm bottom: 28mm footer + 7mm aire.
+      margin: { top: '38mm', right: '0mm', bottom: '35mm', left: '0mm' },
       displayHeaderFooter: true,
       headerTemplate,
       footerTemplate,
