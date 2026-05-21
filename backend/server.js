@@ -113,9 +113,18 @@ if (process.env.REDIS_URL && Redis) {
     // retryStrategy: backoff lineal corto (no exponencial) — queremos detectar
     // recovery rápido sin agotar el event loop reintentando.
     retryStrategy:         (times) => Math.min(1000, times * 200),
+    // connectTimeout 1s: el first-connect lazy debe respetar el mismo SLO
+    // que un comando. Sin esto, ioredis usa 10s default y el primer request
+    // post-boot puede colgar 10s si Redis está caído (peor que fail-open).
+    connectTimeout:        1000,
+    // enableReadyCheck: false desactiva el ping INFO de health-check inicial
+    // que ioredis hace al conectar. Con commandTimeout estricto y retry corto,
+    // ese ping puede atascarse en Redis transiente y bloquear todos los limiters
+    // hasta que vuelva. Fail-open desde el primer request es preferible.
+    enableReadyCheck:      false,
   })
   redisClient.on('error', err => console.warn('[REDIS]', err.message))
-  console.log('[REDIS] Client configured (commandTimeout=200ms, maxRetries=1)')
+  console.log('[REDIS] Client configured (commandTimeout=200ms, maxRetries=1, readyCheck=false)')
 }
 
 // Factory de RedisStore con prefix opcional + FAIL-OPEN. El prefix permite que

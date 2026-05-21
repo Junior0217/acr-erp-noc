@@ -12,6 +12,7 @@ import { useAuth } from '@shared/contexts/AuthContext'
 import PdfPreviewDrawer from '@shared/components/PdfPreviewDrawer'
 import PinAuthModal     from '@shared/components/PinAuthModal'
 import EditorCondiciones from './_shared/EditorCondiciones'
+import useCondicionesDoc from './_shared/useCondicionesDoc'
 import {
   FACTURA_ESTADOS,
   TH, PAGE_SIZE,
@@ -841,37 +842,29 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
   // Modal modificatorio: 'nc' (B04 anula) | 'nd' (B03 cargo extra) | null.
   const [modificatoriaMode, setModificatoriaMode] = useState(null)
   // Edición de condiciones comerciales (override del default empresa).
-  // Shape interno: { k: { incluir: bool, texto: string } }. Soporta lectura legacy (string).
+  // Hook DRY compartido con PanelCotizaciones: maneja el shape interno
+  // { k: { incluir, texto } }, tolera lectura legacy (string), y expone
+  // handlers listos para <EditorCondiciones />.
   const [editCond, setEditCond] = useState(false)
-  const [cond, setCond] = useState({
-    validez:  { incluir: false, texto: '' },
-    pago:     { incluir: false, texto: '' },
-    entrega:  { incluir: false, texto: '' },
-    garantia: { incluir: false, texto: '' },
-  })
+  const {
+    cond,
+    reset:    resetCond,
+    values:   condValues,
+    mostrar:  condMostrar,
+    onChange: condOnChange,
+    onMostrar: condOnMostrar,
+  } = useCondicionesDoc()
   const [savingCond, setSavingCond] = useState(false)
   // Paridad POS/Carrito: editar condiciones de un documento ya emitido también
   // exige PIN supervisor (Zero Trust). Owner igualmente — sin excepción.
   const [pinCondOpen, setPinCondOpen] = useState(false)
-
-  // Normaliza el shape al cargar: legacy string -> { incluir: true, texto }.
-  function normCond(v) {
-    if (v == null) return { incluir: false, texto: '' }
-    if (typeof v === 'string') return { incluir: !!v.trim(), texto: v }
-    return { incluir: !!v.incluir, texto: String(v.texto ?? '') }
-  }
 
   useEffect(() => {
     let cancel = false
     setLoading(true)
     apiFetch(`/api/ventas/facturas/${factura.id}`)
       .then(r => r.ok ? r.json() : null)
-      .then(j => { if (cancel) return; setFull(j); setCond({
-        validez:  normCond(j?.condiciones?.validez),
-        pago:     normCond(j?.condiciones?.pago),
-        entrega:  normCond(j?.condiciones?.entrega),
-        garantia: normCond(j?.condiciones?.garantia),
-      }) })
+      .then(j => { if (cancel) return; setFull(j); resetCond(j?.condiciones) })
       .catch(() => {})
       .finally(() => { if (!cancel) setLoading(false) })
     return () => { cancel = true }
@@ -1018,28 +1011,13 @@ function FacturaDetailsModal({ factura, onClose, onActualizarEstado, updating, c
                         canónicas del documento emitido (notas viven en otro flujo). */}
                     <EditorCondiciones
                       keys={['validez','pago','entrega','garantia']}
-                      values={{
-                        validez:  cond.validez.texto,
-                        pago:     cond.pago.texto,
-                        entrega:  cond.entrega.texto,
-                        garantia: cond.garantia.texto,
-                      }}
-                      mostrar={{
-                        validez:  cond.validez.incluir,
-                        pago:     cond.pago.incluir,
-                        entrega:  cond.entrega.incluir,
-                        garantia: cond.garantia.incluir,
-                      }}
-                      onChange={(k, v) => setCond(c => ({ ...c, [k]: { incluir: c[k].incluir || !!v, texto: v } }))}
-                      onMostrar={(k, b) => setCond(c => ({ ...c, [k]: { ...c[k], incluir: b } }))}
+                      values={condValues}
+                      mostrar={condMostrar}
+                      onChange={condOnChange}
+                      onMostrar={condOnMostrar}
                     />
                     <div className="flex justify-end gap-2 pt-2">
-                      <button onClick={() => { setEditCond(false); setCond({
-                        validez:  normCond(full?.condiciones?.validez),
-                        pago:     normCond(full?.condiciones?.pago),
-                        entrega:  normCond(full?.condiciones?.entrega),
-                        garantia: normCond(full?.condiciones?.garantia),
-                      }) }}
+                      <button onClick={() => { setEditCond(false); resetCond(full?.condiciones) }}
                         className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
                         Cancelar
                       </button>

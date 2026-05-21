@@ -503,8 +503,22 @@ function createFacturasService(deps) {
     const take    = Math.min(Math.max(parseInt(query?.limit, 10) || 50, 1), 100);
     const pageNum = Math.max(parseInt(query?.page, 10) || 1, 1);
     const skip    = (pageNum - 1) * take;
+    // Default: excluir Anuladas para que el planner use el índice parcial
+    // `factura_owner_active_idx ON Factura(empleadoId, fechaEmision DESC)
+    //  WHERE estado != 'Anulada'`. La cláusula `estado: { not: 'Anulada' }`
+    // es sintácticamente idéntica al predicado del índice, así Postgres
+    // puede satisfacer SELECT + ORDER BY + LIMIT con un solo index scan.
+    //
+    // Opt-in `?includeAnuladas=true` levanta el filtro y degrada a scan del
+    // índice simple `Factura_empleadoId_idx` — aceptable porque listar
+    // anuladas es path frío (histórico, no flujo cajero).
+    const includeAnuladas = String(query?.includeAnuladas ?? '').toLowerCase() === 'true';
     return withCurrentUserRls(async (tx) => {
-      const where = { empleadoId: Number(user.sub), deletedAt: null };
+      const where = {
+        empleadoId: Number(user.sub),
+        deletedAt:  null,
+        ...(includeAnuladas ? {} : { estado: { not: 'Anulada' } }),
+      };
       const [data, total] = await Promise.all([
         tx.factura.findMany({
           where, take, skip,
@@ -521,7 +535,13 @@ function createFacturasService(deps) {
         status: 200,
         body: {
           data,
-          meta: { total, page: pageNum, totalPages: Math.max(Math.ceil(total / take), 1), rlsEnforced: true },
+          meta: {
+            total, page: pageNum,
+            totalPages:    Math.max(Math.ceil(total / take), 1),
+            rlsEnforced:   true,
+            includeAnuladas,
+            indexHint:     includeAnuladas ? 'Factura_empleadoId_idx' : 'factura_owner_active_idx',
+          },
         },
       };
     });

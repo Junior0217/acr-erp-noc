@@ -16,6 +16,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { apiFetch } from '@shared/utils/api'
 
+const API_BASE = import.meta.env.VITE_API_URL ?? ''
+
 const DEFAULTS = {
   mostrarValidez:   true,
   mostrarFormaPago: true,
@@ -28,32 +30,60 @@ const LS_KEY = 'acr.preferenciasPOS.v1'
 const BC_NAME = 'acr.preferenciasPOS'
 
 // ─── Telemetría fire-and-forget ──────────────────────────────────────────────
-// Reporta fallos silenciosos del hook al endpoint público `/api/telemetry`.
-// Diseño:
-//   - Cada (type, msg) se envía una sola vez por sesión del navegador. Sin
-//     dedupe, un Safari modo privado generaría 4 reportes por minuto (cada
-//     instancia del hook + cada operación). El Set in-memory cierra ese loop.
-//   - apiFetch retorna una Promise; usamos `.catch(()=>{})` para evitar que
-//     un fallo del propio /api/telemetry rompa el flujo del hook (sería loop
-//     o crash si el dev server está apagado).
-//   - El tipo `type` debe estar en TELEMETRY_TYPES del backend; si no, el
-//     endpoint responde 400 (silencioso para el hook).
+// Reporta fallos silenciosos del hook al endpoint `/api/telemetry`. Diseño:
+//
+//   - Dedupe in-memory: cada (type, msg) viaja una sola vez por sesión del
+//     navegador. Sin esto, una sesión en Safari incógnito (sin localStorage)
+//     generaría 4+ reportes por minuto desde cada instancia del hook.
+//
+//   - CSRF blindado: el backend valida `x-csrf-token` contra cookie `csrf`.
+//     Leemos la cookie via `document.cookie` (no es httpOnly — diseño por la
+//     necesidad de leerla en JS) y la enviamos en cada POST. Si la cookie no
+//     existe (pre-login / cookie purgada), NO enviamos el header y el server
+//     responderá 403 — se descarta silenciosamente. Aceptamos perder reportes
+//     pre-auth a cambio de blindar contra poison-the-well desde otros orígenes.
+//
+//   - `fetch` directo (no `apiFetch`): apiFetch dispara `window.auth:logout`
+//     ante 403 CSRF — el side-effect rompería el flujo de UX por un reporte
+//     diagnóstico. fetch crudo nos permite swallow el 403 sin colateral.
 const _telemetrySent = new Set()
+
+function _readCsrfCookie() {
+  try {
+    if (typeof document === 'undefined') return null
+    const raw = document.cookie ?? ''
+    const m = raw.match(/(?:^|;\s*)csrf=([^;]+)/)
+    return m ? decodeURIComponent(m[1]) : null
+  } catch { return null }
+}
+
 function _telemetry(type, msg) {
   const key = `${type}:${(msg ?? '').slice(0, 80)}`
   if (_telemetrySent.has(key)) return
   _telemetrySent.add(key)
   try {
-    apiFetch('/api/telemetry', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify({
+    if (typeof fetch === 'undefined') return
+    const csrf = _readCsrfCookie()
+    // Sin token CSRF no intentamos — el server rechazaría con 403 y solo
+    // gastaría rate-limit. Mejor descartar el reporte que ruidar el contador.
+    if (!csrf) return
+    fetch(`${API_BASE}/api/telemetry`, {
+      method:      'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': csrf,
+      },
+      body: JSON.stringify({
         type,
         msg:  typeof msg === 'string' ? msg.slice(0, 480) : null,
         href: typeof location !== 'undefined' ? location.href : null,
       }),
+      // keepalive: el evento puede dispararse durante unload (pagehide); el
+      // browser garantiza completar el fetch hasta 64 KB.
+      keepalive: true,
     }).catch(() => { /* fire-and-forget */ })
-  } catch { /* apiFetch lanzó sync — silencio */ }
+  } catch { /* silencio */ }
 }
 
 // ─── Module-level singleton state ────────────────────────────────────────────

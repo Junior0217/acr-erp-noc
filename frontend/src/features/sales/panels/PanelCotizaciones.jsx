@@ -15,6 +15,7 @@ import { useCart } from '@shared/contexts/CartContext'
 import PdfPreviewDrawer from '@shared/components/PdfPreviewDrawer'
 import PinAuthModal     from '@shared/components/PinAuthModal'
 import EditorCondiciones from './_shared/EditorCondiciones'
+import useCondicionesDoc from './_shared/useCondicionesDoc'
 
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 const fmtDate = d => new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
@@ -156,11 +157,10 @@ function KanbanCotizaciones({ rows, loading, onMove, onOpen, onPDF }) {
 }
 
 // Normalizer compartido: legacy string -> { incluir, texto }.
-function normCondField(v) {
-  if (v == null) return { incluir: false, texto: '' }
-  if (typeof v === 'string') return { incluir: !!v.trim(), texto: v }
-  return { incluir: !!v.incluir, texto: String(v.texto ?? '') }
-}
+// normCondField extraído al hook compartido `useCondicionesDoc` para evitar
+// duplicación con PanelFacturas. Se reexporta aquí por si algún consumer
+// externo lo importaba.
+export { normCondField } from './_shared/useCondicionesDoc'
 
 // Parser de descripción de línea (idéntico al template PDF + PanelPOS).
 // Acepta:
@@ -196,12 +196,14 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
   // las trae — cargo aparte vía /api/ventas/facturas/:id (mismo modelo Factura).
   const [full, setFull] = useState(null)
   const [editCond, setEditCond] = useState(false)
-  const [cond, setCond] = useState({
-    validez:  { incluir: false, texto: '' },
-    pago:     { incluir: false, texto: '' },
-    entrega:  { incluir: false, texto: '' },
-    garantia: { incluir: false, texto: '' },
-  })
+  const {
+    cond,
+    reset:    resetCond,
+    values:   condValues,
+    mostrar:  condMostrar,
+    onChange: condOnChange,
+    onMostrar: condOnMostrar,
+  } = useCondicionesDoc()
   const [savingCond, setSavingCond] = useState(false)
   // Paridad POS/Carrito/Facturas: editar condiciones exige PIN supervisor.
   const [pinCondOpen, setPinCondOpen] = useState(false)
@@ -223,12 +225,7 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
       .then(j => {
         if (!j) return
         setFull(j)
-        setCond({
-          validez:  normCondField(j?.condiciones?.validez),
-          pago:     normCondField(j?.condiciones?.pago),
-          entrega:  normCondField(j?.condiciones?.entrega),
-          garantia: normCondField(j?.condiciones?.garantia),
-        })
+        resetCond(j?.condiciones)
       })
       .catch(() => {})
   }, [cot.id])
@@ -457,28 +454,13 @@ function ModalCotizacion({ cot, onClose, onLoaded, onPreviewPDF }) {
                         el patrón visual de toggles + inputs. */}
                     <EditorCondiciones
                       keys={['validez','pago','entrega','garantia']}
-                      values={{
-                        validez:  cond.validez.texto,
-                        pago:     cond.pago.texto,
-                        entrega:  cond.entrega.texto,
-                        garantia: cond.garantia.texto,
-                      }}
-                      mostrar={{
-                        validez:  cond.validez.incluir,
-                        pago:     cond.pago.incluir,
-                        entrega:  cond.entrega.incluir,
-                        garantia: cond.garantia.incluir,
-                      }}
-                      onChange={(k, v) => setCond(c => ({ ...c, [k]: { incluir: c[k].incluir || !!v, texto: v } }))}
-                      onMostrar={(k, b) => setCond(c => ({ ...c, [k]: { ...c[k], incluir: b } }))}
+                      values={condValues}
+                      mostrar={condMostrar}
+                      onChange={condOnChange}
+                      onMostrar={condOnMostrar}
                     />
                     <div className="flex justify-end gap-2 pt-2">
-                      <button onClick={() => { setEditCond(false); setCond({
-                        validez:  normCondField(full?.condiciones?.validez),
-                        pago:     normCondField(full?.condiciones?.pago),
-                        entrega:  normCondField(full?.condiciones?.entrega),
-                        garantia: normCondField(full?.condiciones?.garantia),
-                      }) }}
+                      <button onClick={() => { setEditCond(false); resetCond(full?.condiciones) }}
                         className="px-3 py-1.5 rounded-lg text-xs text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors">
                         Cancelar
                       </button>

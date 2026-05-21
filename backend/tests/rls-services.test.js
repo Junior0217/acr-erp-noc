@@ -18,20 +18,24 @@ const createMovimientoInventarioService = require('../shared/services/movimiento
 
 // ─── Helpers de mock ─────────────────────────────────────────────────────────
 function fakePrismaTx(facturas = [], clientes = [], movimientos = []) {
+  // Filtro estado: { not: 'Anulada' } (Prisma syntax). El mock lo replica
+  // fielmente para que el test de includeAnuladas valide la query real.
+  const matchEstado = (f, where) => {
+    if (!where?.estado) return true;
+    if (where.estado?.not !== undefined) return f.estado !== where.estado.not;
+    return f.estado === where.estado;
+  };
+  const matchFactura = (f, where) =>
+    (where?.empleadoId == null || f.empleadoId === where.empleadoId)
+    && (where?.deletedAt === null ? f.deletedAt == null : true)
+    && matchEstado(f, where);
   return {
     factura: {
       findMany: async ({ where, take, skip }) => {
-        const subset = facturas.filter(f =>
-          (where?.empleadoId == null || f.empleadoId === where.empleadoId)
-          && (where?.deletedAt === null ? f.deletedAt == null : true)
-        );
+        const subset = facturas.filter(f => matchFactura(f, where));
         return subset.slice(skip ?? 0, (skip ?? 0) + (take ?? 50));
       },
-      count: async ({ where }) =>
-        facturas.filter(f =>
-          (where?.empleadoId == null || f.empleadoId === where.empleadoId)
-          && (where?.deletedAt === null ? f.deletedAt == null : true)
-        ).length,
+      count: async ({ where }) => facturas.filter(f => matchFactura(f, where)).length,
     },
     cliente: {
       findMany: async ({ take, skip }) =>
@@ -95,10 +99,10 @@ test('facturas.listarMisFacturasRls — lanza si user.sub falta', async () => {
 
 test('facturas.listarMisFacturasRls — filtra por empleadoId del user', async () => {
   const facturas = [
-    { id: 'f1', noFactura: 'F-001', empleadoId: 7,  deletedAt: null, total: 100 },
-    { id: 'f2', noFactura: 'F-002', empleadoId: 99, deletedAt: null, total: 200 },
-    { id: 'f3', noFactura: 'F-003', empleadoId: 7,  deletedAt: null, total: 300 },
-    { id: 'f4', noFactura: 'F-004', empleadoId: 7,  deletedAt: new Date(), total: 400 },
+    { id: 'f1', noFactura: 'F-001', empleadoId: 7,  deletedAt: null, estado: 'Pagada',  total: 100 },
+    { id: 'f2', noFactura: 'F-002', empleadoId: 99, deletedAt: null, estado: 'Pagada',  total: 200 },
+    { id: 'f3', noFactura: 'F-003', empleadoId: 7,  deletedAt: null, estado: 'Borrador',total: 300 },
+    { id: 'f4', noFactura: 'F-004', empleadoId: 7,  deletedAt: new Date(), estado: 'Pagada', total: 400 },
   ];
   const svc = createFacturasService(fakeDeps({
     withCurrentUserRls: fakeWithCurrentUserRls(fakePrismaTx(facturas)),
@@ -109,6 +113,35 @@ test('facturas.listarMisFacturasRls — filtra por empleadoId del user', async (
   assert.equal(out.body.meta.total, 2);
   assert.equal(out.body.data.length, 2);
   assert.ok(out.body.data.every(f => f.empleadoId === 7));
+});
+
+test('facturas.listarMisFacturasRls — default excluye Anuladas (usa índice parcial)', async () => {
+  const facturas = [
+    { id: 'f1', noFactura: 'F-001', empleadoId: 7, deletedAt: null, estado: 'Pagada',  total: 100 },
+    { id: 'f2', noFactura: 'F-002', empleadoId: 7, deletedAt: null, estado: 'Anulada', total: 200 },
+    { id: 'f3', noFactura: 'F-003', empleadoId: 7, deletedAt: null, estado: 'Anulada', total: 300 },
+  ];
+  const svc = createFacturasService(fakeDeps({
+    withCurrentUserRls: fakeWithCurrentUserRls(fakePrismaTx(facturas)),
+  }));
+  const out = await svc.listarMisFacturasRls({ limit: 50 }, { sub: 7 });
+  assert.equal(out.body.meta.total, 1, 'solo 1 fila no anulada');
+  assert.equal(out.body.meta.indexHint, 'factura_owner_active_idx');
+  assert.equal(out.body.meta.includeAnuladas, false);
+});
+
+test('facturas.listarMisFacturasRls — includeAnuladas=true levanta el filtro', async () => {
+  const facturas = [
+    { id: 'f1', noFactura: 'F-001', empleadoId: 7, deletedAt: null, estado: 'Pagada',  total: 100 },
+    { id: 'f2', noFactura: 'F-002', empleadoId: 7, deletedAt: null, estado: 'Anulada', total: 200 },
+  ];
+  const svc = createFacturasService(fakeDeps({
+    withCurrentUserRls: fakeWithCurrentUserRls(fakePrismaTx(facturas)),
+  }));
+  const out = await svc.listarMisFacturasRls({ limit: 50, includeAnuladas: 'true' }, { sub: 7 });
+  assert.equal(out.body.meta.total, 2);
+  assert.equal(out.body.meta.includeAnuladas, true);
+  assert.equal(out.body.meta.indexHint, 'Factura_empleadoId_idx');
 });
 
 // ─── Clientes service ────────────────────────────────────────────────────────

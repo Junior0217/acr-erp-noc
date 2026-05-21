@@ -34,6 +34,42 @@
 
 const rateLimit = require('express-rate-limit');
 
+// ─── Prefixes Redis centralizados ────────────────────────────────────────────
+// Llave por limiter para evitar colisión silenciosa de contadores en Redis.
+// Centralizada para que un typo (`rl:auth:login:` vs `rl:auth:logins:`)
+// salga al instante en revisión de código, y para que la validación
+// `assertUniquePrefixes()` corra al require del módulo.
+//
+// Convención: `rl:<dominio>:<accion>:` — separadores `:` para que Redis
+// pueda hacer `KEYS rl:auth:*` durante incidentes. Sin sufijo numérico
+// (que rate-limit-redis añade automáticamente con el contador).
+const LIMITER_PREFIXES = Object.freeze({
+  login:          'rl:auth:login:',
+  totp:           'rl:auth:totp:',
+  backupCode:     'rl:auth:backup:',
+  webhookApprove: 'rl:pos:webhook:',
+  telemetry:      'rl:telemetry:',
+  billing:        'rl:billing:',
+  upload:         'rl:upload:',
+  portalLogin:    'rl:portal:login:',
+});
+
+// Validación al boot: si dos prefixes son iguales por error de copy-paste,
+// fallamos inmediatamente con mensaje claro. No esperamos a producción para
+// descubrir que dos limiters comparten contador.
+(function assertUniquePrefixes() {
+  const seen = new Map();
+  for (const [name, prefix] of Object.entries(LIMITER_PREFIXES)) {
+    if (seen.has(prefix)) {
+      throw new Error(
+        `LIMITER_PREFIXES inválido: '${prefix}' duplicado entre '${seen.get(prefix)}' y '${name}'. ` +
+        `Cada limiter debe tener prefix único para aislar contadores en Redis.`,
+      );
+    }
+    seen.set(prefix, name);
+  }
+})();
+
 /**
  * makeRedisStore — crea un RedisStore conectado al cliente ioredis dado.
  *
@@ -83,7 +119,7 @@ function createLoginLimiter(opts = {}) {
     skipSuccessfulRequests: opts.skipSuccessfulRequests ?? true,
     message:                { error: 'Demasiados intentos de inicio de sesión. Intenta en 15 minutos.' },
     makeStore:              opts.makeStore,
-    prefix:                 opts.prefix ?? 'rl:auth:login:',
+    prefix:                 opts.prefix ?? LIMITER_PREFIXES.login,
   });
 }
 
@@ -99,7 +135,7 @@ function createTotpLimiter(opts = {}) {
     skipSuccessfulRequests: opts.skipSuccessfulRequests ?? true,
     message:                { error: 'Demasiados intentos de PIN. Intente en 15 minutos.' },
     makeStore:              opts.makeStore,
-    prefix:                 opts.prefix ?? 'rl:auth:totp:',
+    prefix:                 opts.prefix ?? LIMITER_PREFIXES.totp,
   });
 }
 
@@ -116,7 +152,7 @@ function createBackupCodeLimiter(opts = {}) {
     skipSuccessfulRequests: opts.skipSuccessfulRequests ?? false,
     message:                { error: 'Demasiados intentos con código de respaldo. Intente en 1 hora.' },
     makeStore:              opts.makeStore,
-    prefix:                 opts.prefix ?? 'rl:auth:backup:',
+    prefix:                 opts.prefix ?? LIMITER_PREFIXES.backupCode,
   });
 }
 
@@ -131,7 +167,7 @@ function createWebhookApproveLimiter(opts = {}) {
     keyGen:    opts.keyGenerator,
     message:   { error: 'Demasiados intentos de aprobación. Intenta en 15 minutos.' },
     makeStore: opts.makeStore,
-    prefix:    opts.prefix ?? 'rl:pos:webhook:',
+    prefix:    opts.prefix ?? LIMITER_PREFIXES.webhookApprove,
   });
 }
 
@@ -147,7 +183,7 @@ function createTelemetryLimiter(opts = {}) {
     keyGen:    opts.keyGenerator,
     message:   { error: 'Telemetry rate exceeded.' },
     makeStore: opts.makeStore,
-    prefix:    opts.prefix ?? 'rl:telemetry:',
+    prefix:    opts.prefix ?? LIMITER_PREFIXES.telemetry,
   });
 }
 
@@ -165,7 +201,7 @@ function createBillingLimiter(opts = {}) {
     keyGen:    opts.keyGenerator,
     message:   { error: 'Límite de operaciones de facturación alcanzado. Intente en 1 minuto.' },
     makeStore: opts.makeStore,
-    prefix:    opts.prefix ?? 'rl:billing:',
+    prefix:    opts.prefix ?? LIMITER_PREFIXES.billing,
   });
 }
 
@@ -182,7 +218,7 @@ function createUploadLimiter(opts = {}) {
     keyGen:    opts.keyGenerator,
     message:   { error: 'Demasiados uploads. Espere 1 minuto.' },
     makeStore: opts.makeStore,
-    prefix:    opts.prefix ?? 'rl:upload:',
+    prefix:    opts.prefix ?? LIMITER_PREFIXES.upload,
   });
 }
 
@@ -200,11 +236,12 @@ function createPortalLoginLimiter(opts = {}) {
     skipSuccessfulRequests: opts.skipSuccessfulRequests ?? true,
     message:                { error: 'Demasiados intentos de inicio de sesión del portal. Intente en 15 minutos.' },
     makeStore:              opts.makeStore,
-    prefix:                 opts.prefix ?? 'rl:portal:login:',
+    prefix:                 opts.prefix ?? LIMITER_PREFIXES.portalLogin,
   });
 }
 
 module.exports = {
+  LIMITER_PREFIXES,
   makeRedisStore,
   createLoginLimiter,
   createTotpLimiter,
