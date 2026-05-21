@@ -1,20 +1,31 @@
 /**
  * backend/modules/ventas/cotizador-libre/service.js
  *
- * Lógica del Cotizador Libre. Render PDF puro en memoria — sin BD, sin
- * cache Supabase, sin NCF, sin auditoría fiscal. Es una herramienta de
- * cotización editable libre para proyectos de infraestructura/CCTV donde
- * los precios y descripciones se manejan fuera del catálogo rígido.
+ * Lógica del Cotizador Libre. Render PDF puro en memoria — sin NCF, sin
+ * descuento de stock, sin AuditCaja. Es una herramienta de cotización
+ * editable libre para proyectos de infraestructura/CCTV donde los precios
+ * y descripciones se manejan fuera del catálogo rígido.
  *
- * Pipeline:
+ * Ciclo 13:
+ *   - Acepta `scope` en list/get/upsert/delete:
+ *       { requesterId, isGlobal, targetEmpleadoId? }
+ *     `isGlobal` se deriva de los permisos del JWT en el controller.
+ *     Cuando `isGlobal` está activo, las queries NO filtran por empleadoId
+ *     (modo Owner/Socios: ver y co-editar borradores de otros técnicos).
+ *     Cuando NO, fuerza filtro por requesterId (fail-closed).
+ *   - PDF incluye anexo fotográfico de Ítems con `fotos[]`. Se renderiza en
+ *     una nueva página (page-break-before: always) con grid 2-col y captions
+ *     "Lugar: …" + "Modelo: …" para cada foto.
+ *
+ * Pipeline render:
  *   1. Recibe dto validado por schema.js.
- *   2. Calcula subtotal/itbis/total en backend (defensa-en-profundidad — el
- *      frontend ya mostró cálculos pero NO confiamos en su valor).
- *   3. Genera QR para validación (opcional, link a https://acrnetworks.do).
+ *   2. Calcula subtotal/itbis/total en backend (defensa-en-profundidad).
+ *   3. Genera QR para validación (link público).
  *   4. Renderiza HTML inline-template con CSS Cyber-Industrial.
- *   5. Devuelve Buffer al controller.
+ *   5. Renderiza ANEXO FOTOGRÁFICO si hay fotos en algún ítem.
+ *   6. Devuelve Buffer al controller.
  *
- * Factory: createCotizadorLibreService({ generarPdfDocumento, QRCode })
+ * Factory: createCotizadorLibreService({ generarPdfDocumento, QRCode, repo })
  */
 
 const NOMBRE_EMPRESA_DEFAULT  = 'RA Networks & Solutions';
@@ -97,6 +108,54 @@ function createCotizadorLibreService(deps) {
     } catch { return null; }
   }
 
+  // ─── Anexo fotográfico: si algún ítem trae fotos[], se renderiza una nueva
+  // página al final del PDF con grid 2-col. Las captions referencian el ítem
+  // (#N + descripción truncada) + Lugar de Instalación + Modelo opcional.
+  function _renderAnexoFotos({ lineas, numDoc }) {
+    // Aplanar: cada foto se renderiza con sus metadatos contextuales del ítem
+    // padre (lugar de instalación, número de ítem, descripción).
+    const tiles = [];
+    lineas.forEach((l, i) => {
+      const fotos = Array.isArray(l.fotos) ? l.fotos : [];
+      fotos.forEach((f, j) => {
+        if (!f?.dataUri) return;
+        tiles.push({
+          dataUri:      f.dataUri,
+          nombre:       f.nombre ?? '',
+          modelo:       (f.modelo ?? l.codigo ?? '').toString().trim(),
+          itemIdx:      i + 1,
+          descripcion:  (l.descripcion ?? '').toString().slice(0, 80),
+          lugar:        (l.lugarInstalacion ?? '').toString().trim(),
+          fotoIdx:      j + 1,
+        });
+      });
+    });
+
+    if (tiles.length === 0) return '';
+
+    const cells = tiles.map((t) => `
+      <figure class="foto-card">
+        <div class="foto-wrap"><img src="${t.dataUri}" alt="Foto ${t.itemIdx}.${t.fotoIdx}" /></div>
+        <figcaption>
+          <div class="foto-meta">Ítem ${t.itemIdx}.${t.fotoIdx} ${t.modelo ? `· <strong>${_esc(t.modelo)}</strong>` : ''}</div>
+          <div class="foto-desc">${_esc(t.descripcion)}</div>
+          ${t.lugar ? `<div class="foto-lugar"><strong>Lugar:</strong> ${_esc(t.lugar)}</div>` : ''}
+          ${t.nombre ? `<div class="foto-nombre">${_esc(t.nombre)}</div>` : ''}
+        </figcaption>
+      </figure>
+    `).join('');
+
+    return `
+      <section class="anexo">
+        <header class="anexo-head">
+          <div class="anexo-title">Anexo Técnico — Fotografías del Levantamiento</div>
+          <div class="anexo-sub">Documento ${_esc(numDoc)} · ${tiles.length} imagen${tiles.length === 1 ? '' : 'es'}</div>
+        </header>
+        <div class="anexo-grid">${cells}</div>
+      </section>
+    `;
+  }
+
   // ─── HTML template (Cyber-Industrial, omitido SKU / Registro Mercantil) ───
   function _renderHtml({ dto, totales, qrDataUri, fechaIso }) {
     const empNombre   = dto.empresaNombre?.trim() || NOMBRE_EMPRESA_DEFAULT;
@@ -107,16 +166,26 @@ function createCotizadorLibreService(deps) {
     const numDoc = dto.numeroDocumento || `COT-${Date.now().toString().slice(-6)}`;
     const fechaCorta = new Date(fechaIso).toLocaleDateString('es-DO', { day: '2-digit', month: 'long', year: 'numeric' });
 
-    const filasItems = totales.lineas.map((l, i) => `
+    // En la tabla principal mostramos también lugarInstalacion debajo de la
+    // descripción si el ítem tiene fotos asociadas — así el lector ve la
+    // referencia del anexo sin tener que pasar página.
+    const filasItems = totales.lineas.map((l, i) => {
+      const lugar = (l.lugarInstalacion ?? '').toString().trim();
+      const tieneFotos = Array.isArray(l.fotos) && l.fotos.length > 0;
+      const sufijo = lugar
+        ? `<div class="lugar-inline">📍 ${_esc(lugar)}${tieneFotos ? ` · <span class="fotos-ref">ver anexo</span>` : ''}</div>`
+        : (tieneFotos ? `<div class="lugar-inline">📎 <span class="fotos-ref">ver anexo</span></div>` : '');
+      return `
       <tr>
         <td class="num">${i + 1}</td>
         <td class="codigo">${_esc(l.codigo ?? '')}</td>
-        <td class="desc">${_esc(l.descripcion ?? '')}</td>
+        <td class="desc">${_esc(l.descripcion ?? '')}${sufijo}</td>
         <td class="qty">${l.qty}</td>
         <td class="num">RD$ ${_fmt(l.pu)}</td>
         <td class="num">RD$ ${_fmt(l.subtotal)}</td>
       </tr>
-    `).join('');
+    `;
+    }).join('');
 
     const condRow = (label, v) => {
       const c = _normCond(v);
@@ -127,6 +196,8 @@ function createCotizadorLibreService(deps) {
     const qrBlock = qrDataUri
       ? `<img class="qr" src="${qrDataUri}" alt="QR validación" />`
       : '<div class="qr-placeholder">QR</div>';
+
+    const anexoHtml = _renderAnexoFotos({ lineas: totales.lineas, numDoc });
 
     return `<!doctype html>
 <html lang="es">
@@ -161,6 +232,8 @@ function createCotizadorLibreService(deps) {
   table.items tbody td.qty { text-align: center; }
   table.items tbody td.codigo { color:#475569; font-family: 'Menlo','Consolas',monospace; font-size: 9pt; }
   table.items tbody td.desc { color:#0f172a; }
+  .lugar-inline { font-size: 8.5pt; color: #475569; margin-top: 3px; letter-spacing: 0.02em; }
+  .fotos-ref { color: #0f172a; font-weight: 600; text-decoration: underline dotted; }
 
   .totales { margin-left: auto; width: 38%; margin-top: 14px; }
   .totales .row { display:flex; justify-content: space-between; padding: 4px 10px; font-size: 10pt; }
@@ -180,6 +253,22 @@ function createCotizadorLibreService(deps) {
   .footer .url small { display:block; font-weight: 400; font-size: 7.5pt; color:#94a3b8; letter-spacing: 0.05em; }
   .footer .qr { width: 60px; height: 60px; display: block; }
   .footer .qr-placeholder { width: 60px; height: 60px; border:1px dashed #cbd5e1; display:flex; align-items: center; justify-content: center; font-size: 7pt; color:#94a3b8; }
+
+  /* ─── Anexo fotográfico (página separada) ────────────────────────────── */
+  .anexo { page-break-before: always; padding-top: 0; }
+  .anexo-head { border-bottom: 2px solid #1e293b; padding-bottom: 8px; margin-bottom: 14px; }
+  .anexo-title { font-size: 14pt; font-weight: 700; color: #0f172a; letter-spacing: 0.04em; }
+  .anexo-sub { font-size: 9pt; color: #64748b; letter-spacing: 0.08em; text-transform: uppercase; margin-top: 4px; }
+  .anexo-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10mm 8mm; }
+  .foto-card { margin: 0; page-break-inside: avoid; border: 1px solid #cbd5e1; border-radius: 6px; overflow: hidden; background: #f8fafc; }
+  .foto-wrap { width: 100%; aspect-ratio: 4 / 3; background: #0f172a; display: flex; align-items: center; justify-content: center; overflow: hidden; }
+  .foto-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .foto-card figcaption { padding: 8px 10px 10px; font-size: 8.5pt; color: #334155; line-height: 1.35; }
+  .foto-meta { font-size: 8pt; color: #1e293b; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px; }
+  .foto-desc { color: #334155; margin-bottom: 4px; }
+  .foto-lugar { color: #0f172a; }
+  .foto-lugar strong { color: #475569; font-size: 7.5pt; text-transform: uppercase; letter-spacing: 0.08em; margin-right: 3px; }
+  .foto-nombre { color: #94a3b8; font-size: 8pt; margin-top: 2px; font-style: italic; }
 </style>
 </head>
 <body>
@@ -240,6 +329,8 @@ function createCotizadorLibreService(deps) {
     </div>
     ${qrBlock}
   </div>
+
+  ${anexoHtml}
 </body>
 </html>`;
   }
@@ -269,31 +360,57 @@ function createCotizadorLibreService(deps) {
     }
   }
 
-  async function listDrafts(empleadoId, query = {}) {
-    _assertRepo();
-    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
-      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
+  function _normScope(scope) {
+    const requesterId = Number(scope?.requesterId);
+    if (!Number.isInteger(requesterId) || requesterId <= 0) {
+      throw new CotizadorLibreError(401, 'NO_USER', 'requesterId requerido.');
     }
-    const drafts = await repo.listByEmpleado(empleadoId, { limit: query.limit });
-    return { drafts };
+    const isGlobal = !!scope?.isGlobal;
+    const target   = scope?.targetEmpleadoId != null ? Number(scope.targetEmpleadoId) : null;
+    if (target != null && (!Number.isInteger(target) || target <= 0)) {
+      throw new CotizadorLibreError(400, 'BAD_TARGET', 'targetEmpleadoId inválido.');
+    }
+    return { requesterId, isGlobal, targetEmpleadoId: target };
   }
 
-  async function getDraft(empleadoId, numeroDocumento) {
+  /**
+   * listDrafts — si caller es global puede pasar opcionalmente targetEmpleadoId
+   * para filtrar a un técnico específico (típico: Owner buscando los drafts de
+   * Cristian). Si NO se pasa, lista todos los drafts (cross-user) ordenados
+   * por updatedAt DESC.
+   */
+  async function listDrafts(scope, query = {}) {
     _assertRepo();
-    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
-      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
-    }
-    const draft = await repo.findByEmpleadoYNumero(empleadoId, numeroDocumento);
+    const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
+    const empleadoFiltro = isGlobal
+      ? (targetEmpleadoId ?? null)   // global: puede filtrar a un target o ver todo
+      : requesterId;                 // no-global: SIEMPRE forzado a su propio id
+    const drafts = await repo.list({ empleadoId: empleadoFiltro, limit: query.limit });
+    return { drafts, scope: { isGlobal, filteredBy: empleadoFiltro } };
+  }
+
+  async function getDraft(scope, numeroDocumento) {
+    _assertRepo();
+    const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
+    // Global con targetEmpleadoId → unique. Global sin target → findFirst.
+    // No-global → siempre por su propio id (fail-closed).
+    const empleadoFiltro = isGlobal
+      ? (targetEmpleadoId ?? null)
+      : requesterId;
+    const draft = await repo.findOne({ numeroDocumento, empleadoId: empleadoFiltro });
     if (!draft) throw new CotizadorLibreError(404, 'NOT_FOUND', 'Borrador no encontrado.');
     return draft;
   }
 
-  async function upsertDraft(empleadoId, dto) {
+  async function upsertDraft(scope, dto) {
     _assertRepo();
-    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
-      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
-    }
-    const saved = await repo.upsertByEmpleadoYNumero(empleadoId, dto.numeroDocumento, {
+    const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
+    // Si caller es global y pasa targetEmpleadoId, el upsert apunta al dueño
+    // target (co-edición en vivo del draft de Cristian). Sino, dueño = caller.
+    const ownerEmpleadoId = (isGlobal && targetEmpleadoId)
+      ? targetEmpleadoId
+      : requesterId;
+    const saved = await repo.upsertByEmpleadoYNumero(ownerEmpleadoId, dto.numeroDocumento, {
       cliente:     dto.cliente,
       items:       dto.items,
       condiciones: dto.condiciones,
@@ -302,12 +419,13 @@ function createCotizadorLibreService(deps) {
     return saved;
   }
 
-  async function deleteDraft(empleadoId, numeroDocumento) {
+  async function deleteDraft(scope, numeroDocumento) {
     _assertRepo();
-    if (!Number.isInteger(empleadoId) || empleadoId <= 0) {
-      throw new CotizadorLibreError(401, 'NO_USER', 'empleadoId requerido.');
-    }
-    const r = await repo.deleteByEmpleadoYNumero(empleadoId, numeroDocumento);
+    const { requesterId, isGlobal, targetEmpleadoId } = _normScope(scope);
+    const ownerEmpleadoId = (isGlobal && targetEmpleadoId)
+      ? targetEmpleadoId
+      : requesterId;
+    const r = await repo.deleteByEmpleadoYNumero(ownerEmpleadoId, numeroDocumento);
     return { deleted: r.count };
   }
 

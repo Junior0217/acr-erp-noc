@@ -43,7 +43,9 @@ module.exports = [
   { key: 'venta:ver_cotizaciones',     module: 'Ventas',        label: 'Ver Cotizaciones',      desc: 'Consultar listado de cotizaciones',              color: 'amber'   },
   { key: 'venta:crear_cotizaciones',   module: 'Ventas',        label: 'Crear Cotizaciones',    desc: 'Guardar y editar cotizaciones',                  color: 'amber'   },
   { key: 'venta:editar_cotizaciones',  module: 'Ventas',        label: 'Editar Cotizaciones',   desc: 'Actualizar precios en cotización pendiente',     color: 'amber'   },
-  { key: 'cotizador_libre_manual',     module: 'Ventas',        label: 'Cotizador Libre Pro',   desc: 'Acceso al cotizador manual sin tocar inventario (socios + beta)', color: 'amber' },
+  { key: 'cotizador_libre_manual',     module: 'Ventas',        label: 'Cotizador Libre Pro (legacy)', desc: 'Alias legacy — equivale a ventas:cotizador_libre. Mantener para roles existentes hasta migrar.', color: 'amber' },
+  { key: 'ventas:cotizador_libre',     module: 'Ventas',        label: 'Cotizador Libre — Acceso',  desc: 'Acceso base al cotizador manual (ver/editar SOLO sus propios borradores). Asignar a beta testers y técnicos de campo.', color: 'amber' },
+  { key: 'ventas:cotizador_libre_global', module: 'Ventas',     label: 'Cotizador Libre — Global',  desc: 'Supervisión cross-user: lista/abre/sobreescribe borradores de cualquier empleado. Solo Owner + Socios. Implica ventas:cotizador_libre.', color: 'red' },
   { key: 'ventas:forzar_credito',      module: 'Ventas',        label: 'Forzar Crédito',        desc: 'Bypass límite de crédito al facturar (Owner only)', color: 'red'   },
 
   // ── Órdenes de Trabajo ────────────────────────────────────────────────────────

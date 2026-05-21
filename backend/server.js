@@ -704,6 +704,18 @@ app.use((req, res, next) => {
 // Helpers de body/seguridad (_stripPollutionKeys, bodyLimit, sendErr, sendOk)
 // viven en shared/helpers.js. Reviver inline para el parser global mantiene la
 // defensa-en-profundidad contra prototype pollution sin importar el helper.
+//
+// Ciclo 13: el Cotizador Libre acepta fotos comprimidas en base64 dentro del
+// payload JSON. Cap aproximado: 5 fotos × 30 ítems × ~280KB = ~42MB worst case,
+// pero el caso real es <8MB. Mount LOCAL antes del parser global — body-parser
+// chequea `req._body` y skipea si ya está parseado. CRÍTICO: este middleware
+// debe ir ANTES del `app.use(express.json({ limit: '50kb' }))` o el global
+// rechazaría el body con 413 antes de llegar al local.
+app.use('/api/ventas/cotizador-libre', express.json({
+  limit: '25mb',
+  reviver: (k, v) => (k === '__proto__' || k === 'prototype' || k === 'constructor') ? undefined : v,
+}));
+
 app.use(express.json({
   limit: '50kb',
   reviver: (k, v) => (k === '__proto__' || k === 'prototype' || k === 'constructor') ? undefined : v,

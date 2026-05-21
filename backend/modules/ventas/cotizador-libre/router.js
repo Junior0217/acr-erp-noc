@@ -2,65 +2,93 @@
  * backend/modules/ventas/cotizador-libre/router.js
  *
  * Rutas HTTP del Cotizador Libre:
- *   POST /api/ventas/cotizador-libre/pdf         → genera PDF on-demand.
- *   GET  /api/ventas/cotizador-libre/drafts      → lista mis drafts (recientes).
- *   GET  /api/ventas/cotizador-libre/draft/:n    → carga un draft específico.
- *   PUT  /api/ventas/cotizador-libre/draft       → upsert idempotente (auto-save).
- *   DELETE /api/ventas/cotizador-libre/draft/:n  → borra un draft.
+ *   POST   /api/ventas/cotizador-libre/pdf            → genera PDF on-demand.
+ *   GET    /api/ventas/cotizador-libre/whoami         → flags de scope (isGlobal).
+ *   GET    /api/ventas/cotizador-libre/drafts         → lista (mis o todos según permiso).
+ *   GET    /api/ventas/cotizador-libre/draft/:n       → carga un draft específico.
+ *   PUT    /api/ventas/cotizador-libre/draft          → upsert idempotente (auto-save).
+ *   DELETE /api/ventas/cotizador-libre/draft/:n       → borra un draft.
  *
- * Permiso server-side: `cotizador_libre_manual`. Sin este permiso, ni el PDF
- * ni los drafts son accesibles — incluso si un usuario adivina la URL del
- * panel React, el backend responde 403. El permiso se asigna a roles
- * específicos (Propietario, Socios, Beta Testers) vía panel de permisos.
+ * Ciclo 13 — permisos por capas:
+ *   - `cotizador_libre_manual`     (legacy, alias de ventas:cotizador_libre)
+ *   - `ventas:cotizador_libre`     base: solo sus propios borradores.
+ *   - `ventas:cotizador_libre_global` supervisor: ver/editar drafts de cualquiera.
+ *   - `sistema:owner`              short-circuit en requerirPermiso.
  *
- * Rate-limit: billingLimiter compartido (cross-pod Redis). El PDF abre un
- * page de Puppeteer; los CRUD de drafts son baratos pero igual hereditan el
- * mismo limiter para no romper la cuota cuando un cajero alterna entre PDF
- * y guardado.
+ * El router solo valida que el caller tenga AL MENOS UNO de los tres permisos
+ * (cualquiera abre la puerta). La distinción `mine` vs `global` la hace el
+ * controller con `_isGlobalCaller(req)` — server-side, fail-closed.
+ *
+ * Rate-limit: billingLimiter compartido (cross-pod Redis). Aplica al PDF y al
+ * upsert (auto-save) — los GET no se rate-limitean para no bloquear el monitoreo
+ * en vivo del Owner mientras Cristian guarda.
  *
  * Factory: createCotizadorLibreRouter({ controller, middlewares, billingLimiter })
  */
 
 const express = require('express');
 
-const PERMISO = 'cotizador_libre_manual';
+// Permisos aceptados — cualquiera de estos abre el módulo. La discriminación
+// entre acceso "mis drafts" vs "drafts de cualquier técnico" se hace en el
+// controller (`_isGlobalCaller`), no aquí. Aquí solo: ¿puede entrar al panel?
+const PERMISOS_ACEPTADOS = [
+  'ventas:cotizador_libre',
+  'ventas:cotizador_libre_global',
+  'cotizador_libre_manual',
+];
+
+function _requerirAlguno(permisosOk) {
+  return (req, res, next) => {
+    const permisos = Array.isArray(req.user?.permisos) ? req.user.permisos : [];
+    if (permisos.includes('sistema:owner')) return next();
+    if (permisos.some((p) => permisosOk.includes(p))) return next();
+    return res.status(403).json({ error: 'Sin permiso para esta acción.' });
+  };
+}
 
 function createCotizadorLibreRouter({ controller, middlewares, billingLimiter }) {
   if (!controller)  throw new Error('createCotizadorLibreRouter: controller required');
   if (!middlewares) throw new Error('createCotizadorLibreRouter: middlewares required');
-  const { verificarJWT, requerirPermiso } = middlewares;
+  const { verificarJWT } = middlewares;
 
   const router = express.Router();
+  const requerirCotizadorLibre = _requerirAlguno(PERMISOS_ACEPTADOS);
 
   router.post('/cotizador-libre/pdf',
     verificarJWT,
-    requerirPermiso(PERMISO),
+    requerirCotizadorLibre,
     ...(billingLimiter ? [billingLimiter] : []),
     controller.postPdf,
   );
 
+  router.get('/cotizador-libre/whoami',
+    verificarJWT,
+    requerirCotizadorLibre,
+    controller.whoami,
+  );
+
   router.get('/cotizador-libre/drafts',
     verificarJWT,
-    requerirPermiso(PERMISO),
+    requerirCotizadorLibre,
     controller.listDrafts,
   );
 
   router.get('/cotizador-libre/draft/:numero',
     verificarJWT,
-    requerirPermiso(PERMISO),
+    requerirCotizadorLibre,
     controller.getDraft,
   );
 
   router.put('/cotizador-libre/draft',
     verificarJWT,
-    requerirPermiso(PERMISO),
+    requerirCotizadorLibre,
     ...(billingLimiter ? [billingLimiter] : []),
     controller.upsertDraft,
   );
 
   router.delete('/cotizador-libre/draft/:numero',
     verificarJWT,
-    requerirPermiso(PERMISO),
+    requerirCotizadorLibre,
     controller.deleteDraft,
   );
 
@@ -68,4 +96,4 @@ function createCotizadorLibreRouter({ controller, middlewares, billingLimiter })
 }
 
 module.exports = createCotizadorLibreRouter;
-module.exports.PERMISO = PERMISO;
+module.exports.PERMISOS_ACEPTADOS = PERMISOS_ACEPTADOS;
