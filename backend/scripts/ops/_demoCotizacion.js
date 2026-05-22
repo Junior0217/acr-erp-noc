@@ -30,24 +30,36 @@ const EMPRESA = {
 };
 
 const CLIENTE = {
-  razonSocial: 'TechSolutions Caribe, SRL',
+  razonSocial: 'Plaza Comercial Bella Vista, SRL',
   noCliente:   'CLI-2026-00128',
   rnc:         '1-30-50128-3',
-  contacto:    'Ing. Luis Martínez',
-  telefono:    '(809) 555-1234',
-  email:       'compras@techsolutions.com.do',
-  direccion:   'Av. 27 de Febrero #500, Ensanche Naco, Santo Domingo, R.D.',
+  contacto:    'Sr. Ramón Pérez · Administrador',
+  telefono:    '(809) 555-0032',
+  email:       'administracion@plazabellavista.do',
+  direccion:   'Av. Sarasota #45, Bella Vista, Santo Domingo, R.D.',
 };
 
+// ─── Proyecto: Instalación CCTV de 32 cámaras + infraestructura completa ────
 const ITEMS = [
-  { codigo: 'MKT-RB5009', descripcion: 'Router MikroTik RB5009UG+S+IN', detalle: 'CPU 4-core ARM, 9× Gigabit, 1× SFP+ 10G, RouterOS L5', cantidad: 1,    precioUnitario: 24500.00 },
-  { codigo: 'FO-SM-1KM',  descripcion: 'Cable de Fibra Óptica Single-Mode 9/125µm',                detalle: 'Armado, exterior, anti-roedor — rollo 1000 m',       cantidad: 1500, precioUnitario:    78.00 },
-  { codigo: 'SC-APC-50',  descripcion: 'Conectores SC/APC Pre-pulidos',                            detalle: 'Conector mecánico, pérdida <0.3 dB',                 cantidad: 50,   precioUnitario:   145.00 },
-  { codigo: 'HIK-DS-4MP', descripcion: 'Cámara IP HIKVISION 4MP DS-2CD2143G2',                     detalle: 'Bullet, IR 30m, PoE, lente 2.8mm, IP67',             cantidad: 8,    precioUnitario:  6850.00 },
-  { codigo: 'HIK-NVR16',  descripcion: 'NVR HIKVISION DS-7616NI-K2/16P',                           detalle: '16 canales, 16 puertos PoE, H.265+, 2 bahías HDD',   cantidad: 1,    precioUnitario: 21500.00 },
-  { codigo: 'HDD-WD-6TB', descripcion: 'Disco Duro WD Purple 6TB Surveillance',                    detalle: '24/7, 256 MB caché, SATA III',                       cantidad: 2,    precioUnitario:  7950.00 },
-  { codigo: 'UPS-APC15K', descripcion: 'UPS APC Smart-UPS 1500VA Line-Interactive',                detalle: 'Salidas IEC, batería sellada, software PowerChute',  cantidad: 1,    precioUnitario: 18500.00 },
-  { codigo: 'INST-CCTV',  descripcion: 'Servicio de Instalación y Configuración CCTV',             detalle: 'Tendido cableado UTP Cat6, configuración NVR, capacitación',  cantidad: 1, precioUnitario: 35000.00 },
+  // ── CCTV ──
+  { codigo: 'HIK-4MP-BUL', descripcion: 'Cámara IP HIKVISION 4MP Bullet DS-2CD2143G2-I',  detalle: 'IR 30m, PoE 802.3af, lente fija 2.8mm, IP67, H.265+, audio bidireccional',          cantidad: 24, precioUnitario:  6850.00 },
+  { codigo: 'HIK-4MP-DOM', descripcion: 'Cámara IP HIKVISION 4MP Dome DS-2CD2143G2-IS',   detalle: 'Anti-vandálica IK10, IR 30m, PoE, lente 2.8mm, audio in/out, micro SD slot',        cantidad:  8, precioUnitario:  7450.00 },
+  // ── NVR + Storage ──
+  { codigo: 'HIK-NVR-32',  descripcion: 'NVR HIKVISION DS-7632NI-K2/32P',                 detalle: '32 canales, 32 puertos PoE+, H.265+, 2 bahías HDD, salida HDMI 4K, hasta 320Mbps',  cantidad:  1, precioUnitario: 58500.00 },
+  { codigo: 'HDD-WD-10TB', descripcion: 'Disco Duro WD Purple 10TB Surveillance',         detalle: 'CMR, 7200 RPM, 256MB caché, SATA III, 24/7, 1.5M horas MTBF, AllFrame AI',          cantidad:  2, precioUnitario: 14800.00 },
+  // ── Red ──
+  { codigo: 'SW-POE-24',   descripcion: 'Switch PoE+ 24 puertos Gigabit + 2× SFP',         detalle: 'Total budget 400W IEEE 802.3at, Layer 2 manageable, VLAN/QoS, rack-mountable',     cantidad:  1, precioUnitario: 28500.00 },
+  { codigo: 'PATCH-CAT6',  descripcion: 'Patch Panel 24 puertos Cat6 1U',                  detalle: 'Keystone tooless, certificación EIA/TIA-568-B, organizador trasero incluido',     cantidad:  2, precioUnitario:  4250.00 },
+  // ── Cableado ──
+  { codigo: 'UTP-CAT6-305', descripcion: 'Cable UTP Cat6 23AWG CMR — caja 305m',           detalle: 'Conductor cobre puro, certificación TIA, color azul, pull-box auto-dispensador', cantidad:  4, precioUnitario:  5450.00 },
+  { codigo: 'RJ45-CAT6',   descripcion: 'Conector RJ45 Cat6 Pass-Through — caja 100u',    detalle: 'Contactos chapados oro 50µ, polycarbonato, compatible Cat5e/Cat6/Cat6a',           cantidad:  2, precioUnitario:  1850.00 },
+  // ── Montaje ──
+  { codigo: 'BRK-CAM-PV',  descripcion: 'Bracket pared/poste para cámara bullet',          detalle: 'Aluminio fundido, ajuste 360°, anti-vandalismo, cubre cableado',                  cantidad: 32, precioUnitario:    485.00 },
+  { codigo: 'RACK-12U',    descripcion: 'Rack de pared 12U 600×450mm',                     detalle: 'Puerta cerradura con llave, ventiladores 4× incluidos, organizadores 2×',         cantidad:  1, precioUnitario: 18500.00 },
+  // ── Energía ──
+  { codigo: 'UPS-APC-2K',  descripcion: 'UPS APC Smart-UPS 2200VA SMT2200I-AR',            detalle: 'Line-Interactive, 8 salidas IEC, software PowerChute, expansión batería opcional', cantidad: 2, precioUnitario: 38500.00 },
+  // ── Servicio ──
+  { codigo: 'INST-CCTV32', descripcion: 'Servicio de Instalación y Configuración — 32 Cámaras', detalle: 'Tendido cableado horizontal, montaje cámaras, terminación y certificación, configuración NVR + cuentas, integración red cliente, capacitación 4h al personal de TI', cantidad:  1, precioUnitario: 145000.00 },
 ];
 
 // ─── Cálculos derivados ─────────────────────────────────────────────────────
@@ -72,11 +84,12 @@ const CONDICIONES = {
 };
 
 const NOTAS = (
-  'Proyecto: Instalación de sistema CCTV de 8 cámaras IP + tendido de fibra óptica '
-+ 'punto a punto entre las dos sedes del cliente. La instalación incluye configuración '
-+ 'del NVR, integración con red existente del cliente y capacitación básica al personal '
-+ 'de TI. Garantía sobre defectos de fábrica únicamente — no cubre daños por descargas '
-+ 'eléctricas, manipulación incorrecta ni eventos atmosféricos.'
+  'Proyecto: Implementación de sistema de videovigilancia IP de 32 cámaras (24 bullet '
++ 'perimetrales + 8 dome interiores), grabación centralizada en NVR de 32 canales con '
++ 'redundancia de almacenamiento (20 TB efectivos), red dedicada con switch PoE+ '
++ 'manejable, respaldo eléctrico vía 2× UPS APC 2200VA, y rack de pared 12U para '
++ 'concentración de equipos. Garantía sobre defectos de fábrica únicamente — no cubre '
++ 'daños por descargas eléctricas, manipulación incorrecta ni eventos atmosféricos.'
 );
 
 // ─── Logo (PNG base64) ──────────────────────────────────────────────────────

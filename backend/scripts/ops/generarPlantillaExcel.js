@@ -1,28 +1,39 @@
 /**
  * backend/scripts/ops/generarPlantillaExcel.js
  *
- * Plantilla XLSX editable con paridad visual del PDF oficial (`pdf-templates.js`).
- * Datos demo COMPLETOS (cliente, items, totales calculados, validez, formas de
- * pago, garantía) compartidos con el PDF y el DOCX via `_demoCotizacion.js` —
- * los tres archivos coinciden 1:1 al inspeccionarlos lado a lado.
+ * Cotización en formato XLSX con ESPEJO VISUAL EXACTO del PDF oficial
+ * generado por el pipeline de producción (`backend/services/pdf-templates.js`).
  *
- * Mantiene fórmulas vivas Excel: el técnico edita Cant/Precio y Importe/ITBIS/
- * Subtotal/Total se recalculan solos. Los datos demo arrancan llenos.
- *
- * Características:
- *   · Banda corporate slate-300 (3px)
- *   · Logo PNG real (backend/assets/logo-acr.png) embebido en la celda izquierda
- *     del header — mismo logo que el PDF
- *   · Header empresa: razón social, nombre comercial, eslogan, RNC, dirección,
- *     teléfono, email, website
- *   · Title-bar slate-100 con COTIZACIÓN + número + emisión/vence
- *   · Marca de agua "COTIZACIÓN" azul rotada -20deg (sharp SVG→PNG)
- *   · Bloque cliente: razón social, RNC, dirección, teléfono, email, número
- *   · Tabla items 7 col con datos demo y fórmulas vivas
- *   · Totales: Subtotal/ITBIS/Total Neto con SUM
- *   · Condiciones generales (validez, pago, entrega, garantía)
- *   · Notas / proyecto
- *   · Firmas dual + footer print
+ * Reglas de espejo (sin excepción):
+ *   · MISMAS 6 columnas que la tabla del PDF: #, Código, Descripción,
+ *     Cant., Precio Unit., Importe.
+ *   · ITBIS NO va en columna por fila — solo en el bloque de totales
+ *     (Subtotal · ITBIS 18% · Total Neto), idéntico al PDF.
+ *   · MISMA paleta corporativa: slate-900/800/700/600/500/400/300/200/100/50
+ *     + blue-800 acento.
+ *   · MISMOS bloques del PDF en el MISMO orden:
+ *       1. Banda corporate 3px slate-300
+ *       2. Header: logo 70×70 + razón social/nombre comercial/eslogan +
+ *          corp-meta derecho (RNC/Dir/Tel/Email/Web)
+ *       3. Title-bar slate-100: COTIZACIÓN 16pt + chip número mono +
+ *          línea inferior con emisión/vence
+ *       4. Sección Cliente: 3 cajas (Razón Social / RNC + Tel / Dirección + Email)
+ *       5. Tabla items: header slate-100 + cuerpo con datos demo + zebra slate-50
+ *       6. Totales: Subtotal · ITBIS · Total Neto (Grand row slate-100)
+ *       7. Condiciones generales: 4 cajas (Validez / Pago / Entrega / Garantía)
+ *          con borde izquierdo blue-800
+ *       8. Notas del proyecto: borde izquierdo slate-400
+ *       9. Firmas duales con línea
+ *       10. Footer print con paginación
+ *   · FÓRMULAS VIVAS Excel:
+ *       · Importe por fila      → =D{r}*E{r}
+ *       · Subtotal              → =SUM(F{a}:F{b})
+ *       · ITBIS                 → =Subtotal * 0.18
+ *       · Total Neto            → =Subtotal + ITBIS
+ *   · Logo PNG real (backend/assets/logo-acr.png) embebido — mismo del PDF.
+ *   · Watermark "COTIZACIÓN" azul rotado -20deg (sharp SVG→PNG) flotando
+ *     sobre la tabla.
+ *   · Print titles: header de la tabla se repite en cada página impresa.
  *
  * Salida: Plantilla_Cotizacion_Manual_RA.xlsx en la raíz del repo.
  * Ejecutar: node backend/scripts/ops/generarPlantillaExcel.js
@@ -34,7 +45,7 @@ const sharp   = require('sharp');
 
 const {
   EMPRESA, CLIENTE, ITEMS, NUMERO,
-  CONDICIONES, NOTAS, ITBIS_RATE,
+  CONDICIONES, NOTAS,
   calcular, fechaEmision, fechaVence, fechaISO,
   logoBuffer,
 } = require('./_demoCotizacion');
@@ -58,27 +69,41 @@ const COLOR = {
 const FONT      = 'Calibri';
 const FONT_MONO = 'Consolas';
 
-const BORDER_HAIR  = { style: 'hair',   color: { argb: COLOR.slate200 } };
-const BORDER_THIN  = { style: 'thin',   color: { argb: COLOR.slate200 } };
-const BORDER_MED   = { style: 'thin',   color: { argb: COLOR.slate300 } };
-const BORDER_THICK = { style: 'medium', color: { argb: COLOR.slate400 } };
+const BORDER_HAIR    = { style: 'hair',   color: { argb: COLOR.slate200 } };
+const BORDER_THIN    = { style: 'thin',   color: { argb: COLOR.slate200 } };
+const BORDER_MED     = { style: 'thin',   color: { argb: COLOR.slate300 } };
+const BORDER_THICK   = { style: 'medium', color: { argb: COLOR.slate400 } };
+const BORDER_BLUE_L  = { style: 'thick',  color: { argb: COLOR.blue800 } };
+const BORDER_SLATE_L = { style: 'thick',  color: { argb: COLOR.slate400 } };
 
 function fillBg(cell, argb) {
   cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } };
 }
 
+function setBorder(cell, b) {
+  cell.border = {
+    top:    b.top    ?? BORDER_HAIR,
+    bottom: b.bottom ?? BORDER_HAIR,
+    left:   b.left   ?? BORDER_HAIR,
+    right:  b.right  ?? BORDER_HAIR,
+  };
+}
+
 async function _watermarkPng() {
+  // Espejo exacto del .watermark.cotizacion del PDF:
+  // color #1e40af, opacity 0.045-0.07, font-size 110px, rotate -20deg, caps,
+  // letter-spacing 0.08em, font-weight 900.
   const svg = `<?xml version="1.0" encoding="UTF-8"?>
-<svg width="1100" height="280" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 280">
-  <g transform="rotate(-20 550 140)">
-    <text x="550" y="180"
+<svg width="1200" height="300" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 300">
+  <g transform="rotate(-20 600 150)">
+    <text x="600" y="195"
           text-anchor="middle"
           font-family="Helvetica, 'Helvetica Neue', Arial, sans-serif"
-          font-size="160"
+          font-size="170"
           font-weight="900"
-          letter-spacing="13"
+          letter-spacing="14"
           fill="#1e40af"
-          fill-opacity="0.07">COTIZACIÓN</text>
+          fill-opacity="0.06">COTIZACIÓN</text>
   </g>
 </svg>`;
   return sharp(Buffer.from(svg)).png().toBuffer();
@@ -89,517 +114,590 @@ async function construirLibro() {
   wb.creator  = 'ACR Networks & Solutions';
   wb.company  = 'ACR Networks & Solutions';
   wb.title    = `Cotización ${NUMERO}`;
-  wb.subject  = 'Cotización editable offline · paridad PDF';
-  wb.keywords = 'cotizacion, ACR, offline, plantilla';
+  wb.subject  = 'Cotización editable · espejo exacto del PDF corporativo';
+  wb.keywords = 'cotizacion, ACR, plantilla, offline, CCTV';
   wb.created  = new Date();
   wb.modified = new Date();
 
   const ws = wb.addWorksheet('Cotización', {
     properties: { tabColor: { argb: COLOR.blue800 }, defaultRowHeight: 15 },
     pageSetup: {
-      paperSize: 1,
+      paperSize: 1,                              // Letter
       orientation: 'portrait',
       fitToPage: true, fitToWidth: 1, fitToHeight: 0,
-      margins: { left: 0.4, right: 0.4, top: 0.35, bottom: 0.45, header: 0.2, footer: 0.25 },
+      margins: { left: 0.35, right: 0.35, top: 0.35, bottom: 0.5, header: 0.2, footer: 0.25 },
       horizontalCentered: true,
+      printArea: undefined,                      // se define abajo
     },
-    views: [{ state: 'normal', showGridLines: false, zoomScale: 110 }],
+    views: [{ state: 'normal', showGridLines: false, zoomScale: 105 }],
   });
 
-  ws.getColumn('A').width =  5;    // #
-  ws.getColumn('B').width = 14;    // Código
-  ws.getColumn('C').width = 44;    // Descripción
-  ws.getColumn('D').width =  9;    // Cant.
-  ws.getColumn('E').width = 14;    // Precio Unit.
-  ws.getColumn('F').width = 12;    // ITBIS
-  ws.getColumn('G').width = 15;    // Importe
+  // ─── Anchos de columna (proporciones PDF) ─────────────────────────────────
+  // PDF: col-num 30px, col-cod 86px, descripción flex, col-cant 56px,
+  // col-pu 90px, col-amt 100px. Total ancho body = 8.5" - 72px padding = 744px.
+  ws.getColumn('A').width =  5;     // # (col-num 30px)
+  ws.getColumn('B').width = 14;     // Código (col-cod 86px)
+  ws.getColumn('C').width = 56;     // Descripción (flex)
+  ws.getColumn('D').width =  8;     // Cant. (col-cant 56px)
+  ws.getColumn('E').width = 15;     // Precio Unit. (col-pu 90px)
+  ws.getColumn('F').width = 17;     // Importe (col-amt 100px)
 
   let row = 1;
 
-  // ─── Banda corporate ──────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 1. BANDA CORPORATE — 3px slate-300, full width
+  // ═══════════════════════════════════════════════════════════════════════════
   ws.getRow(row).height = 4;
-  ws.mergeCells(`A${row}:G${row}`);
+  ws.mergeCells(`A${row}:F${row}`);
   fillBg(ws.getCell(`A${row}`), COLOR.slate300);
   row += 1;
 
-  // ─── Header empresa (rows 2-5): logo izq + brand info center + corp-meta der
-  // Logo PNG real (anclado a A2-A5) + razón social en B-D + RNC/dirección en E-G
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 2. HEADER — logo izq + brand-info + corp-meta derecho
+  //    PDF: padding 12px 36px 10px. Logo 96×96. Brand: razón 14.5px / nombre
+  //    10px caps blue / eslogan 9px italic. Corp-meta: RNC/Dir/Tel/Email/Web
+  //    como label-value pairs.
+  // ═══════════════════════════════════════════════════════════════════════════
+  const headerStartRow = row;
+
+  // Logo embebido en A2-A5
   const logoBuf = logoBuffer();
   if (logoBuf) {
     const imgId = wb.addImage({ buffer: logoBuf, extension: 'png' });
     ws.addImage(imgId, {
-      tl: { col: 0.1, row: 1.1 },
-      ext: { width: 70, height: 70 },
+      tl: { col: 0.15, row: headerStartRow - 0.85 },
+      ext: { width: 72, height: 72 },
       editAs: 'oneCell',
     });
   }
-  // Reservar 4 filas para el header
-  ws.getRow(row).height = 18;
+
+  // Row 2: razón social | RNC (rich text)
+  ws.getRow(row).height = 22;
   ws.mergeCells(`B${row}:D${row}`);
   ws.getCell(`B${row}`).value = EMPRESA.razonSocial;
   ws.getCell(`B${row}`).font  = { name: FONT, size: 14, bold: true, color: { argb: COLOR.slate900 } };
   ws.getCell(`B${row}`).alignment = { horizontal: 'left', vertical: 'middle' };
-  ws.mergeCells(`E${row}:G${row}`);
-  ws.getCell(`E${row}`).value = [
-    { text: 'RNC  ', font: { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate400 } } },
-    { text: EMPRESA.rnc, font: { name: FONT, size: 10, bold: true, color: { argb: COLOR.slate900 } } },
-  ];
+  ws.mergeCells(`E${row}:F${row}`);
+  ws.getCell(`E${row}`).value = {
+    richText: [
+      { text: 'RNC  ',     font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate400 } } },
+      { text: EMPRESA.rnc, font: { name: FONT_MONO, size: 11, bold: true, color: { argb: COLOR.slate900 } } },
+    ],
+  };
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
+  // Row 3: nombre comercial | dirección
   ws.getRow(row).height = 14;
   ws.mergeCells(`B${row}:D${row}`);
   ws.getCell(`B${row}`).value = EMPRESA.nombreComercial;
-  ws.getCell(`B${row}`).font  = { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.blue800 } };
+  ws.getCell(`B${row}`).font  = { name: FONT, size: 9, bold: true, color: { argb: COLOR.blue800 } };
   ws.getCell(`B${row}`).alignment = { horizontal: 'left', vertical: 'middle' };
-  ws.mergeCells(`E${row}:G${row}`);
+  ws.mergeCells(`E${row}:F${row}`);
   ws.getCell(`E${row}`).value = EMPRESA.direccion;
   ws.getCell(`E${row}`).font  = { name: FONT, size: 8.5, color: { argb: COLOR.slate700 } };
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle', wrapText: true };
   row += 1;
 
+  // Row 4: eslogan | tel
   ws.getRow(row).height = 14;
   ws.mergeCells(`B${row}:D${row}`);
   ws.getCell(`B${row}`).value = EMPRESA.eslogan;
-  ws.getCell(`B${row}`).font  = { name: FONT, size: 7.5, italic: true, color: { argb: COLOR.slate500 } };
+  ws.getCell(`B${row}`).font  = { name: FONT, size: 8, italic: true, color: { argb: COLOR.slate500 } };
   ws.getCell(`B${row}`).alignment = { horizontal: 'left', vertical: 'middle' };
-  ws.mergeCells(`E${row}:G${row}`);
-  ws.getCell(`E${row}`).value = `Tel. ${EMPRESA.telefono}  ·  ${EMPRESA.email}`;
-  ws.getCell(`E${row}`).font  = { name: FONT, size: 8, color: { argb: COLOR.slate500 } };
+  ws.mergeCells(`E${row}:F${row}`);
+  ws.getCell(`E${row}`).value = {
+    richText: [
+      { text: 'Tel. ', font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate400 } } },
+      { text: EMPRESA.telefono, font: { name: FONT_MONO, size: 9, color: { argb: COLOR.slate700 } } },
+    ],
+  };
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
+  // Row 5: (vacío izq) | email
   ws.getRow(row).height = 14;
   ws.mergeCells(`B${row}:D${row}`);
   ws.getCell(`B${row}`).value = '';
-  ws.mergeCells(`E${row}:G${row}`);
-  ws.getCell(`E${row}`).value = EMPRESA.website;
-  ws.getCell(`E${row}`).font  = { name: FONT, size: 8, color: { argb: COLOR.blue800 }, underline: true };
+  ws.mergeCells(`E${row}:F${row}`);
+  ws.getCell(`E${row}`).value = `${EMPRESA.email}   ·   ${EMPRESA.website}`;
+  ws.getCell(`E${row}`).font  = { name: FONT, size: 8.5, color: { argb: COLOR.blue800 } };
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
-  // Separador
+  // Separador hairline
   ws.getRow(row).height = 3;
-  ws.mergeCells(`A${row}:G${row}`);
+  ws.mergeCells(`A${row}:F${row}`);
   ws.getCell(`A${row}`).border = { bottom: BORDER_THIN };
   row += 1;
 
-  // ─── Title-bar ────────────────────────────────────────────────────────────
-  ws.getRow(row).height = 30;
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 3. TITLE-BAR — slate-100 bg, COTIZACIÓN 17pt izq + número chip der
+  //    PDF: padding 9px 36px, slate-100 con border-top/bottom slate-200.
+  // ═══════════════════════════════════════════════════════════════════════════
+  ws.getRow(row).height = 32;
   ws.mergeCells(`A${row}:C${row}`);
   ws.getCell(`A${row}`).value = 'COTIZACIÓN';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 16, bold: true, color: { argb: COLOR.slate800 } };
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 17, bold: true, color: { argb: COLOR.slate800 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate100);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 2 };
-  ws.getCell(`A${row}`).border = { top: BORDER_THIN, bottom: BORDER_THIN };
+  setBorder(ws.getCell(`A${row}`), { top: BORDER_THIN, bottom: BORDER_THIN, left: { style: 'none' }, right: { style: 'none' } });
 
-  ws.mergeCells(`D${row}:G${row}`);
+  ws.mergeCells(`D${row}:F${row}`);
   ws.getCell(`D${row}`).value = NUMERO;
-  ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 15, bold: true, color: { argb: COLOR.slate900 } };
+  ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 16, bold: true, color: { argb: COLOR.slate900 } };
   fillBg(ws.getCell(`D${row}`), COLOR.slate100);
   ws.getCell(`D${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 2 };
-  ws.getCell(`D${row}`).border = { top: BORDER_THIN, bottom: BORDER_THIN };
-  for (const col of ['B', 'C', 'E', 'F']) {
+  setBorder(ws.getCell(`D${row}`), { top: BORDER_THIN, bottom: BORDER_THIN, left: { style: 'none' }, right: { style: 'none' } });
+  // Bandas slate-100 continuas
+  for (const col of ['B', 'C', 'E']) {
     const c = ws.getCell(`${col}${row}`);
     fillBg(c, COLOR.slate100);
-    c.border = { top: BORDER_THIN, bottom: BORDER_THIN };
+    setBorder(c, { top: BORDER_THIN, bottom: BORDER_THIN, left: { style: 'none' }, right: { style: 'none' } });
   }
   row += 1;
 
-  ws.getRow(row).height = 16;
+  // Sub-línea title-bar: estado izq + emisión/vence der
+  ws.getRow(row).height = 18;
   ws.mergeCells(`A${row}:C${row}`);
-  ws.getCell(`A${row}`).value = 'Documento Electrónico Verificable';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 7.5, color: { argb: COLOR.slate500 } };
+  ws.getCell(`A${row}`).value = {
+    richText: [
+      { text: '◆ EMITIDA   ', font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.blue800 }, letterSpacing: 12 } },
+      { text: '·   Documento Electrónico Verificable', font: { name: FONT, size: 8, color: { argb: COLOR.slate500 } } },
+    ],
+  };
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 2 };
-  ws.mergeCells(`D${row}:G${row}`);
-  ws.getCell(`D${row}`).value = [
-    { text: 'Emisión: ',        font: { name: FONT, size: 8, color: { argb: COLOR.slate400 }, bold: true } },
-    { text: fechaISO(fechaEmision()), font: { name: FONT, size: 8.5, color: { argb: COLOR.slate900 }, bold: true } },
-    { text: '   ·   Válida hasta: ',  font: { name: FONT, size: 8, color: { argb: COLOR.slate400 }, bold: true } },
-    { text: fechaISO(fechaVence()),   font: { name: FONT, size: 8.5, color: { argb: COLOR.slate900 }, bold: true } },
-  ];
+  ws.mergeCells(`D${row}:F${row}`);
+  ws.getCell(`D${row}`).value = {
+    richText: [
+      { text: 'Emisión: ',    font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate400 } } },
+      { text: fechaISO(fechaEmision()), font: { name: FONT_MONO, size: 9, bold: true, color: { argb: COLOR.slate900 } } },
+      { text: '   ·   Válida hasta: ', font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate400 } } },
+      { text: fechaISO(fechaVence()), font: { name: FONT_MONO, size: 9, bold: true, color: { argb: COLOR.slate900 } } },
+    ],
+  };
   ws.getCell(`D${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 2 };
   row += 1;
 
-  // ─── Cliente ──────────────────────────────────────────────────────────────
-  ws.getRow(row).height = 10;
-  row += 1;
-  ws.getRow(row).height = 14;
-  ws.mergeCells(`A${row}:G${row}`);
-  ws.getCell(`A${row}`).value = 'CLIENTE';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate600 } };
-  ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  ws.getCell(`A${row}`).border = { bottom: { style: 'hair', color: { argb: COLOR.slate200 } } };
+  // Spacer post title-bar
+  ws.getRow(row).height = 12;
   row += 1;
 
-  // Client-grid 3 col: Razón Social/Cliente / RNC + Tel/Contacto / Dirección + Email
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 4. CLIENTE — section-label + 3 cajas grid (Razón / RNC+Tel / Dir+Email)
+  // ═══════════════════════════════════════════════════════════════════════════
+  ws.getRow(row).height = 16;
+  ws.mergeCells(`A${row}:F${row}`);
+  ws.getCell(`A${row}`).value = {
+    richText: [
+      { text: 'CLIENTE  ', font: { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate600 }, letterSpacing: 40 } },
+      { text: '─────────────────────────────────────────────────────────────────────────────────────────────', font: { name: FONT, size: 7, color: { argb: COLOR.slate200 } } },
+    ],
+  };
+  ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+  row += 1;
+
+  // Client-grid labels row
   ws.getRow(row).height = 14;
-  for (const [start, end, lbl] of [['A', 'C', 'Razón Social'], ['D', 'E', 'RNC / Contacto'], ['F', 'G', 'Dirección']]) {
-    ws.mergeCells(`${start}${row}:${end}${row}`);
+  const gridDef = [
+    { start: 'A', end: 'C', lbl: 'RAZÓN SOCIAL' },
+    { start: 'D', end: 'D', lbl: 'RNC' },
+    { start: 'E', end: 'F', lbl: 'DIRECCIÓN' },
+  ];
+  for (const { start, end, lbl } of gridDef) {
+    if (start !== end) ws.mergeCells(`${start}${row}:${end}${row}`);
     const c = ws.getCell(`${start}${row}`);
     c.value = lbl;
-    c.font  = { name: FONT, size: 7, bold: true, color: { argb: COLOR.slate500 } };
+    c.font  = { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate500 } };
     fillBg(c, COLOR.slate50);
     c.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-    c.border = {
-      top: { style: 'thin', color: { argb: COLOR.slate200 } },
-      left: { style: 'thin', color: { argb: COLOR.slate200 } },
-      right: { style: 'thin', color: { argb: COLOR.slate200 } },
-    };
+    setBorder(c, { top: BORDER_THIN, bottom: { style: 'hair', color: { argb: COLOR.slate200 } }, left: BORDER_THIN, right: BORDER_THIN });
     for (let col = start.charCodeAt(0) + 1; col <= end.charCodeAt(0); col += 1) {
       const c2 = ws.getCell(`${String.fromCharCode(col)}${row}`);
       fillBg(c2, COLOR.slate50);
-      c2.border = c.border;
+      setBorder(c2, { top: BORDER_THIN, bottom: { style: 'hair', color: { argb: COLOR.slate200 } }, left: BORDER_THIN, right: BORDER_THIN });
     }
   }
   row += 1;
 
-  ws.getRow(row).height = 18;
-  // Razón social
+  // Client-grid values row 1: razón / RNC / dirección
+  ws.getRow(row).height = 22;
   ws.mergeCells(`A${row}:C${row}`);
   ws.getCell(`A${row}`).value = CLIENTE.razonSocial;
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 11, bold: true, color: { argb: COLOR.slate900 } };
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 12, bold: true, color: { argb: COLOR.slate900 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate50);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  // RNC
-  ws.mergeCells(`D${row}:E${row}`);
+
   ws.getCell(`D${row}`).value = CLIENTE.rnc;
-  ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 10, bold: true, color: { argb: COLOR.slate900 } };
+  ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 11, bold: true, color: { argb: COLOR.slate900 } };
   fillBg(ws.getCell(`D${row}`), COLOR.slate50);
   ws.getCell(`D${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  // Dirección
-  ws.mergeCells(`F${row}:G${row}`);
-  ws.getCell(`F${row}`).value = CLIENTE.direccion;
-  ws.getCell(`F${row}`).font  = { name: FONT, size: 9, color: { argb: COLOR.slate800 } };
-  fillBg(ws.getCell(`F${row}`), COLOR.slate50);
-  ws.getCell(`F${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1, wrapText: true };
-  for (const [start, end] of [['A', 'C'], ['D', 'E'], ['F', 'G']]) {
-    for (let col = start.charCodeAt(0); col <= end.charCodeAt(0); col += 1) {
-      const c = ws.getCell(`${String.fromCharCode(col)}${row}`);
-      c.border = { left: BORDER_THIN, right: BORDER_THIN };
-    }
+
+  ws.mergeCells(`E${row}:F${row}`);
+  ws.getCell(`E${row}`).value = CLIENTE.direccion;
+  ws.getCell(`E${row}`).font  = { name: FONT, size: 9.5, color: { argb: COLOR.slate800 } };
+  fillBg(ws.getCell(`E${row}`), COLOR.slate50);
+  ws.getCell(`E${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1, wrapText: true };
+
+  for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    setBorder(ws.getCell(`${col}${row}`), { top: { style: 'hair', color: { argb: COLOR.slate200 } }, bottom: { style: 'hair', color: { argb: COLOR.slate200 } }, left: BORDER_THIN, right: BORDER_THIN });
   }
   row += 1;
 
+  // Client-grid sub row: cliente#/contacto | tel | email
   ws.getRow(row).height = 16;
-  // Sub: cliente#
   ws.mergeCells(`A${row}:C${row}`);
-  ws.getCell(`A${row}`).value = `Cliente #: ${CLIENTE.noCliente}  ·  ${CLIENTE.contacto}`;
+  ws.getCell(`A${row}`).value = `Cliente: ${CLIENTE.noCliente}  ·  ${CLIENTE.contacto}`;
   ws.getCell(`A${row}`).font  = { name: FONT, size: 8.5, color: { argb: COLOR.slate600 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate50);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  // Tel.
-  ws.mergeCells(`D${row}:E${row}`);
-  ws.getCell(`D${row}`).value = `Tel. ${CLIENTE.telefono}`;
-  ws.getCell(`D${row}`).font  = { name: FONT, size: 8.5, color: { argb: COLOR.slate600 } };
+
+  ws.getCell(`D${row}`).value = {
+    richText: [
+      { text: 'Tel ', font: { name: FONT, size: 8, color: { argb: COLOR.slate400 } } },
+      { text: CLIENTE.telefono, font: { name: FONT_MONO, size: 8.5, color: { argb: COLOR.slate600 } } },
+    ],
+  };
   fillBg(ws.getCell(`D${row}`), COLOR.slate50);
   ws.getCell(`D${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  // Email
-  ws.mergeCells(`F${row}:G${row}`);
-  ws.getCell(`F${row}`).value = CLIENTE.email;
-  ws.getCell(`F${row}`).font  = { name: FONT, size: 8.5, color: { argb: COLOR.slate600 } };
-  fillBg(ws.getCell(`F${row}`), COLOR.slate50);
-  ws.getCell(`F${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  for (const [start, end] of [['A', 'C'], ['D', 'E'], ['F', 'G']]) {
-    for (let col = start.charCodeAt(0); col <= end.charCodeAt(0); col += 1) {
-      const c = ws.getCell(`${String.fromCharCode(col)}${row}`);
-      c.border = { left: BORDER_THIN, right: BORDER_THIN, bottom: BORDER_THIN };
-    }
+
+  ws.mergeCells(`E${row}:F${row}`);
+  ws.getCell(`E${row}`).value = CLIENTE.email;
+  ws.getCell(`E${row}`).font  = { name: FONT, size: 8.5, color: { argb: COLOR.blue800 } };
+  fillBg(ws.getCell(`E${row}`), COLOR.slate50);
+  ws.getCell(`E${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
+
+  for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
+    setBorder(ws.getCell(`${col}${row}`), { top: { style: 'hair', color: { argb: COLOR.slate200 } }, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
   }
   row += 1;
 
-  // ─── Detalle ──────────────────────────────────────────────────────────────
-  ws.getRow(row).height = 12;
-  row += 1;
+  // Spacer
   ws.getRow(row).height = 14;
-  ws.mergeCells(`A${row}:G${row}`);
+  row += 1;
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 5. DETALLE — section-label + tabla 6 cols (mirror PDF exacto)
+  //    PDF cols: # / Código / Descripción / Cant. / Precio Unit. / Importe
+  //    (NO hay columna ITBIS por fila — solo en totales)
+  // ═══════════════════════════════════════════════════════════════════════════
+  ws.getRow(row).height = 16;
+  ws.mergeCells(`A${row}:F${row}`);
   ws.getCell(`A${row}`).value = 'DETALLE DE PRODUCTOS Y SERVICIOS';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate600 } };
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate600 } };
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
   ws.getCell(`A${row}`).border = { bottom: { style: 'hair', color: { argb: COLOR.slate200 } } };
   row += 1;
 
-  // Header tabla
+  // Header tabla (thead PDF: slate-100 bg, 9px caps slate-700)
   const headers = [
-    { txt: '#',                       align: 'center' },
-    { txt: 'Código',                  align: 'left'   },
-    { txt: 'Descripción',             align: 'left'   },
-    { txt: 'Cant.',                   align: 'center' },
-    { txt: 'Precio Unit. (RD$)',      align: 'right'  },
-    { txt: 'ITBIS (18%)',             align: 'right'  },
-    { txt: 'Importe (RD$)',           align: 'right'  },
+    { txt: '#',                  align: 'center' },
+    { txt: 'Código',             align: 'left'   },
+    { txt: 'Descripción',        align: 'left'   },
+    { txt: 'Cant.',              align: 'center' },
+    { txt: 'Precio Unit.',       align: 'right'  },
+    { txt: 'Importe',            align: 'right'  },
   ];
-  ws.getRow(row).height = 24;
+  ws.getRow(row).height = 26;
   headers.forEach((h, i) => {
     const c = ws.getCell(row, i + 1);
     c.value = h.txt;
-    c.font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate700 } };
+    c.font  = { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate700 } };
     fillBg(c, COLOR.slate100);
-    c.alignment = { horizontal: h.align, vertical: 'middle', indent: h.align === 'left' ? 1 : 0, wrapText: true };
+    c.alignment = { horizontal: h.align, vertical: 'middle', indent: h.align === 'left' ? 1 : 0 };
     c.border = {
-      top: { style: 'thin', color: { argb: COLOR.slate300 } },
+      top:    { style: 'thin',   color: { argb: COLOR.slate300 } },
       bottom: { style: 'medium', color: { argb: COLOR.slate300 } },
-      left: BORDER_HAIR,
-      right: BORDER_HAIR,
+      left:   { style: 'hair',   color: { argb: COLOR.slate200 } },
+      right:  { style: 'hair',   color: { argb: COLOR.slate200 } },
     };
   });
   const headerRow = row;
   row += 1;
 
-  // Filas demo prellenadas + fórmulas vivas
+  // Items con datos demo + fórmulas vivas en Importe
   const firstItemRow = row;
   ITEMS.forEach((it, i) => {
-    ws.getRow(row).height = 28;
+    // Altura variable según si tiene detalle (2 líneas) o no
+    const hasDetalle = !!it.detalle;
+    ws.getRow(row).height = hasDetalle ? 36 : 24;
 
+    // # (auto-numerado, mono slate-400)
     ws.getCell(`A${row}`).value = i + 1;
-    ws.getCell(`A${row}`).font  = { name: FONT, size: 8, color: { argb: COLOR.slate400 } };
+    ws.getCell(`A${row}`).font  = { name: FONT_MONO, size: 8.5, color: { argb: COLOR.slate400 } };
     ws.getCell(`A${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell(`A${row}`).numFmt = '00';
 
+    // Código (mono bold slate-800)
     ws.getCell(`B${row}`).value = it.codigo;
-    ws.getCell(`B${row}`).font  = { name: FONT_MONO, size: 8.5, bold: true, color: { argb: COLOR.slate800 } };
+    ws.getCell(`B${row}`).font  = { name: FONT_MONO, size: 9, bold: true, color: { argb: COLOR.slate800 } };
     ws.getCell(`B${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
 
-    // Descripción + detalle (richText: title bold + subtitle gray)
+    // Descripción (rich text: título bold slate-900 + detalle slate-500)
     ws.getCell(`C${row}`).value = {
       richText: [
         { text: it.descripcion, font: { name: FONT, size: 10, bold: true, color: { argb: COLOR.slate900 } } },
-        ...(it.detalle ? [
-          { text: '\n', font: { name: FONT, size: 9 } },
+        ...(hasDetalle ? [
+          { text: '\n', font: { name: FONT, size: 8 } },
           { text: it.detalle, font: { name: FONT, size: 8.5, color: { argb: COLOR.slate500 } } },
         ] : []),
       ],
     };
     ws.getCell(`C${row}`).alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 };
 
+    // Cant. (mono center)
     ws.getCell(`D${row}`).value = it.cantidad;
-    ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 9.5, color: { argb: COLOR.slate900 } };
+    ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 10, color: { argb: COLOR.slate900 } };
     ws.getCell(`D${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell(`D${row}`).numFmt = '#,##0';
 
+    // Precio Unit. (mono right)
     ws.getCell(`E${row}`).value = it.precioUnitario;
-    ws.getCell(`E${row}`).font  = { name: FONT_MONO, size: 9.5, color: { argb: COLOR.slate900 } };
+    ws.getCell(`E${row}`).font  = { name: FONT_MONO, size: 10, color: { argb: COLOR.slate900 } };
     ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     ws.getCell(`E${row}`).numFmt = '#,##0.00';
 
-    // ITBIS = Cant * Precio * 0.18 (fórmula viva)
-    ws.getCell(`F${row}`).value = { formula: `IFERROR(D${row}*E${row}*${ITBIS_RATE},0)`, result: it.cantidad * it.precioUnitario * ITBIS_RATE };
-    ws.getCell(`F${row}`).font  = { name: FONT_MONO, size: 9, color: { argb: COLOR.slate700 } };
+    // Importe (fórmula viva: =D*E)
+    ws.getCell(`F${row}`).value = { formula: `D${row}*E${row}`, result: it.cantidad * it.precioUnitario };
+    ws.getCell(`F${row}`).font  = { name: FONT_MONO, size: 10, bold: true, color: { argb: COLOR.slate900 } };
     ws.getCell(`F${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     ws.getCell(`F${row}`).numFmt = '#,##0.00';
 
-    // Importe = Cant * Precio (fórmula viva, bold)
-    ws.getCell(`G${row}`).value = { formula: `IFERROR(D${row}*E${row},0)`, result: it.cantidad * it.precioUnitario };
-    ws.getCell(`G${row}`).font  = { name: FONT_MONO, size: 9.5, bold: true, color: { argb: COLOR.slate900 } };
-    ws.getCell(`G${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
-    ws.getCell(`G${row}`).numFmt = '#,##0.00';
-
-    for (const col of ['A', 'B', 'C', 'D', 'E', 'F', 'G']) {
+    // Zebra + bordes hair
+    for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
       const c = ws.getCell(`${col}${row}`);
       if (i % 2 === 1) fillBg(c, COLOR.slate50);
-      c.border = {
+      setBorder(c, {
         top:    { style: 'hair', color: { argb: COLOR.slate200 } },
         bottom: { style: 'hair', color: { argb: COLOR.slate200 } },
         left:   { style: 'hair', color: { argb: COLOR.slate200 } },
         right:  { style: 'hair', color: { argb: COLOR.slate200 } },
-      };
+      });
     }
     row += 1;
   });
-  const lastItemRow = row - 1;
 
-  // 3 filas vacías para expansión
+  // 3 filas vacías para expansión (con fórmulas pre-cargadas)
   for (let i = 0; i < 3; i += 1) {
-    ws.getRow(row).height = 20;
+    ws.getRow(row).height = 22;
     ws.getCell(`A${row}`).value = ITEMS.length + i + 1;
-    ws.getCell(`A${row}`).font  = { name: FONT, size: 8, color: { argb: COLOR.slate300 } };
+    ws.getCell(`A${row}`).font  = { name: FONT_MONO, size: 8.5, color: { argb: COLOR.slate300 } };
     ws.getCell(`A${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell(`A${row}`).numFmt = '00';
 
-    ws.getCell(`F${row}`).value = { formula: `IFERROR(D${row}*E${row}*${ITBIS_RATE},0)`, result: 0 };
-    ws.getCell(`F${row}`).font  = { name: FONT_MONO, size: 9, color: { argb: COLOR.slate700 } };
+    ws.getCell(`D${row}`).numFmt = '#,##0';
+    ws.getCell(`E${row}`).numFmt = '#,##0.00';
+
+    ws.getCell(`F${row}`).value = { formula: `IFERROR(D${row}*E${row},0)`, result: 0 };
+    ws.getCell(`F${row}`).font  = { name: FONT_MONO, size: 10, bold: true, color: { argb: COLOR.slate900 } };
     ws.getCell(`F${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     ws.getCell(`F${row}`).numFmt = '#,##0.00';
 
-    ws.getCell(`G${row}`).value = { formula: `IFERROR(D${row}*E${row},0)`, result: 0 };
-    ws.getCell(`G${row}`).font  = { name: FONT_MONO, size: 9.5, bold: true, color: { argb: COLOR.slate900 } };
-    ws.getCell(`G${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
-    ws.getCell(`G${row}`).numFmt = '#,##0.00';
-
-    for (const col of ['A', 'B', 'C', 'D', 'E', 'F', 'G']) {
-      ws.getCell(`${col}${row}`).border = {
+    for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
+      setBorder(ws.getCell(`${col}${row}`), {
         top:    { style: 'hair', color: { argb: COLOR.slate200 } },
         bottom: { style: 'hair', color: { argb: COLOR.slate200 } },
         left:   { style: 'hair', color: { argb: COLOR.slate200 } },
         right:  { style: 'hair', color: { argb: COLOR.slate200 } },
-      };
+      });
     }
     row += 1;
   }
   const lastFormulaRow = row - 1;
 
-  // ─── Watermark COTIZACIÓN ─────────────────────────────────────────────────
+  // ─── Watermark COTIZACIÓN flotante sobre la tabla ─────────────────────────
   const wmPng = await _watermarkPng();
   const wmId  = wb.addImage({ buffer: wmPng, extension: 'png' });
   ws.addImage(wmId, {
-    tl: { col: 1.0, row: firstItemRow - 0.5 },
-    ext: { width: 540, height: 140 },
+    tl: { col: 0.5, row: firstItemRow + 1 },
+    ext: { width: 580, height: 145 },
     editAs: 'absolute',
   });
 
-  ws.getRow(row).height = 8;
+  // Spacer post tabla
+  ws.getRow(row).height = 10;
   row += 1;
 
-  // ─── Totales ──────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 6. TOTALES — alineados a la derecha (D-E labels + F valor)
+  //    PDF: width 280px, padding 7px 14px, grand row slate-100 + border-top
+  //    2px slate-400. Subtotal/ITBIS/Total Neto.
+  // ═══════════════════════════════════════════════════════════════════════════
   const { subtotal, itbis, total } = calcular(ITEMS);
-  const totSubtotalRow = row;
-  const totItbisRow    = row + 1;
-  const totTotalRow    = row + 2;
+  const subtotalRow = row;
+  const itbisRow    = row + 1;
+  const totalRow    = row + 2;
   const totalesDef = [
-    { lbl: 'Subtotal',     formula: `SUM(G${firstItemRow}:G${lastFormulaRow})`, result: subtotal, grand: false },
-    { lbl: 'ITBIS (18%)',  formula: `SUM(F${firstItemRow}:F${lastFormulaRow})`, result: itbis,    grand: false },
-    { lbl: 'Total Neto',   formula: `G${totSubtotalRow}+G${totItbisRow}`,        result: total,    grand: true  },
+    { lbl: 'Subtotal',    formula: `SUM(F${firstItemRow}:F${lastFormulaRow})`, result: subtotal, grand: false },
+    { lbl: 'ITBIS (18%)', formula: `F${subtotalRow}*0.18`,                      result: itbis,    grand: false },
+    { lbl: 'Total Neto',  formula: `F${subtotalRow}+F${itbisRow}`,              result: total,    grand: true  },
   ];
   totalesDef.forEach((t, i) => {
     const r = row + i;
-    ws.getRow(r).height = t.grand ? 28 : 22;
-    ws.mergeCells(`E${r}:F${r}`);
-    const lblCell = ws.getCell(`E${r}`);
+    ws.getRow(r).height = t.grand ? 30 : 22;
+
+    // Label (D-E merged)
+    ws.mergeCells(`D${r}:E${r}`);
+    const lblCell = ws.getCell(`D${r}`);
     lblCell.value = t.lbl;
     lblCell.font  = {
-      name: FONT, size: t.grand ? 11 : 8.5, bold: true,
+      name: FONT, size: t.grand ? 11 : 9,
+      bold: true,
       color: { argb: t.grand ? COLOR.slate700 : COLOR.slate600 },
     };
     lblCell.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     if (t.grand) fillBg(lblCell, COLOR.slate100);
-    lblCell.border = {
-      top: t.grand ? BORDER_THICK : BORDER_HAIR, bottom: BORDER_HAIR,
-      left: BORDER_HAIR, right: BORDER_HAIR,
-    };
-    const fCell = ws.getCell(`F${r}`);
-    if (t.grand) fillBg(fCell, COLOR.slate100);
-    fCell.border = lblCell.border;
+    setBorder(lblCell, {
+      top:    t.grand ? BORDER_THICK : BORDER_HAIR,
+      bottom: BORDER_HAIR,
+      left:   BORDER_HAIR,
+      right:  BORDER_HAIR,
+    });
+    const eCell = ws.getCell(`E${r}`);
+    if (t.grand) fillBg(eCell, COLOR.slate100);
+    setBorder(eCell, lblCell.border);
 
-    const valCell = ws.getCell(`G${r}`);
+    // Valor F (mono RD$)
+    const valCell = ws.getCell(`F${r}`);
     valCell.value = { formula: t.formula, result: t.result };
     valCell.font  = {
-      name: FONT_MONO, size: t.grand ? 13 : 10, bold: true,
-      color: { argb: COLOR.slate900 },
+      name: FONT_MONO, size: t.grand ? 14 : 10.5,
+      bold: true, color: { argb: COLOR.slate900 },
     };
     valCell.alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     valCell.numFmt = '"RD$" #,##0.00';
     if (t.grand) fillBg(valCell, COLOR.slate100);
-    valCell.border = {
-      top: t.grand ? BORDER_THICK : BORDER_HAIR, bottom: BORDER_HAIR,
-      left: BORDER_HAIR, right: BORDER_HAIR,
-    };
+    setBorder(valCell, {
+      top:    t.grand ? BORDER_THICK : BORDER_HAIR,
+      bottom: BORDER_HAIR,
+      left:   BORDER_HAIR,
+      right:  BORDER_HAIR,
+    });
   });
-  row = totTotalRow + 1;
+  row = totalRow + 1;
 
-  ws.getRow(row).height = 12;
+  // Spacer
+  ws.getRow(row).height = 14;
   row += 1;
 
-  // ─── Condiciones (grid 4 col paridad PDF) ─────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 7. CONDICIONES GENERALES — 4 cajas con borde izquierdo blue-800
+  //    PDF: cond-grid 4 cols, slate-50 bg, border-left 3px blue-800, padding
+  //    7px 10px, label 7.5px caps slate-500 + value 9.5px slate-900 bold.
+  //    Mapeo en 6 cols: A-B / C / D-E / F (4 cajas).
+  // ═══════════════════════════════════════════════════════════════════════════
   const condDef = [
-    { lbl: 'Validez',         val: CONDICIONES.validez  },
-    { lbl: 'Forma de Pago',   val: CONDICIONES.pago     },
-    { lbl: 'Tiempo Entrega',  val: CONDICIONES.entrega  },
-    { lbl: 'Garantía',        val: CONDICIONES.garantia },
+    { lbl: 'VALIDEZ',         val: CONDICIONES.validez,  span: ['A', 'B'] },
+    { lbl: 'FORMA DE PAGO',   val: CONDICIONES.pago,     span: ['C', 'C'] },
+    { lbl: 'ENTREGA',         val: CONDICIONES.entrega,  span: ['D', 'E'] },
+    { lbl: 'GARANTÍA',        val: CONDICIONES.garantia, span: ['F', 'F'] },
   ];
-  ws.getRow(row).height = 30;
-  // 4 columnas en 7 celdas: A-B / C-D / E / F-G (mejor: distribuir A B C-D E-F G)
-  // Más simple: ocupar A-B, C-D, E-F, G como 4 cajas
-  const condRanges = [['A','B'], ['C','C'], ['D','E'], ['F','G']];
-  condDef.forEach(({lbl, val}, idx) => {
-    const [s, e] = condRanges[idx];
+  ws.getRow(row).height = 34;
+  condDef.forEach(({ lbl, val, span: [s, e] }) => {
     if (s !== e) ws.mergeCells(`${s}${row}:${e}${row}`);
     const c = ws.getCell(`${s}${row}`);
-    c.value = { richText: [
-      { text: lbl + '\n', font: { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate500 } } },
-      { text: val,        font: { name: FONT, size: 9, bold: true, color: { argb: COLOR.slate900 } } },
-    ]};
+    c.value = {
+      richText: [
+        { text: lbl,  font: { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate500 } } },
+        { text: '\n', font: { name: FONT, size: 5 } },
+        { text: val,  font: { name: FONT, size: 9.5, bold: true, color: { argb: COLOR.slate900 } } },
+      ],
+    };
     fillBg(c, COLOR.slate50);
     c.alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 };
-    c.border = {
-      top: BORDER_THIN, bottom: BORDER_THIN, right: BORDER_THIN,
-      left: { style: 'thick', color: { argb: COLOR.blue800 } },
-    };
+    setBorder(c, {
+      top:    BORDER_THIN,
+      bottom: BORDER_THIN,
+      right:  BORDER_THIN,
+      left:   BORDER_BLUE_L,
+    });
     if (s !== e) {
       for (let col = s.charCodeAt(0) + 1; col <= e.charCodeAt(0); col += 1) {
         const c2 = ws.getCell(`${String.fromCharCode(col)}${row}`);
         fillBg(c2, COLOR.slate50);
-        c2.border = { top: BORDER_THIN, bottom: BORDER_THIN, right: BORDER_THIN };
+        setBorder(c2, { top: BORDER_THIN, bottom: BORDER_THIN, right: BORDER_THIN, left: { style: 'none' } });
       }
     }
   });
   row += 1;
 
+  // Spacer
   ws.getRow(row).height = 12;
   row += 1;
 
-  // ─── Notas ────────────────────────────────────────────────────────────────
-  ws.getRow(row).height = 14;
-  ws.mergeCells(`A${row}:G${row}`);
-  ws.getCell(`A${row}`).value = 'NOTAS DEL PROYECTO';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate700 } };
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 8. NOTAS DEL PROYECTO — borde izquierdo slate-400 (paridad .notes PDF)
+  //    PDF: 10px 14px padding, slate-50 bg, border-left 3px slate-400.
+  // ═══════════════════════════════════════════════════════════════════════════
+  ws.getRow(row).height = 16;
+  ws.mergeCells(`A${row}:F${row}`);
+  ws.getCell(`A${row}`).value = 'NOTAS';
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate900 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate50);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  ws.getCell(`A${row}`).border = { left: { style: 'thick', color: { argb: COLOR.slate400 } }, top: BORDER_THIN, right: BORDER_THIN };
-  for (let c = 2; c <= 7; c += 1) {
+  setBorder(ws.getCell(`A${row}`), { top: BORDER_THIN, bottom: { style: 'none' }, left: BORDER_SLATE_L, right: BORDER_THIN });
+  for (let c = 2; c <= 6; c += 1) {
     const cell = ws.getCell(row, c);
     fillBg(cell, COLOR.slate50);
-    cell.border = { top: BORDER_THIN, right: BORDER_THIN };
+    setBorder(cell, { top: BORDER_THIN, bottom: { style: 'none' }, left: { style: 'none' }, right: BORDER_THIN });
   }
   row += 1;
 
-  ws.getRow(row).height = 50;
-  ws.mergeCells(`A${row}:G${row}`);
+  ws.getRow(row).height = 56;
+  ws.mergeCells(`A${row}:F${row}`);
   ws.getCell(`A${row}`).value = NOTAS;
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 9, color: { argb: COLOR.slate700 } };
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 9.5, color: { argb: COLOR.slate700 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate50);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'top', wrapText: true, indent: 1 };
-  ws.getCell(`A${row}`).border = { left: { style: 'thick', color: { argb: COLOR.slate400 } }, bottom: BORDER_THIN, right: BORDER_THIN };
-  for (let c = 2; c <= 7; c += 1) {
+  setBorder(ws.getCell(`A${row}`), { top: { style: 'none' }, bottom: BORDER_THIN, left: BORDER_SLATE_L, right: BORDER_THIN });
+  for (let c = 2; c <= 6; c += 1) {
     const cell = ws.getCell(row, c);
     fillBg(cell, COLOR.slate50);
-    cell.border = { bottom: BORDER_THIN, right: BORDER_THIN };
+    setBorder(cell, { top: { style: 'none' }, bottom: BORDER_THIN, left: { style: 'none' }, right: BORDER_THIN });
   }
   row += 1;
 
-  ws.getRow(row).height = 18;
+  // Spacer
+  ws.getRow(row).height = 24;
   row += 1;
 
-  // ─── Firmas ───────────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 9. FIRMAS — 2 cols con línea + nombre caps + rol
+  //    PDF: 2 cols con gap 80px, sig-line 1.2px slate-900, sig-name 10px bold
+  //    caps slate-900, sig-role 8.5px slate-500.
+  // ═══════════════════════════════════════════════════════════════════════════
   ws.getRow(row).height = 44;
   ws.mergeCells(`A${row}:C${row}`);
-  ws.mergeCells(`E${row}:G${row}`);
-  ws.getCell(`A${row}`).border = { bottom: { style: 'thin', color: { argb: COLOR.slate900 } } };
-  ws.getCell(`E${row}`).border = { bottom: { style: 'thin', color: { argb: COLOR.slate900 } } };
+  ws.mergeCells(`D${row}:F${row}`);
+  setBorder(ws.getCell(`A${row}`), { top: { style: 'none' }, bottom: { style: 'thin', color: { argb: COLOR.slate900 } }, left: { style: 'none' }, right: { style: 'none' } });
+  setBorder(ws.getCell(`D${row}`), { top: { style: 'none' }, bottom: { style: 'thin', color: { argb: COLOR.slate900 } }, left: { style: 'none' }, right: { style: 'none' } });
   row += 1;
 
   ws.getRow(row).height = 14;
   ws.mergeCells(`A${row}:C${row}`);
   ws.getCell(`A${row}`).value = 'ACEPTACIÓN DEL CLIENTE';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate900 } };
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 9, bold: true, color: { argb: COLOR.slate900 } };
   ws.getCell(`A${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
-  ws.mergeCells(`E${row}:G${row}`);
-  ws.getCell(`E${row}`).value = `${EMPRESA.representanteNombre} ${EMPRESA.representanteApellido}`.toUpperCase();
-  ws.getCell(`E${row}`).font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate900 } };
-  ws.getCell(`E${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.mergeCells(`D${row}:F${row}`);
+  ws.getCell(`D${row}`).value = `${EMPRESA.representanteNombre} ${EMPRESA.representanteApellido}`.toUpperCase();
+  ws.getCell(`D${row}`).font  = { name: FONT, size: 9, bold: true, color: { argb: COLOR.slate900 } };
+  ws.getCell(`D${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
   row += 1;
 
-  ws.getRow(row).height = 12;
+  ws.getRow(row).height = 13;
   ws.mergeCells(`A${row}:C${row}`);
   ws.getCell(`A${row}`).value = 'Firma · Sello · Fecha';
-  ws.getCell(`A${row}`).font  = { name: FONT, size: 7, color: { argb: COLOR.slate500 } };
+  ws.getCell(`A${row}`).font  = { name: FONT, size: 8, color: { argb: COLOR.slate500 } };
   ws.getCell(`A${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
-  ws.mergeCells(`E${row}:G${row}`);
-  ws.getCell(`E${row}`).value = `${EMPRESA.representanteCargo} · ${EMPRESA.razonSocial}`;
-  ws.getCell(`E${row}`).font  = { name: FONT, size: 7, color: { argb: COLOR.slate500 } };
-  ws.getCell(`E${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.mergeCells(`D${row}:F${row}`);
+  ws.getCell(`D${row}`).value = `${EMPRESA.representanteCargo} · ${EMPRESA.razonSocial}`;
+  ws.getCell(`D${row}`).font  = { name: FONT, size: 8, color: { argb: COLOR.slate500 } };
+  ws.getCell(`D${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
   row += 1;
 
-  // ─── Footer print ─────────────────────────────────────────────────────────
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 10. FOOTER PRINT — paginación + razón social
+  // ═══════════════════════════════════════════════════════════════════════════
   ws.headerFooter = {
     differentFirst: false,
     oddFooter:
@@ -607,6 +705,12 @@ async function construirLibro() {
       `&C&7&K94A3B8Documento Electrónico Verificable · ${EMPRESA.website}` +
       `&R&7&K94A3B8Página &P de &N`,
   };
+
+  // Print titles: repite header tabla en cada página impresa
+  ws.pageSetup.printTitlesRow = `${headerRow}:${headerRow}`;
+
+  // Print area: hasta la última fila usada
+  ws.pageSetup.printArea = `A1:F${row}`;
 
   return wb;
 }
