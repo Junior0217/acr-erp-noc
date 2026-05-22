@@ -1,33 +1,15 @@
 /**
  * backend/scripts/ops/generarPlantillaWord.js
  *
- * Plantilla DOCX editable con PARIDAD VISUAL 1:1 al template PDF oficial
- * (`backend/services/pdf-templates.js`). Renderizada como Office HTML
- * (MSO/VML namespace) y serializada con extensión `.docx` para que Word
- * la abra heredando el CSS exacto del PDF (paleta slate-900/100/blue-800,
- * fuentes 10px/14.5px/17px, paddings, bordes, marca de agua institucional).
+ * Plantilla DOCX editable con datos demo COMPLETOS (paridad con el PDF
+ * generado por el pipeline oficial). Construida con la librería `docx`
+ * para producir un OOXML válido que Word abre limpio sin warning de
+ * conversión (a diferencia del approach Office-HTML del ciclo anterior).
  *
- * Por qué Office-HTML y no docx-OOXML puro: el template oficial es CSS
- * altamente expresivo (grid, opacity, transforms para watermark). Word
- * interpreta este formato — declarado vía xmlns:w/xmlns:o/xmlns:v —
- * mucho mejor que cualquier conversión OOXML manual. Ediciones libres
- * en Word funcionan normalmente (selección, copy/paste, edición de
- * tabla), y la apariencia se preserva al imprimir.
- *
- * Espejo del PDF:
- *   · banda corporate slate-300 de 3px
- *   · header empresa centralizado (logo placeholder + razón social + nombre
- *     comercial + eslogan + corp-meta con RNC/dirección/teléfono/email)
- *   · marca de agua VML "COTIZACIÓN" rotada -20deg color #1e40af opacidad
- *     ~0.045 (idéntica al PDF Puppeteer)
- *   · title-bar slate-100 con doc-type 17px y número en chip slate-200
- *   · client-grid 3 col (Razón Social / RNC / Dirección)
- *   · tabla items: header slate-100 9px caps, body 10px slate-900,
- *     zebra slate-50, bordes hair slate-200, monoespaciada en cant/precio
- *   · totales: subtotal/ITBIS + grand-row slate-100 con borde superior
- *     medium slate-400 (14px bold caps slate-900)
- *   · condiciones + firmas dual + footer corporativo con QR placeholder
- *   · anexo fotográfico página nueva con grid 2×2 dashed slate-300
+ * Contenido: empresa real con logo embebido, datos del cliente, fechas,
+ * número, 8 items pre-llenados con cálculos, totales reales, 4 cajas de
+ * condiciones (validez, pago, entrega, garantía), bloque de notas del
+ * proyecto, firmas duales y anexo fotográfico 2×2 con page-break previo.
  *
  * Salida: Plantilla_Cotizacion_Manual_RA.docx en la raíz del repo.
  * Ejecutar: node backend/scripts/ops/generarPlantillaWord.js
@@ -35,625 +17,771 @@
 
 const path = require('path');
 const fs   = require('fs');
+const {
+  Document, Packer, Paragraph, TextRun, Table, TableRow, TableCell,
+  AlignmentType, WidthType, BorderStyle,
+  Header, Footer, PageNumber, ShadingType, HeightRule,
+  ImageRun, PageBreak, VerticalAlign,
+} = require('docx');
 
-const EMPRESA = {
-  razonSocial:     'ACR Networks & Solutions, SRL',
-  nombreComercial: 'ACR NETWORKS & SOLUTIONS',
-  eslogan:         'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica',
-  rnc:             '1-32-12345-6',
-  direccion:       'Santo Domingo, República Dominicana',
-  telefono:        '+1 809 000 0000',
-  email:           'contacto@acrnetworks.do',
-  website:         'https://acrnetworks.do',
+const {
+  EMPRESA, CLIENTE, ITEMS, NUMERO,
+  CONDICIONES, NOTAS,
+  calcular, fechaEmision, fechaVence, fechaISO,
+  logoBuffer,
+} = require('./_demoCotizacion');
+
+// ─── Paleta (hex sin prefijo, formato docx) ─────────────────────────────────
+const COLOR = {
+  slate900: '0F172A',
+  slate800: '1E293B',
+  slate700: '334155',
+  slate600: '475569',
+  slate500: '64748B',
+  slate400: '94A3B8',
+  slate300: 'CBD5E1',
+  slate200: 'E2E8F0',
+  slate100: 'F1F5F9',
+  slate50:  'F8FAFC',
+  blue800:  '1E40AF',
+  white:    'FFFFFF',
 };
 
-const FILAS_INICIALES = 12;
-
-function _hoyISO() { return new Date().toISOString().slice(0, 10); }
-function _plus30() {
-  const d = new Date();
-  d.setDate(d.getDate() + 30);
-  return d.toISOString().slice(0, 10);
+// ─── Helpers ────────────────────────────────────────────────────────────────
+function R(text, opts = {}) {
+  return new TextRun({
+    text: String(text ?? ''),
+    font: opts.font ?? 'Calibri',
+    size: opts.size ?? 20,           // half-points → 20 = 10pt
+    bold: !!opts.bold,
+    italics: !!opts.italics,
+    color: opts.color ?? COLOR.slate900,
+    allCaps: !!opts.caps,
+    characterSpacing: opts.spacing ?? 0,
+    underline: opts.underline ? { type: 'single', color: opts.color ?? COLOR.slate900 } : undefined,
+  });
 }
 
-// ─── CSS clonado 1:1 del template PDF oficial ───────────────────────────────
-// Conservamos las clases (`.header`, `.title-bar`, `.items`, `.totals`, etc.)
-// para mantener semántica visual idéntica. Ajustes mínimos para Word
-// (px → pt donde corresponde + bg via mso-shading).
-const CSS = `
-  @page Cotizacion {
-    size: Letter;
-    margin: 0.5in 0.4in 0.6in 0.4in;
-    mso-header-margin: 0.3in;
-    mso-footer-margin: 0.3in;
-    mso-page-orientation: portrait;
-  }
-  div.section { page: Cotizacion; }
-
-  body {
-    font-family: 'Calibri', 'Helvetica Neue', 'Segoe UI', Arial, sans-serif;
-    color: #0f172a;
-    font-size: 10pt;
-    line-height: 1.4;
-    margin: 0;
-  }
-
-  .mono { font-family: 'Consolas', 'Courier New', monospace; }
-
-  /* ───── Banda corporate ───── */
-  .band {
-    height: 3pt;
-    background: #cbd5e1;
-    mso-shading: #cbd5e1;
-    border: 0;
-  }
-
-  /* ───── Header ───── */
-  table.header { width: 100%; border-collapse: collapse; padding: 0; }
-  table.header td.brand     { padding: 12pt 14pt 8pt 18pt; vertical-align: middle; width: 60%; }
-  table.header td.corp-meta { padding: 12pt 18pt 8pt 14pt; vertical-align: middle; width: 40%; text-align: right; font-size: 9.5pt; color: #475569; line-height: 1.55; }
-  .razon            { font-size: 16pt; font-weight: 800; color: #0f172a; letter-spacing: -0.01em; line-height: 1.15; }
-  .nombre-comercial { font-size: 9pt;  color: #1e40af; font-weight: 700; margin-top: 3pt; letter-spacing: 0.08em; text-transform: uppercase; }
-  .eslogan          { font-size: 8.5pt; color: #64748b; margin-top: 4pt; font-style: italic; }
-  .corp-meta .row   { display: block; margin-bottom: 2pt; }
-  .corp-meta .lbl   { color: #94a3b8; font-size: 8pt; text-transform: uppercase; letter-spacing: 0.1em; font-weight: 800; margin-right: 6pt; }
-  .corp-meta .val   { color: #0f172a; font-weight: 700; }
-  .corp-meta .val-direccion { color: #334155; font-weight: 500; }
-  .header-sep { border-bottom: 1px solid #e2e8f0; height: 0; }
-
-  /* ───── Title bar ───── */
-  table.title-bar { width: 100%; border-collapse: collapse; background: #f1f5f9; mso-shading: #f1f5f9; border-top: 1px solid #e2e8f0; border-bottom: 1px solid #e2e8f0; }
-  table.title-bar td.doc-type {
-    background: #f1f5f9; mso-shading: #f1f5f9;
-    padding: 10pt 18pt 10pt 18pt;
-    font-size: 17pt; font-weight: 800; letter-spacing: 0.1em;
-    text-transform: uppercase; color: #1e293b;
-    width: 60%;
-  }
-  table.title-bar td.doc-type .sub { font-size: 8.5pt; font-weight: 500; color: #64748b; letter-spacing: 0.14em; display: block; margin-top: 2pt; text-transform: uppercase; }
-  table.title-bar td.doc-meta {
-    background: #f1f5f9; mso-shading: #f1f5f9;
-    padding: 10pt 18pt 10pt 14pt;
-    text-align: right;
-    font-size: 9.5pt; line-height: 1.4; color: #1e293b;
-    width: 40%;
-  }
-  .doc-meta .num {
-    font-family: 'Consolas', 'Courier New', monospace;
-    font-size: 17pt; font-weight: 900; letter-spacing: 0.04em;
-    color: #0f172a; background: #e2e8f0; mso-shading: #e2e8f0;
-    padding: 3pt 10pt; border-radius: 4pt;
-    display: inline-block;
-  }
-  .doc-meta .fechas { margin-top: 6pt; font-size: 9pt; color: #1e293b; }
-  .doc-meta .fechas strong { color: #0f172a; }
-
-  /* ───── Body ───── */
-  table.body { width: 100%; border-collapse: collapse; padding: 0; }
-  table.body td.body-cell { padding: 12pt 18pt 12pt 18pt; vertical-align: top; }
-
-  .section-label {
-    font-size: 8.5pt; font-weight: 800; color: #475569;
-    text-transform: uppercase; letter-spacing: 0.18em;
-    margin-bottom: 5pt;
-    border-bottom: 1px solid #e2e8f0;
-    padding-bottom: 3pt;
-  }
-
-  /* ───── Client grid ───── */
-  table.client-grid {
-    width: 100%;
-    border-collapse: collapse;
-    border: 1px solid #e2e8f0;
-    margin-bottom: 12pt;
-  }
-  table.client-grid td.client-cell {
-    padding: 7pt 13pt;
-    border-right: 1px solid #e2e8f0;
-    background: #f8fafc; mso-shading: #f8fafc;
-    vertical-align: top;
-  }
-  table.client-grid td.client-cell:last-child { border-right: none; }
-  .client-cell .lbl {
-    font-size: 7.5pt; color: #64748b; text-transform: uppercase;
-    letter-spacing: 0.14em; font-weight: 700; margin-bottom: 4pt;
-    display: block;
-  }
-  .client-cell .val {
-    font-size: 11pt; color: #0f172a; font-weight: 700; line-height: 1.3;
-  }
-  .client-cell .val.normal { font-weight: 500; font-size: 10pt; line-height: 1.4; }
-  .client-cell .editable {
-    display: inline-block; min-width: 80%;
-    border-bottom: 1px dashed #cbd5e1;
-    color: #475569;
-    padding: 2pt 0;
-  }
-
-  /* ───── Items table ───── */
-  table.items {
-    width: 100%; margin-top: 12pt;
-    border-collapse: collapse;
-    border: 1px solid #cbd5e1;
-  }
-  table.items thead th {
-    background: #f1f5f9; mso-shading: #f1f5f9;
-    color: #334155;
-    padding: 7pt 8pt;
-    font-size: 8.5pt; font-weight: 700;
-    text-transform: uppercase; letter-spacing: 0.1em;
-    border-bottom: 1px solid #cbd5e1;
-    text-align: left;
-  }
-  table.items thead th.center { text-align: center; }
-  table.items thead th.right  { text-align: right; }
-  table.items thead th.col-num  { width: 6%;  text-align: center; }
-  table.items thead th.col-cod  { width: 14%; }
-  table.items thead th.col-cant { width: 8%;  text-align: center; }
-  table.items thead th.col-pu   { width: 14%; text-align: right; }
-  table.items thead th.col-itbis { width: 12%; text-align: right; }
-  table.items thead th.col-amt  { width: 14%; text-align: right; }
-  table.items tbody td {
-    padding: 6pt 8pt;
-    font-size: 10pt;
-    border-bottom: 1px solid #f1f5f9;
-    border-right: 1px solid #f1f5f9;
-    vertical-align: top;
-    color: #0f172a;
-  }
-  table.items tbody td:last-child { border-right: none; }
-  table.items tbody tr.zebra td { background: #f8fafc; mso-shading: #f8fafc; }
-  table.items tbody td.num    { color: #94a3b8; font-size: 9pt; text-align: center; font-family: 'Consolas', monospace; }
-  table.items tbody td.codigo { font-family: 'Consolas', monospace; color: #1e293b; font-size: 9.5pt; font-weight: 700; }
-  table.items tbody td.center { text-align: center; font-family: 'Consolas', monospace; }
-  table.items tbody td.right  { text-align: right; font-family: 'Consolas', monospace; }
-  table.items tbody td.amt    { text-align: right; font-family: 'Consolas', monospace; font-weight: 700; }
-
-  /* ───── Totals ───── */
-  table.totals-wrap { width: 100%; margin-top: 14pt; border-collapse: collapse; }
-  table.totals-wrap td.legal-note {
-    width: 60%; vertical-align: top;
-    padding: 10pt 12pt;
-    background: #f8fafc; mso-shading: #f8fafc;
-    border: 1px solid #e2e8f0;
-    font-size: 8.5pt; color: #64748b; line-height: 1.55;
-  }
-  .legal-note .ttl { font-size: 9pt; font-weight: 800; color: #0f172a; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 4pt; display: block; }
-  table.totals-wrap td.totals-cell { width: 40%; vertical-align: top; padding-left: 20pt; }
-  table.totals { width: 100%; border-collapse: collapse; border: 1px solid #e2e8f0; }
-  table.totals td { padding: 7pt 14pt; font-size: 10pt; border-bottom: 1px solid #f1f5f9; }
-  table.totals td.lbl { color: #475569; font-weight: 600; text-transform: uppercase; font-size: 9pt; letter-spacing: 0.08em; }
-  table.totals td.val { color: #0f172a; font-weight: 700; text-align: right; font-family: 'Consolas', monospace; }
-  table.totals tr.grand td { background: #f1f5f9; mso-shading: #f1f5f9; padding: 11pt 14pt; border-top: 2px solid #94a3b8; border-bottom: none; }
-  table.totals tr.grand td.lbl { color: #475569; font-size: 10pt; font-weight: 800; letter-spacing: 0.12em; }
-  table.totals tr.grand td.val { color: #0f172a; font-size: 14pt; font-weight: 800; letter-spacing: 0.02em; }
-
-  /* ───── Conditions ───── */
-  table.cond-grid { width: 100%; border-collapse: separate; border-spacing: 6pt 6pt; margin-top: 14pt; }
-  table.cond-grid td.cond-cell {
-    border: 1px solid #e2e8f0; border-left: 3px solid #1e40af;
-    padding: 7pt 10pt;
-    background: #f8fafc; mso-shading: #f8fafc;
-    width: 25%; vertical-align: top;
-  }
-  .cond-cell .lbl { font-size: 7.5pt; color: #64748b; text-transform: uppercase; letter-spacing: 0.12em; font-weight: 700; display: block; }
-  .cond-cell .val { font-size: 9.5pt; color: #0f172a; font-weight: 600; margin-top: 2pt; line-height: 1.4; }
-
-  /* ───── Signatures ───── */
-  table.sigs { width: 100%; margin-top: 36pt; border-collapse: separate; border-spacing: 40pt 0; }
-  table.sigs td.sig-block { text-align: center; vertical-align: top; }
-  .sig-line {
-    border-top: 1.5px solid #0f172a;
-    margin: 56pt 24pt 0 24pt;
-  }
-  .sig-name {
-    margin-top: 5pt;
-    font-size: 10pt; font-weight: 800; color: #0f172a;
-    text-transform: uppercase; letter-spacing: 0.04em;
-  }
-  .sig-role {
-    font-size: 8.5pt; color: #64748b; margin-top: 2pt;
-    letter-spacing: 0.04em;
-  }
-
-  /* ───── Footer ───── */
-  div.footer-text {
-    border-top: 1px solid #e2e8f0;
-    padding-top: 6pt;
-    font-size: 8pt; color: #94a3b8;
-    text-align: center;
-  }
-  .footer-razon { color: #475569; font-weight: 700; }
-
-  /* ───── Anexo fotográfico (página nueva) ───── */
-  .page-break { page-break-before: always; mso-page-break-before: always; height: 0; }
-  .anexo-title {
-    font-size: 14pt; font-weight: 800; color: #0f172a;
-    text-transform: uppercase; letter-spacing: 0.1em; text-align: center;
-    margin-top: 12pt; margin-bottom: 4pt;
-  }
-  .anexo-sub {
-    font-size: 9.5pt; color: #64748b; font-style: italic;
-    text-align: center; margin-bottom: 18pt;
-  }
-  table.anexo-grid { width: 100%; border-collapse: separate; border-spacing: 12pt 12pt; }
-  table.anexo-grid td.foto-slot {
-    border: 1.5px dashed #cbd5e1;
-    width: 50%;
-    height: 220pt;
-    text-align: center;
-    vertical-align: middle;
-    color: #94a3b8; font-size: 10pt; font-weight: 700;
-  }
-  table.anexo-grid td.foto-slot .placeholder {
-    color: #94a3b8;
-    font-size: 11pt;
-    font-weight: 800;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    display: block;
-  }
-  table.anexo-grid td.foto-slot .help {
-    color: #cbd5e1;
-    font-size: 8.5pt;
-    font-style: italic;
-    font-weight: 400;
-    margin-top: 6pt;
-    display: block;
-  }
-  table.anexo-grid td.foto-slot .pie {
-    color: #64748b;
-    font-size: 8pt;
-    margin-top: 60pt;
-    border-top: 1px dashed #cbd5e1;
-    padding-top: 4pt;
-    display: block;
-  }
-`;
-
-// ─── Office HTML: encabezado de página con MSO Section ──────────────────────
-// Word entiende esta cadena como una "Cotizacion section" + define el
-// pie de página via mso-element para que la paginación sea automática.
-function _msoSectionXml() {
-  return `
-  <!--[if gte mso 9]><xml>
-    <w:WordDocument>
-      <w:View>Print</w:View>
-      <w:Zoom>100</w:Zoom>
-      <w:DoNotOptimizeForBrowser/>
-      <w:DisplayHorizontalDrawingGridEvery>0</w:DisplayHorizontalDrawingGridEvery>
-      <w:DisplayVerticalDrawingGridEvery>2</w:DisplayVerticalDrawingGridEvery>
-      <w:UseMarginsForDrawingGridOrigin/>
-    </w:WordDocument>
-  </xml><![endif]-->`;
+function P(children, opts = {}) {
+  return new Paragraph({
+    alignment: opts.align ?? AlignmentType.LEFT,
+    spacing: { before: opts.before ?? 0, after: opts.after ?? 0, line: opts.line ?? 240 },
+    children: Array.isArray(children) ? children : [children],
+    heading: opts.heading,
+  });
 }
 
-// VML watermark: "Cotización" rotado -20deg, azul #1e40af, opacidad 0.045.
-// Renderizado en cada header de sección para que aparezca en cada página.
-function _vmlWatermark() {
-  return `
-  <v:shapetype id="_x0000_t136" coordsize="21600,21600" o:spt="136" adj="10800" path="m@7,l@8,m@5,21600l@6,21600e">
-    <v:formulas>
-      <v:f eqn="sum #0 0 10800"/>
-      <v:f eqn="prod #0 2 1"/>
-      <v:f eqn="sum 21600 0 @1"/>
-      <v:f eqn="sum 0 0 @2"/>
-      <v:f eqn="sum 21600 0 @3"/>
-      <v:f eqn="if @0 @3 0"/>
-      <v:f eqn="if @0 21600 @1"/>
-      <v:f eqn="if @0 0 @2"/>
-      <v:f eqn="if @0 @4 21600"/>
-      <v:f eqn="mid @5 @6"/>
-      <v:f eqn="mid @8 @5"/>
-      <v:f eqn="mid @7 @8"/>
-      <v:f eqn="mid @6 @7"/>
-      <v:f eqn="sum @6 0 @5"/>
-    </v:formulas>
-    <v:path o:extrusionok="f" gradientshapeok="t" o:connecttype="custom"
-            o:connectlocs="@9,0;@10,10800;@11,21600;@12,10800"
-            o:connectangles="270,180,90,0"/>
-    <v:textpath on="t" fitshape="t"/>
-  </v:shapetype>
-  <v:shape id="WaterMark"
-           o:spid="_x0000_s2049"
-           type="#_x0000_t136"
-           style="position:absolute;
-                  margin-left:0;margin-top:0;
-                  width:540pt;height:140pt;
-                  rotation:-20;
-                  z-index:-251654144;
-                  mso-position-horizontal:center;
-                  mso-position-horizontal-relative:margin;
-                  mso-position-vertical:center;
-                  mso-position-vertical-relative:margin;"
-           fillcolor="#1e40af" stroked="f">
-    <v:fill opacity=".045" color2="#1e40af"/>
-    <v:textpath style="font-family:&quot;Helvetica&quot;;font-size:1pt;font-weight:bold;v-text-spacing:9pt;v-text-kern:t" string="COTIZACIÓN"/>
-  </v:shape>`;
+const BORDER_HAIR  = (color = COLOR.slate200) => ({ style: BorderStyle.SINGLE, size: 4,  color });
+const BORDER_THIN  = (color = COLOR.slate200) => ({ style: BorderStyle.SINGLE, size: 6,  color });
+const BORDER_MED   = (color = COLOR.slate300) => ({ style: BorderStyle.SINGLE, size: 8,  color });
+const BORDER_THICK = (color = COLOR.slate400) => ({ style: BorderStyle.SINGLE, size: 12, color });
+const BORDER_NONE  = { style: BorderStyle.NONE, size: 0, color: COLOR.white };
+const ALL_HAIR     = { top: BORDER_HAIR(), bottom: BORDER_HAIR(), left: BORDER_HAIR(), right: BORDER_HAIR() };
+const ALL_NONE     = { top: BORDER_NONE, bottom: BORDER_NONE, left: BORDER_NONE, right: BORDER_NONE };
+
+function cell(children, opts = {}) {
+  return new TableCell({
+    children: Array.isArray(children) ? children : [children],
+    width: opts.width ? { size: opts.width, type: WidthType.DXA } : undefined,
+    shading: opts.fill ? { type: ShadingType.CLEAR, color: 'auto', fill: opts.fill } : undefined,
+    margins: { top: 80, bottom: 80, left: 120, right: 120, ...(opts.margins ?? {}) },
+    borders: opts.borders ?? ALL_HAIR,
+    verticalAlign: opts.vAlign ?? VerticalAlign.CENTER,
+    columnSpan: opts.span,
+  });
 }
 
-// Header con marca de agua + footer (paginación + razón social).
-function _msoHeaderFooter() {
-  return `
-  <div style='mso-element:header' id="h1">
-    <p class=MsoHeader>
-      <!--[if gte vml 1]>
-        ${_vmlWatermark()}
-      <![endif]-->
-    </p>
-  </div>
-  <div style='mso-element:footer' id="f1">
-    <p class=MsoFooter style="text-align:center; font-size:8pt; color:#475569; border-top:1px solid #e2e8f0; padding-top:4pt;">
-      <span style="font-weight:700;">${EMPRESA.razonSocial}</span>
-      &nbsp;·&nbsp; RNC ${EMPRESA.rnc}
-      &nbsp;·&nbsp; <span style="color:#1e40af;">${EMPRESA.website}</span>
-      &nbsp;·&nbsp; Página <span style='mso-field-code:" PAGE "'>1</span> de <span style='mso-field-code:" NUMPAGES "'>1</span>
-    </p>
-  </div>`;
+function fmtMoney(n) {
+  return new Intl.NumberFormat('es-DO', {
+    minimumFractionDigits: 2, maximumFractionDigits: 2,
+  }).format(Number(n) || 0);
 }
 
-// ─── Helpers de markup ──────────────────────────────────────────────────────
-function _editable(min = 0) {
-  // Subrayado dashed para campos editables — el usuario rellena directo
-  return `<span class="editable" style="min-width:${min || 120}pt;">&nbsp;</span>`;
-}
+// ─── Header: logo + razón social/comercial/eslogan + RNC/dirección ──────────
+function buildHeader() {
+  const logoBuf = logoBuffer();
 
-function _filaItem(i, zebra) {
-  const cls = zebra ? ' class="zebra"' : '';
-  return `
-    <tr${cls}>
-      <td class="num">${String(i + 1).padStart(2, '0')}</td>
-      <td class="codigo">${_editable(60)}</td>
-      <td>${_editable(180)}</td>
-      <td class="center">${_editable(40)}</td>
-      <td class="right">${_editable(70)}</td>
-      <td class="right">${_editable(70)}</td>
-      <td class="amt">${_editable(70)}</td>
-    </tr>`;
-}
-
-function _filasItems() {
-  return Array.from({ length: FILAS_INICIALES }, (_, i) => _filaItem(i, i % 2 === 1)).join('');
-}
-
-function _condCells() {
-  const conds = [
-    ['Validez',          '30 días desde la emisión'],
-    ['Forma de Pago',    '50% confirmación · 50% entrega'],
-    ['Tiempo Entrega',   'Sujeto a disponibilidad'],
-    ['Garantía',         '12 meses defectos de fábrica'],
+  const brandRuns = [
+    R(EMPRESA.razonSocial, { size: 28, bold: true, color: COLOR.slate900 }),
   ];
-  return conds.map(([lbl, val]) => `
-    <td class="cond-cell">
-      <span class="lbl">${lbl}</span>
-      <span class="val">${val}</span>
-    </td>`).join('');
+  const commercialPara = P(
+    R(EMPRESA.nombreComercial, { size: 16, bold: true, color: COLOR.blue800, caps: true, spacing: 24 }),
+    { align: AlignmentType.LEFT, after: 30 }
+  );
+  const sloganPara = P(
+    R(EMPRESA.eslogan, { size: 14, italics: true, color: COLOR.slate500 }),
+    { align: AlignmentType.LEFT, after: 30 }
+  );
+
+  // Header table: logo izq (1500) | brand (5000) | corp-meta (4500)
+  const headerTbl = new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      ...ALL_NONE,
+      insideHorizontal: BORDER_NONE, insideVertical: BORDER_NONE,
+    },
+    rows: [
+      new TableRow({
+        height: { value: 1600, rule: HeightRule.ATLEAST },
+        children: [
+          new TableCell({
+            width: { size: 1500, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.CENTER,
+            margins: { top: 100, bottom: 100, left: 100, right: 100 },
+            borders: ALL_NONE,
+            children: logoBuf ? [
+              new Paragraph({
+                alignment: AlignmentType.LEFT,
+                children: [new ImageRun({
+                  data: logoBuf,
+                  transformation: { width: 70, height: 70 },
+                })],
+              }),
+            ] : [P(R(' '))],
+          }),
+          new TableCell({
+            width: { size: 5000, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.CENTER,
+            margins: { top: 100, bottom: 100, left: 100, right: 100 },
+            borders: ALL_NONE,
+            children: [
+              P(brandRuns, { align: AlignmentType.LEFT, after: 30 }),
+              commercialPara,
+              sloganPara,
+            ],
+          }),
+          new TableCell({
+            width: { size: 4500, type: WidthType.DXA },
+            verticalAlign: VerticalAlign.CENTER,
+            margins: { top: 100, bottom: 100, left: 100, right: 100 },
+            borders: ALL_NONE,
+            children: [
+              P([
+                R('RNC  ',          { size: 13, color: COLOR.slate400, caps: true, bold: true, spacing: 30 }),
+                R(EMPRESA.rnc,      { size: 18, color: COLOR.slate900, bold: true, font: 'Consolas' }),
+              ], { align: AlignmentType.RIGHT, after: 40 }),
+              P(R(EMPRESA.direccion, { size: 14, color: COLOR.slate700 }),
+                { align: AlignmentType.RIGHT, after: 30, line: 240 }),
+              P([
+                R('Tel.  ', { size: 13, color: COLOR.slate400, caps: true, bold: true, spacing: 20 }),
+                R(EMPRESA.telefono, { size: 14, color: COLOR.slate700, font: 'Consolas' }),
+              ], { align: AlignmentType.RIGHT, after: 20 }),
+              P(R(EMPRESA.email, { size: 14, color: COLOR.slate700 }),
+                { align: AlignmentType.RIGHT, after: 20 }),
+              P(R(EMPRESA.website, { size: 14, color: COLOR.blue800, bold: true }),
+                { align: AlignmentType.RIGHT }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+
+  return new Header({
+    children: [
+      // Banda corporate
+      new Paragraph({
+        spacing: { before: 0, after: 0 },
+        shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate300 },
+        children: [R(' ', { size: 4 })],
+      }),
+      headerTbl,
+      // Línea hairline inferior
+      new Paragraph({
+        border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: COLOR.slate200, space: 1 } },
+        spacing: { before: 0, after: 0 },
+        children: [],
+      }),
+    ],
+  });
 }
 
-// ─── Documento Office HTML completo ─────────────────────────────────────────
-function construirDocumentoHtml() {
-  const hoy   = _hoyISO();
-  const vence = _plus30();
+// ─── Footer corporativo ─────────────────────────────────────────────────────
+function buildFooter() {
+  return new Footer({
+    children: [
+      new Paragraph({
+        border: { top: { style: BorderStyle.SINGLE, size: 6, color: COLOR.slate200, space: 4 } },
+        spacing: { before: 0, after: 60 },
+        children: [],
+      }),
+      P([
+        R(EMPRESA.razonSocial, { size: 14, bold: true, color: COLOR.slate700 }),
+        R('  ·  ', { size: 14, color: COLOR.slate400 }),
+        R(`RNC ${EMPRESA.rnc}`, { size: 14, color: COLOR.slate600, font: 'Consolas' }),
+        R('  ·  ', { size: 14, color: COLOR.slate400 }),
+        R('Documento Electrónico Verificable', { size: 12, color: COLOR.slate600, italics: true }),
+      ], { align: AlignmentType.CENTER, after: 30 }),
+      P([
+        R('Página ', { size: 12, color: COLOR.slate500 }),
+        new TextRun({ children: [PageNumber.CURRENT], size: 12, color: COLOR.slate500 }),
+        R(' de ', { size: 12, color: COLOR.slate500 }),
+        new TextRun({ children: [PageNumber.TOTAL_PAGES], size: 12, color: COLOR.slate500 }),
+        R('  ·  ', { size: 12, color: COLOR.slate400 }),
+        R(EMPRESA.website, { size: 12, color: COLOR.blue800, bold: true }),
+      ], { align: AlignmentType.CENTER }),
+    ],
+  });
+}
 
-  return `<html xmlns:v="urn:schemas-microsoft-com:vml"
-              xmlns:o="urn:schemas-microsoft-com:office:office"
-              xmlns:w="urn:schemas-microsoft-com:office:word"
-              xmlns="http://www.w3.org/TR/REC-html40">
-<head>
-  <meta charset="utf-8"/>
-  <meta http-equiv="Content-Type" content="text/html; charset=utf-8"/>
-  <meta name="ProgId" content="Word.Document"/>
-  <meta name="Generator" content="Microsoft Word 15"/>
-  <meta name="Originator" content="Microsoft Word 15"/>
-  <title>Cotización Manual RA · ACR Networks &amp; Solutions</title>
-  ${_msoSectionXml()}
-  <style>${CSS}</style>
-</head>
-<body lang="es-DO">
+// ─── Title-bar ──────────────────────────────────────────────────────────────
+function buildTitleBar() {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top:    BORDER_HAIR(),
+      bottom: BORDER_HAIR(),
+      left:   BORDER_NONE,
+      right:  BORDER_NONE,
+      insideHorizontal: BORDER_NONE,
+      insideVertical:   BORDER_NONE,
+    },
+    rows: [
+      new TableRow({
+        height: { value: 700, rule: HeightRule.ATLEAST },
+        children: [
+          new TableCell({
+            width: { size: 60, type: WidthType.PERCENTAGE },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate100 },
+            margins: { top: 160, bottom: 80, left: 240, right: 100 },
+            verticalAlign: VerticalAlign.CENTER,
+            borders: ALL_NONE,
+            children: [
+              P(R('COTIZACIÓN', { size: 36, bold: true, color: COLOR.slate800, caps: true, spacing: 40 }),
+                { align: AlignmentType.LEFT, after: 30 }),
+              P(R('Documento Electrónico Verificable', { size: 14, color: COLOR.slate500, italics: true, spacing: 20 }),
+                { align: AlignmentType.LEFT }),
+            ],
+          }),
+          new TableCell({
+            width: { size: 40, type: WidthType.PERCENTAGE },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate100 },
+            margins: { top: 160, bottom: 80, left: 100, right: 240 },
+            verticalAlign: VerticalAlign.CENTER,
+            borders: ALL_NONE,
+            children: [
+              P(R(NUMERO, { size: 30, bold: true, color: COLOR.slate900, font: 'Consolas' }),
+                { align: AlignmentType.RIGHT, after: 60 }),
+              P([
+                R('Emisión: ',  { size: 14, color: COLOR.slate400, caps: true, bold: true }),
+                R(fechaISO(fechaEmision()), { size: 16, color: COLOR.slate900, bold: true, font: 'Consolas' }),
+              ], { align: AlignmentType.RIGHT, after: 20 }),
+              P([
+                R('Válida hasta: ', { size: 14, color: COLOR.slate400, caps: true, bold: true }),
+                R(fechaISO(fechaVence()), { size: 16, color: COLOR.slate900, bold: true, font: 'Consolas' }),
+              ], { align: AlignmentType.RIGHT }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
 
-<div class="section">
+// ─── Cliente block ──────────────────────────────────────────────────────────
+function buildClienteBlock() {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [
+      new TableRow({
+        height: { value: 320, rule: HeightRule.ATLEAST },
+        children: [
+          new TableCell({
+            width: { size: 42, type: WidthType.PERCENTAGE },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 },
+            margins: { top: 140, bottom: 140, left: 200, right: 200 },
+            verticalAlign: VerticalAlign.TOP,
+            borders: ALL_HAIR,
+            children: [
+              P(R('RAZÓN SOCIAL', { size: 13, bold: true, color: COLOR.slate500, caps: true, spacing: 26 }), { after: 50 }),
+              P(R(CLIENTE.razonSocial, { size: 22, bold: true, color: COLOR.slate900 }), { after: 40 }),
+              P([
+                R('Cliente #: ', { size: 14, color: COLOR.slate400, bold: true }),
+                R(CLIENTE.noCliente, { size: 14, color: COLOR.slate600, font: 'Consolas' }),
+              ], { after: 20 }),
+              P(R(CLIENTE.contacto, { size: 14, color: COLOR.slate600 })),
+            ],
+          }),
+          new TableCell({
+            width: { size: 28, type: WidthType.PERCENTAGE },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 },
+            margins: { top: 140, bottom: 140, left: 200, right: 200 },
+            verticalAlign: VerticalAlign.TOP,
+            borders: ALL_HAIR,
+            children: [
+              P(R('RNC / CONTACTO', { size: 13, bold: true, color: COLOR.slate500, caps: true, spacing: 26 }), { after: 50 }),
+              P(R(CLIENTE.rnc, { size: 22, bold: true, color: COLOR.slate900, font: 'Consolas' }), { after: 40 }),
+              P([
+                R('Tel.  ', { size: 14, color: COLOR.slate400, bold: true }),
+                R(CLIENTE.telefono, { size: 14, color: COLOR.slate600, font: 'Consolas' }),
+              ]),
+            ],
+          }),
+          new TableCell({
+            width: { size: 30, type: WidthType.PERCENTAGE },
+            shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 },
+            margins: { top: 140, bottom: 140, left: 200, right: 200 },
+            verticalAlign: VerticalAlign.TOP,
+            borders: ALL_HAIR,
+            children: [
+              P(R('DIRECCIÓN', { size: 13, bold: true, color: COLOR.slate500, caps: true, spacing: 26 }), { after: 50 }),
+              P(R(CLIENTE.direccion, { size: 16, color: COLOR.slate800, bold: true }), { after: 40, line: 260 }),
+              P(R(CLIENTE.email, { size: 14, color: COLOR.slate600 })),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
 
-  <!-- ─── Banda corporate ─── -->
-  <div class="band">&nbsp;</div>
+// ─── Items table ────────────────────────────────────────────────────────────
+function buildItemsTable() {
+  const headers = [
+    { txt: '#',                    w: 500,  align: AlignmentType.CENTER },
+    { txt: 'Código',               w: 1500, align: AlignmentType.LEFT   },
+    { txt: 'Descripción',          w: 4400, align: AlignmentType.LEFT   },
+    { txt: 'Cant.',                w: 700,  align: AlignmentType.CENTER },
+    { txt: 'Precio Unit. (RD$)',   w: 1400, align: AlignmentType.RIGHT  },
+    { txt: 'ITBIS (18%)',          w: 1200, align: AlignmentType.RIGHT  },
+    { txt: 'Importe (RD$)',        w: 1500, align: AlignmentType.RIGHT  },
+  ];
 
-  <!-- ─── Header empresa ─── -->
-  <table class="header">
-    <tr>
-      <td class="brand">
-        <div class="razon">${EMPRESA.razonSocial}</div>
-        <div class="nombre-comercial">${EMPRESA.nombreComercial}</div>
-        <div class="eslogan">${EMPRESA.eslogan}</div>
-      </td>
-      <td class="corp-meta">
-        <div class="row"><span class="lbl">RNC</span><span class="val">${EMPRESA.rnc}</span></div>
-        <div class="row"><span class="val val-direccion">${EMPRESA.direccion}</span></div>
-        <div class="row"><span class="val val-direccion">Tel ${EMPRESA.telefono}</span></div>
-        <div class="row"><span class="val val-direccion">${EMPRESA.email}</span></div>
-        <div class="row"><span class="val" style="color:#1e40af;">${EMPRESA.website}</span></div>
-      </td>
-    </tr>
-  </table>
-  <div class="header-sep">&nbsp;</div>
+  const headerRow = new TableRow({
+    tableHeader: true,
+    height: { value: 480, rule: HeightRule.ATLEAST },
+    children: headers.map((h) => new TableCell({
+      width: { size: h.w, type: WidthType.DXA },
+      shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate100 },
+      margins: { top: 120, bottom: 120, left: 100, right: 100 },
+      verticalAlign: VerticalAlign.CENTER,
+      borders: {
+        top: BORDER_HAIR(COLOR.slate300),
+        bottom: BORDER_MED(COLOR.slate300),
+        left: BORDER_HAIR(),
+        right: BORDER_HAIR(),
+      },
+      children: [P(R(h.txt, { size: 16, bold: true, color: COLOR.slate700, caps: true, spacing: 20 }),
+        { align: h.align })],
+    })),
+  });
 
-  <!-- ─── Title bar ─── -->
-  <table class="title-bar">
-    <tr>
-      <td class="doc-type">
-        COTIZACIÓN
-        <span class="sub">Plantilla Manual · Edición Offline</span>
-      </td>
-      <td class="doc-meta">
-        <span class="num">COT-MANUAL-001</span>
-        <div class="fechas">
-          Emisión: <strong>${hoy}</strong>
-          &nbsp;·&nbsp; Válida hasta: <strong>${vence}</strong>
-        </div>
-      </td>
-    </tr>
-  </table>
+  const dataRows = ITEMS.map((it, i) => {
+    const importe = it.cantidad * it.precioUnitario;
+    const itbis   = importe * 0.18;
+    const zebra   = i % 2 === 1;
+    const shading = zebra ? { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 } : undefined;
 
-  <!-- ─── Body ─── -->
-  <table class="body">
-    <tr><td class="body-cell">
+    return new TableRow({
+      height: { value: 520, rule: HeightRule.ATLEAST },
+      children: [
+        new TableCell({
+          width: { size: headers[0].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 80, right: 80 },
+          verticalAlign: VerticalAlign.TOP,
+          borders: ALL_HAIR,
+          children: [P(R(String(i + 1).padStart(2, '0'), { size: 18, color: COLOR.slate400, font: 'Consolas' }),
+            { align: AlignmentType.CENTER })],
+        }),
+        new TableCell({
+          width: { size: headers[1].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 100, right: 100 },
+          verticalAlign: VerticalAlign.TOP,
+          borders: ALL_HAIR,
+          children: [P(R(it.codigo, { size: 17, bold: true, color: COLOR.slate800, font: 'Consolas' }),
+            { align: AlignmentType.LEFT })],
+        }),
+        new TableCell({
+          width: { size: headers[2].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 100, right: 100 },
+          verticalAlign: VerticalAlign.TOP,
+          borders: ALL_HAIR,
+          children: [
+            P(R(it.descripcion, { size: 20, bold: true, color: COLOR.slate900 }), { align: AlignmentType.LEFT, after: 30 }),
+            ...(it.detalle ? [P(R(it.detalle, { size: 16, color: COLOR.slate500, italics: true }), { align: AlignmentType.LEFT, line: 240 })] : []),
+          ],
+        }),
+        new TableCell({
+          width: { size: headers[3].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 80, right: 80 },
+          verticalAlign: VerticalAlign.CENTER,
+          borders: ALL_HAIR,
+          children: [P(R(String(it.cantidad), { size: 18, color: COLOR.slate900, font: 'Consolas' }),
+            { align: AlignmentType.CENTER })],
+        }),
+        new TableCell({
+          width: { size: headers[4].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 100, right: 100 },
+          verticalAlign: VerticalAlign.CENTER,
+          borders: ALL_HAIR,
+          children: [P(R(fmtMoney(it.precioUnitario), { size: 18, color: COLOR.slate900, font: 'Consolas' }),
+            { align: AlignmentType.RIGHT })],
+        }),
+        new TableCell({
+          width: { size: headers[5].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 100, right: 100 },
+          verticalAlign: VerticalAlign.CENTER,
+          borders: ALL_HAIR,
+          children: [P(R(fmtMoney(itbis), { size: 17, color: COLOR.slate700, font: 'Consolas' }),
+            { align: AlignmentType.RIGHT })],
+        }),
+        new TableCell({
+          width: { size: headers[6].w, type: WidthType.DXA },
+          shading,
+          margins: { top: 100, bottom: 100, left: 100, right: 100 },
+          verticalAlign: VerticalAlign.CENTER,
+          borders: ALL_HAIR,
+          children: [P(R(fmtMoney(importe), { size: 19, bold: true, color: COLOR.slate900, font: 'Consolas' }),
+            { align: AlignmentType.RIGHT })],
+        }),
+      ],
+    });
+  });
 
-      <div class="section-label">CLIENTE</div>
-      <table class="client-grid">
-        <tr>
-          <td class="client-cell" style="width:42%;">
-            <span class="lbl">Razón Social</span>
-            <span class="val">${_editable(180)}</span>
-            <div class="val normal mono" style="margin-top:4pt; color:#475569;">${_editable(120)}</div>
-          </td>
-          <td class="client-cell" style="width:28%;">
-            <span class="lbl">RNC / Contacto</span>
-            <span class="val mono">${_editable(80)}</span>
-            <div class="val normal mono" style="margin-top:4pt; color:#475569;">Tel ${_editable(80)}</div>
-          </td>
-          <td class="client-cell" style="width:30%;">
-            <span class="lbl">Dirección</span>
-            <span class="val normal">${_editable(120)}</span>
-            <div class="val normal" style="margin-top:4pt; color:#475569;">${_editable(120)}</div>
-          </td>
-        </tr>
-      </table>
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: {
+      top: BORDER_THIN(COLOR.slate300),
+      bottom: BORDER_THIN(COLOR.slate300),
+      left: BORDER_THIN(COLOR.slate300),
+      right: BORDER_THIN(COLOR.slate300),
+      insideHorizontal: BORDER_HAIR(),
+      insideVertical: BORDER_HAIR(),
+    },
+    rows: [headerRow, ...dataRows],
+  });
+}
 
-      <div class="section-label" style="margin-top:16pt;">DETALLE DE PRODUCTOS Y SERVICIOS</div>
-      <table class="items">
-        <thead>
-          <tr>
-            <th class="col-num">#</th>
-            <th class="col-cod">Código / Modelo</th>
-            <th>Descripción Técnica</th>
-            <th class="col-cant">Cant.</th>
-            <th class="col-pu">Precio Unit.</th>
-            <th class="col-itbis">ITBIS (18%)</th>
-            <th class="col-amt">Importe</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${_filasItems()}
-        </tbody>
-      </table>
+// ─── Totales wrap (legal-note izq + totals der) ─────────────────────────────
+function buildTotalesWrap() {
+  const { subtotal, itbis, total } = calcular(ITEMS);
 
-      <table class="totals-wrap">
-        <tr>
-          <td class="legal-note">
-            <span class="ttl">Condiciones Generales</span>
-            Esta cotización tiene carácter informativo y no constituye documento fiscal.
-            Los precios pueden estar sujetos a cambio sin previo aviso fuera del período
-            de validez. Para emisión de factura formal se requiere confirmación por escrito.
-          </td>
-          <td class="totals-cell">
-            <table class="totals">
-              <tr>
-                <td class="lbl">Subtotal</td>
-                <td class="val">RD$ ${_editable(60)}</td>
-              </tr>
-              <tr>
-                <td class="lbl">ITBIS (18%)</td>
-                <td class="val">RD$ ${_editable(60)}</td>
-              </tr>
-              <tr class="grand">
-                <td class="lbl">Total Neto</td>
-                <td class="val">RD$ ${_editable(80)}</td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
+  const legalCell = new TableCell({
+    width: { size: 58, type: WidthType.PERCENTAGE },
+    shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 },
+    margins: { top: 200, bottom: 200, left: 240, right: 240 },
+    verticalAlign: VerticalAlign.TOP,
+    borders: ALL_HAIR,
+    children: [
+      P(R('CONDICIONES GENERALES', { size: 15, bold: true, color: COLOR.slate900, caps: true, spacing: 20 }),
+        { after: 80 }),
+      P(R(
+        'Esta cotización tiene carácter informativo y no constituye documento fiscal. Los ' +
+        'precios pueden estar sujetos a cambio sin previo aviso fuera del período de validez ' +
+        '(30 días desde la emisión). Para emisión de factura formal se requiere confirmación ' +
+        'por escrito. El cliente se compromete a respetar la marca registrada y propiedad ' +
+        'intelectual del fabricante.',
+        { size: 15, color: COLOR.slate600 }
+      ), { line: 280 }),
+    ],
+  });
 
-      <table class="cond-grid">
-        <tr>${_condCells()}</tr>
-      </table>
+  const totRow = (lbl, val, grand) => new TableRow({
+    height: { value: grand ? 600 : 420, rule: HeightRule.ATLEAST },
+    children: [
+      new TableCell({
+        width: { size: 50, type: WidthType.PERCENTAGE },
+        shading: grand ? { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate100 } : undefined,
+        margins: { top: 120, bottom: 120, left: 200, right: 200 },
+        verticalAlign: VerticalAlign.CENTER,
+        borders: {
+          top: grand ? BORDER_THICK() : BORDER_HAIR(),
+          bottom: BORDER_HAIR(),
+          left: BORDER_HAIR(),
+          right: BORDER_HAIR(),
+        },
+        children: [P(R(lbl, {
+          size: grand ? 22 : 17,
+          bold: true,
+          color: grand ? COLOR.slate900 : COLOR.slate600,
+          caps: true,
+          spacing: 20,
+        }), { align: AlignmentType.RIGHT })],
+      }),
+      new TableCell({
+        width: { size: 50, type: WidthType.PERCENTAGE },
+        shading: grand ? { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate100 } : undefined,
+        margins: { top: 120, bottom: 120, left: 200, right: 200 },
+        verticalAlign: VerticalAlign.CENTER,
+        borders: {
+          top: grand ? BORDER_THICK() : BORDER_HAIR(),
+          bottom: BORDER_HAIR(),
+          left: BORDER_HAIR(),
+          right: BORDER_HAIR(),
+        },
+        children: [P(R(`RD$ ${fmtMoney(val)}`, {
+          size: grand ? 28 : 19,
+          bold: true,
+          color: COLOR.slate900,
+          font: 'Consolas',
+        }), { align: AlignmentType.RIGHT })],
+      }),
+    ],
+  });
 
-      <table class="sigs">
-        <tr>
-          <td class="sig-block">
-            <div class="sig-line">&nbsp;</div>
-            <div class="sig-name">Aceptación del Cliente</div>
-            <div class="sig-role">Firma · Sello · Fecha</div>
-          </td>
-          <td class="sig-block">
-            <div class="sig-line">&nbsp;</div>
-            <div class="sig-name">${EMPRESA.razonSocial}</div>
-            <div class="sig-role">Representante Autorizado · Firma · Sello</div>
-          </td>
-        </tr>
-      </table>
+  const totalsCell = new TableCell({
+    width: { size: 42, type: WidthType.PERCENTAGE },
+    margins: { top: 0, bottom: 0, left: 240, right: 0 },
+    verticalAlign: VerticalAlign.TOP,
+    borders: ALL_NONE,
+    children: [
+      new Table({
+        width: { size: 100, type: WidthType.PERCENTAGE },
+        rows: [
+          totRow('Subtotal',    subtotal, false),
+          totRow('ITBIS (18%)', itbis,    false),
+          totRow('Total Neto',  total,    true),
+        ],
+      }),
+    ],
+  });
 
-    </td></tr>
-  </table>
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { ...ALL_NONE, insideHorizontal: BORDER_NONE, insideVertical: BORDER_NONE },
+    rows: [
+      new TableRow({
+        children: [legalCell, totalsCell],
+      }),
+    ],
+  });
+}
 
-  ${_msoHeaderFooter()}
+// ─── Condiciones grid 4 col (validez/pago/entrega/garantía) ─────────────────
+function buildCondGrid() {
+  const items = [
+    { lbl: 'VALIDEZ',        val: CONDICIONES.validez },
+    { lbl: 'FORMA DE PAGO',  val: CONDICIONES.pago },
+    { lbl: 'ENTREGA',        val: CONDICIONES.entrega },
+    { lbl: 'GARANTÍA',       val: CONDICIONES.garantia },
+  ];
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { ...ALL_NONE, insideHorizontal: BORDER_NONE, insideVertical: BORDER_NONE },
+    rows: [
+      new TableRow({
+        height: { value: 700, rule: HeightRule.ATLEAST },
+        children: items.map(({ lbl, val }) => new TableCell({
+          width: { size: 25, type: WidthType.PERCENTAGE },
+          shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 },
+          margins: { top: 140, bottom: 140, left: 200, right: 200 },
+          verticalAlign: VerticalAlign.TOP,
+          borders: {
+            top: BORDER_HAIR(),
+            bottom: BORDER_HAIR(),
+            right: BORDER_HAIR(),
+            left: { style: BorderStyle.SINGLE, size: 24, color: COLOR.blue800 },
+          },
+          children: [
+            P(R(lbl, { size: 13, bold: true, color: COLOR.slate500, caps: true, spacing: 24 }), { after: 40 }),
+            P(R(val, { size: 16, bold: true, color: COLOR.slate900 })),
+          ],
+        })),
+      }),
+    ],
+  });
+}
 
-</div>
+// ─── Notas ──────────────────────────────────────────────────────────────────
+function buildNotas() {
+  return [
+    P(R('NOTAS DEL PROYECTO', { size: 14, bold: true, color: COLOR.slate900, caps: true, spacing: 30 }),
+      { before: 200, after: 60 }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: {
+        top: BORDER_HAIR(),
+        bottom: BORDER_HAIR(),
+        right: BORDER_HAIR(),
+        left: { style: BorderStyle.SINGLE, size: 24, color: COLOR.slate400 },
+        insideHorizontal: BORDER_NONE,
+        insideVertical: BORDER_NONE,
+      },
+      rows: [
+        new TableRow({
+          children: [
+            new TableCell({
+              shading: { type: ShadingType.CLEAR, color: 'auto', fill: COLOR.slate50 },
+              margins: { top: 200, bottom: 200, left: 240, right: 240 },
+              children: [P(R(NOTAS, { size: 16, color: COLOR.slate700, italics: true }), { line: 300 })],
+            }),
+          ],
+        }),
+      ],
+    }),
+  ];
+}
 
-<!-- ─── Anexo fotográfico (página nueva) ─── -->
-<div class="page-break">&nbsp;</div>
-<div class="section">
-  <div class="band">&nbsp;</div>
-  <table class="header">
-    <tr>
-      <td class="brand">
-        <div class="razon" style="font-size:14pt;">${EMPRESA.razonSocial}</div>
-        <div class="nombre-comercial">${EMPRESA.nombreComercial}</div>
-      </td>
-      <td class="corp-meta">
-        <div class="row"><span class="lbl">RNC</span><span class="val">${EMPRESA.rnc}</span></div>
-        <div class="row"><span class="val val-direccion">${EMPRESA.website}</span></div>
-      </td>
-    </tr>
-  </table>
-  <div class="header-sep">&nbsp;</div>
+// ─── Firmas ─────────────────────────────────────────────────────────────────
+function buildFirmas() {
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    borders: { ...ALL_NONE, insideHorizontal: BORDER_NONE, insideVertical: BORDER_NONE },
+    rows: [
+      new TableRow({
+        height: { value: 1400, rule: HeightRule.ATLEAST },
+        children: [
+          new TableCell({
+            width: { size: 47, type: WidthType.PERCENTAGE },
+            verticalAlign: VerticalAlign.BOTTOM,
+            borders: { top: BORDER_NONE, left: BORDER_NONE, right: BORDER_NONE,
+                       bottom: { style: BorderStyle.SINGLE, size: 14, color: COLOR.slate900 } },
+            children: [P(R(' '))],
+          }),
+          new TableCell({
+            width: { size: 6, type: WidthType.PERCENTAGE },
+            borders: ALL_NONE,
+            children: [P(R(' '))],
+          }),
+          new TableCell({
+            width: { size: 47, type: WidthType.PERCENTAGE },
+            verticalAlign: VerticalAlign.BOTTOM,
+            borders: { top: BORDER_NONE, left: BORDER_NONE, right: BORDER_NONE,
+                       bottom: { style: BorderStyle.SINGLE, size: 14, color: COLOR.slate900 } },
+            children: [P(R(' '))],
+          }),
+        ],
+      }),
+      new TableRow({
+        height: { value: 350, rule: HeightRule.ATLEAST },
+        children: [
+          new TableCell({
+            width: { size: 47, type: WidthType.PERCENTAGE },
+            borders: ALL_NONE,
+            children: [
+              P(R('ACEPTACIÓN DEL CLIENTE', { size: 16, bold: true, color: COLOR.slate900, caps: true, spacing: 20 }),
+                { align: AlignmentType.CENTER, after: 30 }),
+              P(R('Firma · Sello · Fecha', { size: 13, color: COLOR.slate500 }),
+                { align: AlignmentType.CENTER }),
+            ],
+          }),
+          new TableCell({ width: { size: 6, type: WidthType.PERCENTAGE }, borders: ALL_NONE, children: [P(R(' '))] }),
+          new TableCell({
+            width: { size: 47, type: WidthType.PERCENTAGE },
+            borders: ALL_NONE,
+            children: [
+              P(R(`${EMPRESA.representanteNombre} ${EMPRESA.representanteApellido}`, {
+                size: 16, bold: true, color: COLOR.slate900, caps: true, spacing: 20,
+              }), { align: AlignmentType.CENTER, after: 30 }),
+              P(R(`${EMPRESA.representanteCargo} · ${EMPRESA.razonSocial}`, { size: 13, color: COLOR.slate500 }),
+                { align: AlignmentType.CENTER }),
+            ],
+          }),
+        ],
+      }),
+    ],
+  });
+}
 
-  <table class="body">
-    <tr><td class="body-cell">
+// ─── Anexo fotográfico (página nueva, grid 2×2) ─────────────────────────────
+function buildAnexoFotografico() {
+  const slotCell = (n) => new TableCell({
+    width: { size: 50, type: WidthType.PERCENTAGE },
+    margins: { top: 240, bottom: 240, left: 240, right: 240 },
+    verticalAlign: VerticalAlign.CENTER,
+    borders: {
+      top:    { style: BorderStyle.DASHED, size: 8, color: COLOR.slate300 },
+      bottom: { style: BorderStyle.DASHED, size: 8, color: COLOR.slate300 },
+      left:   { style: BorderStyle.DASHED, size: 8, color: COLOR.slate300 },
+      right:  { style: BorderStyle.DASHED, size: 8, color: COLOR.slate300 },
+    },
+    children: [
+      P(R(`[ FOTO ${n} ]`, { size: 22, bold: true, color: COLOR.slate400, caps: true, spacing: 50 }),
+        { align: AlignmentType.CENTER, after: 80 }),
+      P(R('Insertar imagen aquí', { size: 14, color: COLOR.slate400, italics: true }),
+        { align: AlignmentType.CENTER, after: 60 }),
+      P(R('—', { size: 14, color: COLOR.slate300 }), { align: AlignmentType.CENTER, after: 1000 }),
+      P(R('Pie de foto / ubicación', { size: 13, color: COLOR.slate500 }),
+        { align: AlignmentType.CENTER }),
+    ],
+  });
 
-      <div class="anexo-title">ANEXO FOTOGRÁFICO</div>
-      <div class="anexo-sub">Insertar fotografías del sitio · Levantamiento técnico previo a la instalación</div>
+  return [
+    new Paragraph({ children: [new PageBreak()] }),
+    P(R('ANEXO FOTOGRÁFICO', { size: 28, bold: true, color: COLOR.slate900, caps: true, spacing: 40 }),
+      { align: AlignmentType.CENTER, after: 100 }),
+    P(R('Levantamiento técnico del sitio · Documento complementario', {
+      size: 14, italics: true, color: COLOR.slate500,
+    }), { align: AlignmentType.CENTER, after: 300 }),
+    new Table({
+      width: { size: 100, type: WidthType.PERCENTAGE },
+      borders: { ...ALL_NONE, insideHorizontal: BORDER_NONE, insideVertical: BORDER_NONE },
+      rows: [
+        new TableRow({ children: [slotCell(1), slotCell(2)] }),
+        new TableRow({ children: [slotCell(3), slotCell(4)] }),
+      ],
+    }),
+  ];
+}
 
-      <table class="anexo-grid">
-        <tr>
-          <td class="foto-slot">
-            <span class="placeholder">[ FOTO 1 ]</span>
-            <span class="help">Insertar imagen aquí</span>
-            <span class="pie">Pie de foto / ubicación</span>
-          </td>
-          <td class="foto-slot">
-            <span class="placeholder">[ FOTO 2 ]</span>
-            <span class="help">Insertar imagen aquí</span>
-            <span class="pie">Pie de foto / ubicación</span>
-          </td>
-        </tr>
-        <tr>
-          <td class="foto-slot">
-            <span class="placeholder">[ FOTO 3 ]</span>
-            <span class="help">Insertar imagen aquí</span>
-            <span class="pie">Pie de foto / ubicación</span>
-          </td>
-          <td class="foto-slot">
-            <span class="placeholder">[ FOTO 4 ]</span>
-            <span class="help">Insertar imagen aquí</span>
-            <span class="pie">Pie de foto / ubicación</span>
-          </td>
-        </tr>
-      </table>
-
-    </td></tr>
-  </table>
-</div>
-
-</body>
-</html>`;
+// ─── Documento ──────────────────────────────────────────────────────────────
+function construirDocumento() {
+  return new Document({
+    creator: 'ACR Networks & Solutions',
+    title: `Cotización ${NUMERO}`,
+    description: 'Cotización editable offline · paridad PDF corporativo',
+    styles: {
+      default: {
+        document: {
+          run:       { font: 'Calibri', size: 20, color: COLOR.slate900 },
+          paragraph: { spacing: { line: 260 } },
+        },
+      },
+    },
+    sections: [{
+      properties: {
+        page: {
+          margin: { top: 2400, bottom: 1400, left: 800, right: 800, header: 360, footer: 360 },
+          size:   { width: 12240, height: 15840 },   // Letter
+        },
+      },
+      headers: { default: buildHeader() },
+      footers: { default: buildFooter() },
+      children: [
+        // Title bar
+        new Paragraph({ children: [], spacing: { before: 0, after: 60 } }),
+        buildTitleBar(),
+        new Paragraph({ children: [], spacing: { before: 0, after: 200 } }),
+        // Cliente
+        P(R('CLIENTE', { size: 14, bold: true, color: COLOR.slate600, caps: true, spacing: 32 }),
+          { after: 60, border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: COLOR.slate200, space: 4 } } }),
+        buildClienteBlock(),
+        new Paragraph({ children: [], spacing: { before: 0, after: 200 } }),
+        // Detalle
+        P(R('DETALLE DE PRODUCTOS Y SERVICIOS', { size: 14, bold: true, color: COLOR.slate600, caps: true, spacing: 32 }),
+          { after: 60, border: { bottom: { style: BorderStyle.SINGLE, size: 4, color: COLOR.slate200, space: 4 } } }),
+        buildItemsTable(),
+        new Paragraph({ children: [], spacing: { before: 0, after: 200 } }),
+        // Totales wrap
+        buildTotalesWrap(),
+        new Paragraph({ children: [], spacing: { before: 0, after: 200 } }),
+        // Condiciones grid
+        buildCondGrid(),
+        // Notas
+        ...buildNotas(),
+        // Firmas
+        new Paragraph({ children: [], spacing: { before: 600, after: 0 } }),
+        buildFirmas(),
+        // Anexo
+        ...buildAnexoFotografico(),
+      ],
+    }],
+  });
 }
 
 async function main() {
-  const html = construirDocumentoHtml();
+  const doc = construirDocumento();
   const outPath = path.resolve(__dirname, '..', '..', '..', 'Plantilla_Cotizacion_Manual_RA.docx');
-  // BOM UTF-8 + escribir como .docx (Word reconoce el Office HTML via ProgId)
-  fs.writeFileSync(outPath, '﻿' + html, 'utf8');
+  const buf = await Packer.toBuffer(doc);
+  fs.writeFileSync(outPath, buf);
   // eslint-disable-next-line no-console
-  console.log(`[generarPlantillaWord] OK -> ${outPath}`);
+  console.log(`[generarPlantillaWord] OK -> ${outPath} (${buf.length} bytes)`);
 }
 
 if (require.main === module) {
@@ -664,4 +792,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { construirDocumentoHtml };
+module.exports = { construirDocumento };
