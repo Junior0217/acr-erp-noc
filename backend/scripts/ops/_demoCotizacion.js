@@ -1,12 +1,20 @@
 /**
  * backend/scripts/ops/_demoCotizacion.js
  *
- * Dataset compartido por los tres generadores (PDF demo, XLSX, DOCX).
- * Garantiza paridad de contenido: cliente, items, fechas y cálculos
- * son IDÉNTICOS entre los tres formatos para inspección visual lado a lado.
+ * Dataset compartido por el generador de PDF demo y el generador de
+ * Excel editable. Replica exactamente la cotización COT-914502 de la
+ * Escuela Benito Juárez — 32 cámaras (36 con repuesto) + infraestructura
+ * completa — para que el Excel sea espejo 1:1 del PDF oficial.
  *
- * Si se cambia un valor aquí, los tres archivos generados reflejan el
- * cambio. No se duplican datos en cada script.
+ * Datos REALES de la empresa (no placeholder):
+ *   · ACR NETWORKS & SOLUTIONS, S.R.L.
+ *   · RNC 133692678
+ *   · Tel 849-458-9955 / 809-670-9956
+ *   · acrnetworkssolutions@gmail.com
+ *   · https://acr-erp-noc.vercel.app/portal
+ *
+ * Items en estado borrador (precio 0.00) — el técnico edita en Excel
+ * y las fórmulas vivas recalculan importe/subtotal/ITBIS/total al instante.
  */
 
 const path = require('path');
@@ -14,52 +22,44 @@ const fs   = require('fs');
 
 const ITBIS_RATE = 0.18;
 
+// ─── Empresa ACR real ───────────────────────────────────────────────────────
 const EMPRESA = {
-  razonSocial:     'ACR Networks & Solutions, SRL',
-  nombreComercial: 'ACR NETWORKS & SOLUTIONS',
-  eslogan:         'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica',
-  rnc:             '1-32-12345-6',
-  direccion:       'Av. Winston Churchill #95, Edificio Acrópolis, Piantini, Santo Domingo, R.D.',
-  telefono:        '(809) 547-2828',
-  telefono2:       '(829) 547-2828',
-  email:           'ventas@acrnetworks.do',
-  website:         'https://acrnetworks.do',
-  representanteNombre:   'Cristian',
-  representanteApellido: 'Rosario',
-  representanteCargo:    'Gerente de Operaciones',
+  razonSocial:     'ACR NETWORKS & SOLUTIONS, S.R.L.',
+  nombreComercial: 'ACR NETWORKS',
+  eslogan:         'Soluciones en Seguridad Electrónica, Redes y Soporte IT Corporativo',
+  rnc:             '133692678',
+  telefono:        '849-458-9955',
+  telefono2:       '809-670-9956',
+  email:           'acrnetworkssolutions@gmail.com',
+  website:         'https://acr-erp-noc.vercel.app/portal',
+  representanteCargo: 'Representante',
 };
 
+// ─── Cliente: Escuela Benito Juárez ─────────────────────────────────────────
 const CLIENTE = {
-  razonSocial: 'Plaza Comercial Bella Vista, SRL',
-  noCliente:   'CLI-2026-00128',
-  rnc:         '1-30-50128-3',
-  contacto:    'Sr. Ramón Pérez · Administrador',
-  telefono:    '(809) 555-0032',
-  email:       'administracion@plazabellavista.do',
-  direccion:   'Av. Sarasota #45, Bella Vista, Santo Domingo, R.D.',
+  razonSocial: 'Escuela Benito Juárez',
+  noCliente:   '',
+  rnc:         '',
+  contacto:    '',
+  telefono:    '',
+  email:       '',
+  direccion:   '',
 };
 
-// ─── Proyecto: Instalación CCTV de 32 cámaras + infraestructura completa ────
+// ─── Items REALES (COT-914502 — 12 líneas, todas en borrador) ───────────────
 const ITEMS = [
-  // ── CCTV ──
-  { codigo: 'HIK-4MP-BUL', descripcion: 'Cámara IP HIKVISION 4MP Bullet DS-2CD2143G2-I',  detalle: 'IR 30m, PoE 802.3af, lente fija 2.8mm, IP67, H.265+, audio bidireccional',          cantidad: 24, precioUnitario:  6850.00 },
-  { codigo: 'HIK-4MP-DOM', descripcion: 'Cámara IP HIKVISION 4MP Dome DS-2CD2143G2-IS',   detalle: 'Anti-vandálica IK10, IR 30m, PoE, lente 2.8mm, audio in/out, micro SD slot',        cantidad:  8, precioUnitario:  7450.00 },
-  // ── NVR + Storage ──
-  { codigo: 'HIK-NVR-32',  descripcion: 'NVR HIKVISION DS-7632NI-K2/32P',                 detalle: '32 canales, 32 puertos PoE+, H.265+, 2 bahías HDD, salida HDMI 4K, hasta 320Mbps',  cantidad:  1, precioUnitario: 58500.00 },
-  { codigo: 'HDD-WD-10TB', descripcion: 'Disco Duro WD Purple 10TB Surveillance',         detalle: 'CMR, 7200 RPM, 256MB caché, SATA III, 24/7, 1.5M horas MTBF, AllFrame AI',          cantidad:  2, precioUnitario: 14800.00 },
-  // ── Red ──
-  { codigo: 'SW-POE-24',   descripcion: 'Switch PoE+ 24 puertos Gigabit + 2× SFP',         detalle: 'Total budget 400W IEEE 802.3at, Layer 2 manageable, VLAN/QoS, rack-mountable',     cantidad:  1, precioUnitario: 28500.00 },
-  { codigo: 'PATCH-CAT6',  descripcion: 'Patch Panel 24 puertos Cat6 1U',                  detalle: 'Keystone tooless, certificación EIA/TIA-568-B, organizador trasero incluido',     cantidad:  2, precioUnitario:  4250.00 },
-  // ── Cableado ──
-  { codigo: 'UTP-CAT6-305', descripcion: 'Cable UTP Cat6 23AWG CMR — caja 305m',           detalle: 'Conductor cobre puro, certificación TIA, color azul, pull-box auto-dispensador', cantidad:  4, precioUnitario:  5450.00 },
-  { codigo: 'RJ45-CAT6',   descripcion: 'Conector RJ45 Cat6 Pass-Through — caja 100u',    detalle: 'Contactos chapados oro 50µ, polycarbonato, compatible Cat5e/Cat6/Cat6a',           cantidad:  2, precioUnitario:  1850.00 },
-  // ── Montaje ──
-  { codigo: 'BRK-CAM-PV',  descripcion: 'Bracket pared/poste para cámara bullet',          detalle: 'Aluminio fundido, ajuste 360°, anti-vandalismo, cubre cableado',                  cantidad: 32, precioUnitario:    485.00 },
-  { codigo: 'RACK-12U',    descripcion: 'Rack de pared 12U 600×450mm',                     detalle: 'Puerta cerradura con llave, ventiladores 4× incluidos, organizadores 2×',         cantidad:  1, precioUnitario: 18500.00 },
-  // ── Energía ──
-  { codigo: 'UPS-APC-2K',  descripcion: 'UPS APC Smart-UPS 2200VA SMT2200I-AR',            detalle: 'Line-Interactive, 8 salidas IEC, software PowerChute, expansión batería opcional', cantidad: 2, precioUnitario: 38500.00 },
-  // ── Servicio ──
-  { codigo: 'INST-CCTV32', descripcion: 'Servicio de Instalación y Configuración — 32 Cámaras', detalle: 'Tendido cableado horizontal, montaje cámaras, terminación y certificación, configuración NVR + cuentas, integración red cliente, capacitación 4h al personal de TI', cantidad:  1, precioUnitario: 145000.00 },
+  { codigo: 'CCTV-DAH-HFW1839T',     descripcion: 'Cámara IP Dahua 4K 8MP IPC-HFW1839T1-LED tipo bullet ColorVu 2.8mm',                                           detalle: '',                                                                       cantidad: 36, precioUnitario: 0.00 },
+  { codigo: 'CCTV-DAH-NVR5232',      descripcion: 'NVR Dahua 32 Canales NVR5232-EI 4K H.265+ con AI (rostros + cruce de línea)',                                  detalle: '',                                                                       cantidad:  2, precioUnitario: 0.00 },
+  { codigo: 'STORAGE-WD-8TB-PURPLE', descripcion: 'Disco duro Western Digital Purple 8TB Surveillance WD84PURZ',                                                  detalle: '',                                                                       cantidad:  4, precioUnitario: 0.00 },
+  { codigo: 'NET-UBQ-USW-24-POE',    descripcion: 'Switch UniFi USW-24-POE 24-puerto gigabit con 16 PoE+ (250W total)',                                           detalle: '',                                                                       cantidad:  2, precioUnitario: 0.00 },
+  { codigo: 'NET-UBQ-USW-LITE-8',    descripcion: 'Switch UniFi USW-Lite-8-POE 8-puerto gigabit con 4 PoE+ (52W)',                                                detalle: '',                                                                       cantidad:  2, precioUnitario: 0.00 },
+  { codigo: 'FO-DROP-2H-1000M',      descripcion: 'Bobina Fibra Óptica Drop 2 Hilos SM G657A1 1000m (interplanta entre edificios)',                              detalle: '',                                                                       cantidad:  2, precioUnitario: 0.00 },
+  { codigo: 'NET-CAB-UTP6-305M',     descripcion: 'Bobina Cable UTP Cat6 305m exterior (gel-filled) para tendido entre cámaras y rack',                          detalle: '',                                                                       cantidad:  6, precioUnitario: 0.00 },
+  { codigo: 'NET-RJ45-CAT6-PACK100', descripcion: 'Conectores RJ45 Cat6 blindados pack×100 con bota anti-tirón',                                                  detalle: '',                                                                       cantidad:  2, precioUnitario: 0.00 },
+  { codigo: 'NET-RACK-12U',          descripcion: 'Rack mural 12U 600mm con organizador y bandeja para NVR + switches',                                           detalle: '',                                                                       cantidad:  2, precioUnitario: 0.00 },
+  { codigo: 'POWER-UPS-3KVA',        descripcion: 'UPS APC SmartConnect 3000VA online con respaldo 2h al rack principal',                                         detalle: '',                                                                       cantidad:  1, precioUnitario: 0.00 },
+  { codigo: 'SVC-INSTALACION',       descripcion: 'Servicio técnico',                                                                                              detalle: 'instalación · configuración remota DMSS · programación AI y entrega final con planos as-built', cantidad:  1, precioUnitario: 0.00 },
+  { codigo: 'SVC-CAPACITACION',      descripcion: 'Capacitación 2 horas presencial al personal designado (uso de NVR, exportación de video, alertas móvil)',     detalle: '',                                                                       cantidad:  1, precioUnitario: 0.00 },
 ];
 
 // ─── Cálculos derivados ─────────────────────────────────────────────────────
@@ -70,29 +70,31 @@ function calcular(items) {
   return { subtotal, itbis, total };
 }
 
-// ─── Fechas ─────────────────────────────────────────────────────────────────
-function fechaEmision() { return new Date(); }
-function fechaVence()   { const d = new Date(); d.setDate(d.getDate() + 30); return d; }
-function fechaISO(d)    { return d.toISOString().slice(0, 10); }
+// ─── Fechas (mismas del PDF: emisión 2026-05-22, vence +30d → 2026-06-21) ───
+function fechaEmision() { return new Date('2026-05-22T12:00:00Z'); }
+function fechaVence()   { return new Date('2026-06-21T12:00:00Z'); }
+function fechaISO(d)    {
+  // Formato dd/mm/yyyy igual que el PDF (es-DO)
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const yy = d.getFullYear();
+  return `${dd}/${mm}/${yy}`;
+}
 
-// ─── Condiciones ────────────────────────────────────────────────────────────
+// ─── Condiciones (idénticas al PDF) ─────────────────────────────────────────
 const CONDICIONES = {
-  validez:  '30 días desde la emisión',
+  validez:  'Esta cotización es válida por 15 días calendarios.',
   pago:     '50% confirmación · 50% contra entrega',
-  entrega:  '7-10 días laborables',
-  garantia: '12 meses · defectos de fábrica',
+  entrega:  'Entrega e instalación en 5-7 días laborables tras confirmación.',
+  garantia: '12 meses contra defectos de fábrica para equipos. Mano de obra: 90 días.',
 };
 
-const NOTAS = (
-  'Proyecto: Implementación de sistema de videovigilancia IP de 32 cámaras (24 bullet '
-+ 'perimetrales + 8 dome interiores), grabación centralizada en NVR de 32 canales con '
-+ 'redundancia de almacenamiento (20 TB efectivos), red dedicada con switch PoE+ '
-+ 'manejable, respaldo eléctrico vía 2× UPS APC 2200VA, y rack de pared 12U para '
-+ 'concentración de equipos. Garantía sobre defectos de fábrica únicamente — no cubre '
-+ 'daños por descargas eléctricas, manipulación incorrecta ni eventos atmosféricos.'
-);
+const NOTAS = '';
 
-// ─── Logo (PNG base64) ──────────────────────────────────────────────────────
+const ESTADO = 'Borrador';
+const NUMERO = 'COT-914502';
+
+// ─── Logo (PNG real, aspecto 669:373 = 1.79:1) ──────────────────────────────
 function logoBuffer() {
   const p = path.resolve(__dirname, '..', '..', 'assets', 'logo-acr.png');
   return fs.existsSync(p) ? fs.readFileSync(p) : null;
@@ -103,9 +105,6 @@ function logoDataUri() {
   return buf ? `data:image/png;base64,${buf.toString('base64')}` : null;
 }
 
-// ─── Número y fechas demo ───────────────────────────────────────────────────
-const NUMERO    = 'COT-2026-0521-001';
-
 module.exports = {
   EMPRESA,
   CLIENTE,
@@ -114,6 +113,7 @@ module.exports = {
   CONDICIONES,
   NOTAS,
   NUMERO,
+  ESTADO,
   calcular,
   fechaEmision,
   fechaVence,

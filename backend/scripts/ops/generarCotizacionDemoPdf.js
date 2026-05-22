@@ -27,7 +27,7 @@ const { renderDocumento } = require('../../services/pdf-templates');
 const { generarPdfDocumento, cerrarBrowser, inlineAssets } = require('../../services/pdf-generator');
 
 const {
-  EMPRESA, CLIENTE, ITEMS, NUMERO,
+  EMPRESA, CLIENTE, ITEMS, NUMERO, ESTADO,
   CONDICIONES, NOTAS,
   calcular, fechaEmision, fechaVence,
   logoDataUri,
@@ -53,7 +53,7 @@ async function main() {
     total,
     fechaEmision: emision,
     fechaVence:   vence,
-    estado:       'Emitida',
+    estado:       ESTADO,
     notas:        NOTAS,
     condiciones:  CONDICIONES,
     verify:           null,
