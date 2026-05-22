@@ -1,28 +1,26 @@
 /**
  * backend/scripts/ops/generarPlantillaExcel.js
  *
- * Cotización XLSX espejo 1:1 del PDF oficial (COT-914502 / Escuela Benito
- * Juárez). 100% editable, fórmulas vivas en Importe / Subtotal / ITBIS /
- * Total Neto. Replica visual del PDF de ACR — paleta, fuentes, tamaños,
- * bordes, watermarks, anexo fotográfico — con paginación corporativa.
+ * Cotización XLSX espejo del PDF oficial COT-914502 (Escuela Benito Juárez).
+ * 100% editable, fórmulas vivas en Importe / Subtotal / ITBIS / Total Neto.
+ * Replica visual del PDF de ACR — paleta, fuentes, tamaños, bordes,
+ * watermarks, anexo fotográfico — con paginación corporativa.
  *
- * Issues corregidos (vs ciclo anterior):
- *   ① Logo solapado: brand text arranca en col C (cols A+B = espacio logo).
- *   ② Descripciones no editables: plain text con \n (no rich-text rígido).
- *   ③ Header sin paginar: texto company en headerFooter.oddHeader → aparece
- *     en cada página impresa idéntico al membrete del PDF.
- *   ④ Sin anexo fotográfico: 12 slots en 3 páginas (2×2 cada) con
- *     page-breaks idéntico al ANEXO TÉCNICO del PDF.
+ * Issues corregidos (ciclo de corrupción):
+ *   ① Excel reportaba "contenido dañado, restaurar?" → causa: bordes con
+ *     `{ style: 'none' }` generan OOXML inválido. Helper setBorder ahora
+ *     OMITE el side cuando se pasa `null` o `false` (no fuerza style:none).
+ *   ② Output rename: _RA → _ACR (la empresa es ACR, no RA).
+ *   ③ Header empresa solo en pág 1 → fijado en cada página impresa vía
+ *     `printTitlesRow='1:6'` (Excel repite rows 1-6 al tope de cada página,
+ *     incluido el logo anclado con editAs:'oneCell'). Es el approach
+ *     nativo de Excel para "membrete fijo", más confiable que oddHeader+&G.
+ *   ④ Footer con verify URL + paginación vía `headerFooter.oddFooter`
+ *     (texto multi-línea con &L &C &R).
+ *   ⑤ Anchos columnas: B=22 (códigos largos como STORAGE-WD-8TB-PURPLE),
+ *     F=18 (importes RD$ con separadores), totales 117 chars.
  *
- * Layout de columnas (proporciones PDF):
- *   A:  5 chars  → # (logo se solapa visualmente sobre A+B en header)
- *   B: 18 chars  → Código
- *   C: 50 chars  → Descripción / brand text en header
- *   D:  8 chars  → Cant.
- *   E: 14 chars  → Precio Unit. / corp-meta en header
- *   F: 16 chars  → Importe
- *
- * Salida: Plantilla_Cotizacion_Manual_RA.xlsx en la raíz del repo.
+ * Salida: Plantilla_Cotizacion_Manual_ACR.xlsx en la raíz del repo.
  * Ejecutar: node backend/scripts/ops/generarPlantillaExcel.js
  */
 
@@ -57,6 +55,7 @@ const COLOR = {
 const FONT      = 'Calibri';
 const FONT_MONO = 'Consolas';
 
+// ─── Bordes (todos con color válido, ningún style:'none') ───────────────────
 const BORDER_HAIR    = { style: 'hair',   color: { argb: COLOR.slate200 } };
 const BORDER_THIN    = { style: 'thin',   color: { argb: COLOR.slate200 } };
 const BORDER_MED     = { style: 'thin',   color: { argb: COLOR.slate300 } };
@@ -69,13 +68,21 @@ function fillBg(cell, argb) {
   cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb } };
 }
 
-function setBorder(cell, b) {
-  cell.border = {
-    top:    b.top    ?? BORDER_HAIR,
-    bottom: b.bottom ?? BORDER_HAIR,
-    left:   b.left   ?? BORDER_HAIR,
-    right:  b.right  ?? BORDER_HAIR,
-  };
+/**
+ * Asigna borders evitando OOXML inválido.
+ * - Si el side se pasa como `null` → se OMITE (no border ese lado).
+ * - Si el side no se especifica  → default BORDER_HAIR.
+ * - Cualquier border object válido se asigna tal cual.
+ * Esto evita que Excel detecte XML corrupto y muestre "restaurar".
+ */
+function setBorder(cell, b = {}) {
+  const out = {};
+  const sides = ['top', 'bottom', 'left', 'right'];
+  for (const side of sides) {
+    if (b[side] === null || b[side] === false) continue;
+    out[side] = b[side] ?? BORDER_HAIR;
+  }
+  cell.border = out;
 }
 
 // ─── Watermarks (COTIZACIÓN + BORRADOR — paridad PDF) ───────────────────────
@@ -107,7 +114,6 @@ async function _watermarkBorradorPng() {
   return sharp(Buffer.from(svg)).png().toBuffer();
 }
 
-// ─── Combina descripción + detalle en plain text editable (con \n) ──────────
 function _descripcionPlain(it) {
   if (it.detalle) return `${it.descripcion}\n${it.detalle}`;
   return it.descripcion;
@@ -129,28 +135,27 @@ async function construirLibro() {
       paperSize: 1,                              // Letter
       orientation: 'portrait',
       fitToPage: true, fitToWidth: 1, fitToHeight: 0,
-      // Top margin = 0.9" deja espacio para el header de impresión (logo + empresa)
-      margins: { left: 0.35, right: 0.35, top: 0.9, bottom: 0.7, header: 0.3, footer: 0.35 },
+      margins: { left: 0.35, right: 0.35, top: 0.5, bottom: 0.7, header: 0.25, footer: 0.3 },
       horizontalCentered: true,
     },
     views: [{ state: 'normal', showGridLines: false, zoomScale: 105 }],
   });
 
-  // ─── Anchos de columna ────────────────────────────────────────────────────
-  // A=5 angosta (#) — sirve también como "primera mitad del área del logo"
-  // B=18 (Código) — sirve como segunda mitad del área del logo en header
-  // Brand text vive en C+D (no B) para EVITAR solapamiento con el logo (100px wide)
+  // ─── Anchos de columna (mejorados para data real) ─────────────────────────
+  // A=5 (#), B=22 (códigos largos), C=48 (desc flex), D=8 (cant),
+  // E=15 (precio), F=18 (importe RD$ ###,###,###.##) = total 116 chars
   ws.getColumn('A').width =  5;
-  ws.getColumn('B').width = 18;
-  ws.getColumn('C').width = 50;
+  ws.getColumn('B').width = 22;
+  ws.getColumn('C').width = 48;
   ws.getColumn('D').width =  8;
-  ws.getColumn('E').width = 14;
-  ws.getColumn('F').width = 16;
+  ws.getColumn('E').width = 15;
+  ws.getColumn('F').width = 18;
 
   let row = 1;
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 1. BANDA CORPORATE (slate-300 3pt)
+  // 1. BANDA CORPORATE — row 1 (slate-300 3pt)
+  //    Forma parte del printTitlesRow → aparece arriba de CADA página impresa.
   // ═══════════════════════════════════════════════════════════════════════════
   ws.getRow(row).height = 4;
   ws.mergeCells(`A${row}:F${row}`);
@@ -158,14 +163,13 @@ async function construirLibro() {
   row += 1;
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 2. HEADER EN HOJA (página 1)
-  //    Logo en A-B (100×56 sin distorsión) | Brand C-D | Corp-meta E-F
+  // 2-5. HEADER EMPRESA — rows 2-5
+  //    Logo (A-B 100×56 sin distorsión) + Brand (C-D) + Corp-meta (E-F)
+  //    TODO esto se repite en cada página impresa vía printTitlesRow='1:6'.
   // ═══════════════════════════════════════════════════════════════════════════
   const headerStartRow = row;
 
-  // Logo: 100×56 (aspecto nativo 1.79:1). Ancla en A2 con pequeño offset
-  // vertical. Espacia A+B (5+18=23 chars ≈ 162px) → 100px logo cabe entero
-  // sin solaparse con la columna C donde arranca el brand.
+  // Logo PNG real anclado a row 2 (editAs:'oneCell' → viaja con la fila).
   const logoBuf = logoBuffer();
   if (logoBuf) {
     const imgId = wb.addImage({ buffer: logoBuf, extension: 'png' });
@@ -176,7 +180,7 @@ async function construirLibro() {
     });
   }
 
-  // Row 2: razón social (C-D) | RNC rich (E-F)
+  // Row 2: razón social | RNC
   ws.getRow(row).height = 22;
   ws.mergeCells(`C${row}:D${row}`);
   ws.getCell(`C${row}`).value = EMPRESA.razonSocial;
@@ -192,7 +196,7 @@ async function construirLibro() {
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
-  // Row 3: nombre comercial (C-D) | TEL (E-F)
+  // Row 3: nombre comercial | TEL
   ws.getRow(row).height = 14;
   ws.mergeCells(`C${row}:D${row}`);
   ws.getCell(`C${row}`).value = EMPRESA.nombreComercial;
@@ -201,14 +205,14 @@ async function construirLibro() {
   ws.mergeCells(`E${row}:F${row}`);
   ws.getCell(`E${row}`).value = {
     richText: [
-      { text: 'TEL  ',                                                  font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate400 } } },
-      { text: `${EMPRESA.telefono} / ${EMPRESA.telefono2}`,             font: { name: FONT_MONO, size: 9, color: { argb: COLOR.slate700 } } },
+      { text: 'TEL  ',                                       font: { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate400 } } },
+      { text: `${EMPRESA.telefono} / ${EMPRESA.telefono2}`,  font: { name: FONT_MONO, size: 9, color: { argb: COLOR.slate700 } } },
     ],
   };
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
-  // Row 4: eslogan (C-D italic) | EMAIL (E-F)
+  // Row 4: eslogan | EMAIL
   ws.getRow(row).height = 14;
   ws.mergeCells(`C${row}:D${row}`);
   ws.getCell(`C${row}`).value = EMPRESA.eslogan;
@@ -224,7 +228,7 @@ async function construirLibro() {
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
-  // Row 5: (vacío C-D) | WEB (E-F)
+  // Row 5: vacío izq | WEB
   ws.getRow(row).height = 14;
   ws.mergeCells(`C${row}:D${row}`);
   ws.getCell(`C${row}`).value = '';
@@ -238,14 +242,15 @@ async function construirLibro() {
   ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle' };
   row += 1;
 
-  // Separador hairline
-  ws.getRow(row).height = 3;
+  // Row 6: Separador hairline (forma parte del printTitlesRow)
+  ws.getRow(row).height = 4;
   ws.mergeCells(`A${row}:F${row}`);
   ws.getCell(`A${row}`).border = { bottom: BORDER_THIN };
+  const headerEndRow = row;
   row += 1;
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 3. TITLE-BAR
+  // 3. TITLE-BAR (rows después del header, NO se repiten en impresión)
   // ═══════════════════════════════════════════════════════════════════════════
   ws.getRow(row).height = 34;
   ws.mergeCells(`A${row}:C${row}`);
@@ -253,22 +258,23 @@ async function construirLibro() {
   ws.getCell(`A${row}`).font  = { name: FONT, size: 18, bold: true, color: { argb: COLOR.slate800 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate100);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 2 };
-  setBorder(ws.getCell(`A${row}`), { top: BORDER_THIN, bottom: BORDER_THIN, left: { style: 'none' }, right: { style: 'none' } });
+  setBorder(ws.getCell(`A${row}`), { top: BORDER_THIN, bottom: BORDER_THIN, left: null, right: null });
 
   ws.mergeCells(`D${row}:F${row}`);
   ws.getCell(`D${row}`).value = NUMERO;
   ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 17, bold: true, color: { argb: COLOR.slate900 } };
   fillBg(ws.getCell(`D${row}`), COLOR.slate100);
   ws.getCell(`D${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 2 };
-  setBorder(ws.getCell(`D${row}`), { top: BORDER_THIN, bottom: BORDER_THIN, left: { style: 'none' }, right: { style: 'none' } });
+  setBorder(ws.getCell(`D${row}`), { top: BORDER_THIN, bottom: BORDER_THIN, left: null, right: null });
+  // Banda continua slate-100 en celdas intermedias
   for (const col of ['B', 'C', 'E']) {
     const c = ws.getCell(`${col}${row}`);
     fillBg(c, COLOR.slate100);
-    setBorder(c, { top: BORDER_THIN, bottom: BORDER_THIN, left: { style: 'none' }, right: { style: 'none' } });
+    setBorder(c, { top: BORDER_THIN, bottom: BORDER_THIN, left: null, right: null });
   }
   row += 1;
 
-  // Sub-línea title-bar: vacío izq + emisión/vence der
+  // Sub-línea: emisión / vence
   ws.getRow(row).height = 18;
   ws.mergeCells(`A${row}:C${row}`);
   ws.getCell(`A${row}`).value = '';
@@ -284,7 +290,7 @@ async function construirLibro() {
   ws.getCell(`D${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 2 };
   row += 1;
 
-  // Estado-stamp (Borrador chip slate-50)
+  // Estado-stamp
   ws.getRow(row).height = 18;
   ws.mergeCells(`A${row}:E${row}`);
   ws.getCell(`A${row}`).value = '';
@@ -307,7 +313,7 @@ async function construirLibro() {
   ws.getCell(`A${row}`).value = 'C L I E N T E';
   ws.getCell(`A${row}`).font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate600 } };
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  ws.getCell(`A${row}`).border = { bottom: { style: 'hair', color: { argb: COLOR.slate200 } } };
+  ws.getCell(`A${row}`).border = { bottom: BORDER_HAIR };
   row += 1;
 
   // Labels row
@@ -324,11 +330,11 @@ async function construirLibro() {
     c.font  = { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate500 } };
     fillBg(c, COLOR.slate50);
     c.alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-    setBorder(c, { top: BORDER_THIN, bottom: { style: 'hair', color: { argb: COLOR.slate200 } }, left: BORDER_THIN, right: BORDER_THIN });
+    setBorder(c, { top: BORDER_THIN, bottom: BORDER_HAIR, left: BORDER_THIN, right: BORDER_THIN });
     for (let col = start.charCodeAt(0) + 1; col <= end.charCodeAt(0); col += 1) {
       const c2 = ws.getCell(`${String.fromCharCode(col)}${row}`);
       fillBg(c2, COLOR.slate50);
-      setBorder(c2, { top: BORDER_THIN, bottom: { style: 'hair', color: { argb: COLOR.slate200 } }, left: BORDER_THIN, right: BORDER_THIN });
+      setBorder(c2, { top: BORDER_THIN, bottom: BORDER_HAIR, left: BORDER_THIN, right: BORDER_THIN });
     }
   }
   row += 1;
@@ -353,7 +359,7 @@ async function construirLibro() {
   ws.getCell(`E${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1, wrapText: true };
 
   for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
-    setBorder(ws.getCell(`${col}${row}`), { top: { style: 'hair', color: { argb: COLOR.slate200 } }, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
+    setBorder(ws.getCell(`${col}${row}`), { top: BORDER_HAIR, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
   }
   row += 1;
 
@@ -369,7 +375,7 @@ async function construirLibro() {
   ws.getCell(`A${row}`).value = 'D E T A L L E   D E   P R O D U C T O S   Y   S E R V I C I O S';
   ws.getCell(`A${row}`).font  = { name: FONT, size: 8, bold: true, color: { argb: COLOR.slate600 } };
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  ws.getCell(`A${row}`).border = { bottom: { style: 'hair', color: { argb: COLOR.slate200 } } };
+  ws.getCell(`A${row}`).border = { bottom: BORDER_HAIR };
   row += 1;
 
   // Header tabla
@@ -391,67 +397,52 @@ async function construirLibro() {
     c.border = {
       top:    { style: 'thin',   color: { argb: COLOR.slate300 } },
       bottom: { style: 'medium', color: { argb: COLOR.slate300 } },
-      left:   { style: 'hair',   color: { argb: COLOR.slate200 } },
-      right:  { style: 'hair',   color: { argb: COLOR.slate200 } },
+      left:   BORDER_HAIR,
+      right:  BORDER_HAIR,
     };
   });
-  const headerRow = row;
+  const tableHeaderRow = row;
   row += 1;
 
-  // Items — TODO en plain text (sin rich text) para que sea 100% editable
+  // Items con datos reales (todo plain text editable)
   const firstItemRow = row;
   ITEMS.forEach((it, i) => {
     const hasDetalle = !!it.detalle;
-    // Altura calculada según líneas de descripción (1 sola línea = 24pt,
-    // 2 líneas con detalle = 38pt). Si el código es largo (>18 chars) se
-    // ajusta a 2 líneas vía wrapText.
     const codeLong = it.codigo.length > 18;
     ws.getRow(row).height = hasDetalle ? 42 : (codeLong ? 32 : 26);
 
-    // # (auto-numerado, mono slate-400 — editable)
     ws.getCell(`A${row}`).value = i + 1;
     ws.getCell(`A${row}`).font  = { name: FONT_MONO, size: 9, color: { argb: COLOR.slate400 } };
     ws.getCell(`A${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell(`A${row}`).numFmt = '00';
 
-    // Código (mono bold slate-800, wrap por si es largo — plain text editable)
     ws.getCell(`B${row}`).value = it.codigo;
     ws.getCell(`B${row}`).font  = { name: FONT_MONO, size: 9, bold: true, color: { argb: COLOR.slate800 } };
     ws.getCell(`B${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1, wrapText: true };
 
-    // Descripción — PLAIN TEXT con \n (100% editable, no rich-text rígido)
     ws.getCell(`C${row}`).value = _descripcionPlain(it);
     ws.getCell(`C${row}`).font  = { name: FONT, size: 10, color: { argb: COLOR.slate900 } };
     ws.getCell(`C${row}`).alignment = { horizontal: 'left', vertical: 'middle', wrapText: true, indent: 1 };
 
-    // Cant. (number editable)
     ws.getCell(`D${row}`).value = it.cantidad;
     ws.getCell(`D${row}`).font  = { name: FONT_MONO, size: 10, color: { argb: COLOR.slate900 } };
     ws.getCell(`D${row}`).alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getCell(`D${row}`).numFmt = '#,##0';
 
-    // Precio Unit. (number editable — empieza en 0 borrador)
     ws.getCell(`E${row}`).value = it.precioUnitario;
     ws.getCell(`E${row}`).font  = { name: FONT_MONO, size: 10, color: { argb: COLOR.slate900 } };
     ws.getCell(`E${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     ws.getCell(`E${row}`).numFmt = '#,##0.00';
 
-    // Importe (fórmula viva =D*E)
     ws.getCell(`F${row}`).value = { formula: `D${row}*E${row}`, result: it.cantidad * it.precioUnitario };
     ws.getCell(`F${row}`).font  = { name: FONT_MONO, size: 10, bold: true, color: { argb: COLOR.slate900 } };
     ws.getCell(`F${row}`).alignment = { horizontal: 'right', vertical: 'middle', indent: 1 };
     ws.getCell(`F${row}`).numFmt = '#,##0.00';
 
-    // Zebra + bordes
     for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
       const c = ws.getCell(`${col}${row}`);
       if (i % 2 === 1) fillBg(c, COLOR.slate50);
-      setBorder(c, {
-        top:    { style: 'hair', color: { argb: COLOR.slate200 } },
-        bottom: { style: 'hair', color: { argb: COLOR.slate200 } },
-        left:   { style: 'hair', color: { argb: COLOR.slate200 } },
-        right:  { style: 'hair', color: { argb: COLOR.slate200 } },
-      });
+      setBorder(c, { top: BORDER_HAIR, bottom: BORDER_HAIR, left: BORDER_HAIR, right: BORDER_HAIR });
     }
     row += 1;
   });
@@ -482,18 +473,13 @@ async function construirLibro() {
     ws.getCell(`F${row}`).numFmt = '#,##0.00';
 
     for (const col of ['A', 'B', 'C', 'D', 'E', 'F']) {
-      setBorder(ws.getCell(`${col}${row}`), {
-        top:    { style: 'hair', color: { argb: COLOR.slate200 } },
-        bottom: { style: 'hair', color: { argb: COLOR.slate200 } },
-        left:   { style: 'hair', color: { argb: COLOR.slate200 } },
-        right:  { style: 'hair', color: { argb: COLOR.slate200 } },
-      });
+      setBorder(ws.getCell(`${col}${row}`), { top: BORDER_HAIR, bottom: BORDER_HAIR, left: BORDER_HAIR, right: BORDER_HAIR });
     }
     row += 1;
   }
   const lastFormulaRow = row - 1;
 
-  // Watermarks COTIZACIÓN + BORRADOR
+  // Watermarks
   const wmCotPng = await _watermarkCotizacionPng();
   const wmBorPng = await _watermarkBorradorPng();
   const wmCotId  = wb.addImage({ buffer: wmCotPng, extension: 'png' });
@@ -572,7 +558,7 @@ async function construirLibro() {
   row += 1;
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 7. CONDICIONES (legal-note arriba + 3 cajas)
+  // 7. CONDICIONES (legal-note + 3 cajas Validez/Entrega/Garantía)
   // ═══════════════════════════════════════════════════════════════════════════
   ws.getRow(row).height = 14;
   ws.mergeCells(`A${row}:F${row}`);
@@ -580,7 +566,7 @@ async function construirLibro() {
   ws.getCell(`A${row}`).font  = { name: FONT, size: 8.5, bold: true, color: { argb: COLOR.slate900 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate50);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-  setBorder(ws.getCell(`A${row}`), { top: BORDER_THIN, bottom: { style: 'none' }, left: BORDER_THIN, right: BORDER_THIN });
+  setBorder(ws.getCell(`A${row}`), { top: BORDER_THIN, bottom: null, left: BORDER_THIN, right: BORDER_THIN });
   row += 1;
 
   ws.getRow(row).height = 36;
@@ -593,7 +579,7 @@ async function construirLibro() {
   ws.getCell(`A${row}`).font  = { name: FONT, size: 9, color: { argb: COLOR.slate600 } };
   fillBg(ws.getCell(`A${row}`), COLOR.slate50);
   ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'top', wrapText: true, indent: 1 };
-  setBorder(ws.getCell(`A${row}`), { top: { style: 'none' }, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
+  setBorder(ws.getCell(`A${row}`), { top: null, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
   row += 1;
 
   // Spacer
@@ -629,12 +615,13 @@ async function construirLibro() {
       for (let col = s.charCodeAt(0) + 1; col <= e.charCodeAt(0); col += 1) {
         const c2 = ws.getCell(`${String.fromCharCode(col)}${row}`);
         fillBg(c2, COLOR.slate50);
-        setBorder(c2, { top: BORDER_THIN, bottom: BORDER_THIN, right: BORDER_THIN, left: { style: 'none' } });
+        setBorder(c2, { top: BORDER_THIN, bottom: BORDER_THIN, right: BORDER_THIN, left: null });
       }
     }
   });
   row += 1;
 
+  // Spacer
   ws.getRow(row).height = 28;
   row += 1;
 
@@ -644,8 +631,14 @@ async function construirLibro() {
   ws.getRow(row).height = 44;
   ws.mergeCells(`A${row}:C${row}`);
   ws.mergeCells(`D${row}:F${row}`);
-  setBorder(ws.getCell(`A${row}`), { top: { style: 'none' }, bottom: { style: 'thin', color: { argb: COLOR.slate900 } }, left: { style: 'none' }, right: { style: 'none' } });
-  setBorder(ws.getCell(`D${row}`), { top: { style: 'none' }, bottom: { style: 'thin', color: { argb: COLOR.slate900 } }, left: { style: 'none' }, right: { style: 'none' } });
+  setBorder(ws.getCell(`A${row}`), {
+    top: null, left: null, right: null,
+    bottom: { style: 'thin', color: { argb: COLOR.slate900 } },
+  });
+  setBorder(ws.getCell(`D${row}`), {
+    top: null, left: null, right: null,
+    bottom: { style: 'thin', color: { argb: COLOR.slate900 } },
+  });
   row += 1;
 
   ws.getRow(row).height = 14;
@@ -672,28 +665,22 @@ async function construirLibro() {
 
   // ═══════════════════════════════════════════════════════════════════════════
   // 9. ANEXO TÉCNICO — 12 items en 3 páginas (4 fotos por página, 2×2)
-  //    Page-break antes de cada anexo. Mismo membrete/footer corporativo
-  //    aparece en cada página vía printHeader/Footer.
   // ═══════════════════════════════════════════════════════════════════════════
   const ITEMS_PER_ANNEX_PAGE = 4;
   const totalAnnexPages = Math.ceil(ITEMS.length / ITEMS_PER_ANNEX_PAGE);
 
   for (let pageIdx = 0; pageIdx < totalAnnexPages; pageIdx += 1) {
-    // Page break antes del primer anexo (siempre nuevo print page)
     ws.getRow(row).addPageBreak();
-
-    // Spacer
     ws.getRow(row).height = 8;
     row += 1;
 
-    // Section-label "ANEXO TÉCNICO" (solo en página 1 del anexo) o sub-label
     if (pageIdx === 0) {
       ws.getRow(row).height = 18;
       ws.mergeCells(`A${row}:F${row}`);
       ws.getCell(`A${row}`).value = 'ANEXO TÉCNICO';
       ws.getCell(`A${row}`).font  = { name: FONT, size: 12, bold: true, color: { argb: COLOR.slate900 } };
       ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-      ws.getCell(`A${row}`).border = { bottom: { style: 'thin', color: { argb: COLOR.slate200 } } };
+      ws.getCell(`A${row}`).border = { bottom: BORDER_THIN };
       row += 1;
 
       ws.getRow(row).height = 14;
@@ -712,7 +699,7 @@ async function construirLibro() {
       ws.getCell(`A${row}`).value = 'CAPTURAS DE CAMPO';
       ws.getCell(`A${row}`).font  = { name: FONT, size: 7.5, bold: true, color: { argb: COLOR.slate500 } };
       ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-      ws.getCell(`A${row}`).border = { bottom: { style: 'hair', color: { argb: COLOR.slate200 } } };
+      ws.getCell(`A${row}`).border = { bottom: BORDER_HAIR };
       row += 1;
     } else {
       ws.getRow(row).height = 18;
@@ -720,25 +707,22 @@ async function construirLibro() {
       ws.getCell(`A${row}`).value = `ANEXO TÉCNICO · Página ${pageIdx + 1} de ${totalAnnexPages}`;
       ws.getCell(`A${row}`).font  = { name: FONT, size: 9, bold: true, color: { argb: COLOR.slate600 } };
       ws.getCell(`A${row}`).alignment = { horizontal: 'left', vertical: 'middle', indent: 1 };
-      ws.getCell(`A${row}`).border = { bottom: { style: 'hair', color: { argb: COLOR.slate200 } } };
+      ws.getCell(`A${row}`).border = { bottom: BORDER_HAIR };
       row += 1;
     }
 
-    // Spacer
     ws.getRow(row).height = 6;
     row += 1;
 
-    // 2 filas × 2 fotos = 4 slots por página
     const startItemIdx = pageIdx * ITEMS_PER_ANNEX_PAGE;
     const endItemIdx   = Math.min(startItemIdx + ITEMS_PER_ANNEX_PAGE, ITEMS.length);
     const itemsInPage  = ITEMS.slice(startItemIdx, endItemIdx);
 
-    // Procesar de a 2 (fila izquierda + fila derecha)
     for (let r2 = 0; r2 < itemsInPage.length; r2 += 2) {
       const leftItem  = itemsInPage[r2];
       const rightItem = itemsInPage[r2 + 1];
 
-      // Caja de foto (vacía, dashed border) — alto 100pt simula la imagen del PDF
+      // Caja foto (vacía, dashed)
       ws.getRow(row).height = 100;
       ws.mergeCells(`A${row}:C${row}`);
       const leftPhoto = ws.getCell(`A${row}`);
@@ -759,7 +743,7 @@ async function construirLibro() {
       }
       row += 1;
 
-      // Caja de descripción (item + descripción + LUGAR)
+      // Caja descripción
       ws.getRow(row).height = 50;
       ws.mergeCells(`A${row}:C${row}`);
       const leftDesc = ws.getCell(`A${row}`);
@@ -767,7 +751,7 @@ async function construirLibro() {
       leftDesc.value = `ÍTEM ${leftItemNum}.1 · ${leftItem.codigo}\n${leftItem.descripcion}${leftItem.detalle ? '\n' + leftItem.detalle : ''}\nLUGAR: (especificar ubicación de instalación)`;
       leftDesc.font  = { name: FONT, size: 8.5, color: { argb: COLOR.slate700 } };
       leftDesc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true, indent: 1 };
-      setBorder(leftDesc, { top: { style: 'none' }, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
+      setBorder(leftDesc, { top: null, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
 
       if (rightItem) {
         ws.mergeCells(`D${row}:F${row}`);
@@ -776,50 +760,45 @@ async function construirLibro() {
         rightDesc.value = `ÍTEM ${rightItemNum}.1 · ${rightItem.codigo}\n${rightItem.descripcion}${rightItem.detalle ? '\n' + rightItem.detalle : ''}\nLUGAR: (especificar ubicación de instalación)`;
         rightDesc.font  = { name: FONT, size: 8.5, color: { argb: COLOR.slate700 } };
         rightDesc.alignment = { horizontal: 'left', vertical: 'top', wrapText: true, indent: 1 };
-        setBorder(rightDesc, { top: { style: 'none' }, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
+        setBorder(rightDesc, { top: null, bottom: BORDER_THIN, left: BORDER_THIN, right: BORDER_THIN });
       }
       row += 1;
 
-      // Spacer entre filas de fotos
       ws.getRow(row).height = 10;
       row += 1;
     }
   }
 
   // ═══════════════════════════════════════════════════════════════════════════
-  // 10. PRINT HEADER & FOOTER (replica del membrete PDF en cada página)
+  // 10. PRINT TITLES + FOOTER
+  //    printTitlesRow='1:6' → rows 1-6 (banda + header empresa + separador) se
+  //    repiten al tope de cada página impresa. Incluye el LOGO anclado en row 2.
+  //    No usamos oddHeader con &G porque exceljs tiene soporte buggy para
+  //    imágenes en header — usar printTitlesRow es el approach nativo correcto.
+  //    oddFooter sí lleva texto: verify URL + página X/Y idéntico al PDF.
   // ═══════════════════════════════════════════════════════════════════════════
+  ws.pageSetup.printTitlesRow = `1:${headerEndRow}`;
+  ws.pageSetup.printArea = `A1:F${row}`;
+
   ws.headerFooter = {
     differentFirst: false,
     differentOddEven: false,
-    // Header: razón social + RNC (izq) | nombre comercial + eslogan (centro) | TEL + EMAIL (der)
-    // Formato: &L=izquierda, &C=centro, &R=derecha. &K=color hex. &B=bold, &I=italic.
-    // &11=font size 11pt.
-    oddHeader:
-      `&L&"Calibri,Bold"&11&K0F172A${EMPRESA.razonSocial}&"Calibri,Regular"&8&K475569\n` +
-      `RNC ${EMPRESA.rnc}` +
-      `&C&"Calibri,Bold"&9&K1E40AF${EMPRESA.nombreComercial}&"Calibri,Italic"&7&K64748B\n` +
-      `${EMPRESA.eslogan}` +
-      `&R&"Calibri,Bold"&8&K94A3B8TEL  &"Calibri,Regular"&K475569${EMPRESA.telefono}\n` +
-      `&"Calibri,Bold"&K94A3B8EMAIL  &"Calibri,Regular"&K475569${EMPRESA.email}`,
-
-    // Footer: razón social + RNC (izq) | documento verificable (centro) | página (der)
     oddFooter:
-      `&L&7&K475569${EMPRESA.razonSocial} · RNC ${EMPRESA.rnc}` +
-      `&C&7&K94A3B8Documento Electrónico Verificable · ${EMPRESA.website}` +
-      `&R&7&K94A3B8Página &P de &N`,
+      `&L&"Calibri,Bold"&8&K0F172AVERIFICACIÓN ANTI-FRAUDE\n` +
+      `&"Calibri,Regular"&7&K64748BEscanea el QR o toca aquí para validar.\n` +
+      `&"Consolas,Regular"&7&K1E40AF${EMPRESA.website.replace('https://', '')}/verify/...91343f` +
+      `&C&"Calibri,Bold"&8&K475569DOCUMENTO ELECTRÓNICO VERIFICABLE\n` +
+      `&"Calibri,Regular"&7&K94A3B8${EMPRESA.razonSocial} · RNC ${EMPRESA.rnc}` +
+      `&R&"Calibri,Regular"&8&K94A3B8Página &P / &N`,
   };
-
-  // Print titles: header de la tabla se repite en cada página impresa
-  ws.pageSetup.printTitlesRow = `${headerRow}:${headerRow}`;
-  ws.pageSetup.printArea = `A1:F${row}`;
 
   return wb;
 }
 
 async function main() {
   const wb = await construirLibro();
-  const outPath = path.resolve(__dirname, '..', '..', '..', 'Plantilla_Cotizacion_Manual_RA.xlsx');
+  // Output con sufijo ACR (no RA) — somos ACR Networks
+  const outPath = path.resolve(__dirname, '..', '..', '..', 'Plantilla_Cotizacion_Manual_ACR.xlsx');
   await wb.xlsx.writeFile(outPath);
   // eslint-disable-next-line no-console
   console.log(`[generarPlantillaExcel] OK -> ${outPath}`);
