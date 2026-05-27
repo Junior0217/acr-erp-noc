@@ -506,14 +506,14 @@ function createCotizadorLibreService(deps) {
 }
 .foto-card .foto-wrap {
   width: 100%; height: 56mm;  /* ALTO FIJO de imagen (pedido user: 70mm) */
-  background: #0f172a;
+  background: #f8fafc;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
   flex-shrink: 0;
 }
 .foto-card .foto-wrap img {
   width: 100%; height: 100%;
   max-height: 56mm;
-  object-fit: cover;
+  object-fit: contain;
   display: block;
 }
 .foto-card figcaption {
