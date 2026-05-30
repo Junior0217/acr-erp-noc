@@ -285,7 +285,10 @@ function createCotizadorLibreService(deps) {
     return `
 <div style="-webkit-print-color-adjust:exact; print-color-adjust:exact; width:100%; font-family:'Helvetica Neue',Arial,sans-serif; font-size:9.5px; color:#475569; box-sizing:border-box; padding:0;">
   <div style="height:3px; background:#cbd5e1; width:100%;"></div>
-  <div style="padding:5mm 16mm 3mm; display:flex; align-items:center; justify-content:space-between; gap:10mm; border-bottom:1px solid #e2e8f0;">
+  <!-- padding compactado 5/3mm → 4/2mm: ahorra ~2mm de alto de header para
+       garantizar holgura amplia con el margin top 35mm (title-bar más arriba)
+       sin riesgo de clipping del headerTemplate por variación subpixel. -->
+  <div style="padding:4mm 16mm 2mm; display:flex; align-items:center; justify-content:space-between; gap:10mm; border-bottom:1px solid #e2e8f0;">
     <div style="display:flex; align-items:center; gap:4mm;">
       ${assets.logoClaro ? `<img src="${_esc(assets.logoClaro)}" style="width:16mm; height:16mm; object-fit:contain; flex-shrink:0;"/>` : ''}
       <div>

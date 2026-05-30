@@ -224,3 +224,39 @@ test('PDF · NC/ND respetan campos clave del Registro Mercantil (NO los imprimen
   assert.equal(htmlNc.includes('RM-2024-99999'), false, 'NC NO debe imprimir registroMercantil')
   assert.equal(htmlNd.includes('RM-2024-99999'), false, 'ND NO debe imprimir registroMercantil')
 })
+
+// ─── Bloque cliente: RNC vs Contacto (fix empty-string fallthrough) ──────────
+// Regresión del bug: el frontend envía '' (string vacío) en campos en blanco.
+// El operador `??` NO cae a través de '', así que `rnc ?? contacto` devolvía ''
+// y ocultaba el contacto aunque el label dijera "Contacto". El fix normaliza con
+// .trim() y usa `||`. Estos tests fijan los 3 escenarios para que no reaparezca.
+
+test('PDF · cliente con RNC vacío ("") muestra el contacto (no queda en blanco)', () => {
+  const html = renderDocumento(baseArgs({
+    tipo:    'cotizacion',
+    cliente: { razonSocial: 'Escuela Benito Juárez', rnc: '', contacto: 'Sr. Yordania', telefono: '809-555-1234' },
+  }))
+  assert.equal(html.includes('Sr. Yordania'),        true, 'El contacto debe aparecer cuando RNC va vacío')
+  assert.equal(html.includes('Tel. 809-555-1234'),   true, 'El teléfono debe aparecer')
+  assert.equal(/<div class="lbl">Contacto<\/div>/.test(html), true, 'Label "Contacto" cuando RNC vacío')
+})
+
+test('PDF · cliente con RNC y contacto muestra AMBOS (no se pierde el contacto)', () => {
+  const html = renderDocumento(baseArgs({
+    tipo:    'cotizacion',
+    cliente: { razonSocial: 'Empresa X', rnc: '131-12345-6', contacto: 'Sr. Yordania', telefono: '809-555-1234' },
+  }))
+  assert.equal(html.includes('131-12345-6'),          true, 'RNC visible')
+  assert.equal(html.includes('Contacto: Sr. Yordania'), true, 'Contacto visible junto al RNC')
+  assert.equal(html.includes('Tel. 809-555-1234'),    true, 'Teléfono visible')
+})
+
+test('PDF · cliente sin RNC/contacto/teléfono degrada sin crashear', () => {
+  const html = renderDocumento(baseArgs({
+    tipo:    'cotizacion',
+    cliente: { razonSocial: 'Solo Nombre' },
+  }))
+  assert.equal(html.includes('Solo Nombre'), true,  'razonSocial visible')
+  assert.equal(html.includes('undefined'),   false, 'sin "undefined" literal')
+  assert.equal(html.includes('Tel. '),       false, 'sin línea de teléfono cuando no hay teléfono')
+})
