@@ -708,7 +708,7 @@ function createCotizadorLibreService(deps) {
     // browser respete los margins que reserva Puppeteer.
     html = html.replace(
       /@page\s*\{[^}]*\}/g,
-      '@page { size: Letter; margin: 38mm 0 35mm 0; }',
+      '@page { size: Letter; margin: 35mm 0 35mm 0; }',
     );
     // Sheet ya no necesita overflow:hidden ni position:relative para anclar
     // footer absolute. Sobre-escribimos para liberar el flow natural. Body
@@ -849,14 +849,16 @@ function createCotizadorLibreService(deps) {
 
     const buffer = await generarPdfDocumento(html, {
       format: 'Letter',
-      // margin top/bottom DEBE coincidir con la regla @page del HTML (38/35)
+      // margin top/bottom DEBE coincidir con la regla @page del HTML (35/35)
       // para que el body inicie EXACTAMENTE donde termina el header template
       // y termine donde empieza el footer template. Nunca overlap.
-      //   Header alto ≈ 32mm (3mm band + 5mm padding + 16mm logo + texto)
+      //   Header alto ≈ 25-32mm (3mm band + 5mm padding + 16mm logo + texto)
       //   Footer alto ≈ 28mm (qr 16mm + verify text + padding + página N/M)
-      // 38mm top: 32mm header + 6mm aire — title-bar pegado al header.
+      // 35mm top: sube el title-bar ("COTIZACIÓN" + nº + fechas) ~3mm respecto
+      //   al 38mm previo — pedido del usuario "un poco más arriba" — manteniendo
+      //   holgura de header (≥3mm) sin clipping del headerTemplate.
       // 35mm bottom: 28mm footer + 7mm aire.
-      margin: { top: '38mm', right: '0mm', bottom: '35mm', left: '0mm' },
+      margin: { top: '35mm', right: '0mm', bottom: '35mm', left: '0mm' },
       displayHeaderFooter: true,
       headerTemplate,
       footerTemplate,

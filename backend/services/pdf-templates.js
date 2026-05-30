@@ -649,6 +649,13 @@ function renderDocumento(opts) {
   const repFull = [emp.representanteNombre, emp.representanteApellido].filter(Boolean).join(' ').trim()
   const direccionEmp = buildDireccion([emp.direccion, emp.sector, emp.provincia])
   const direccionCli = buildDireccion([cliente?.direccion, cliente?.sector, cliente?.provincia])
+  // Normalización del bloque cliente: el frontend envía '' (string vacío) cuando
+  // un campo queda en blanco, NO null. El operador `??` no cae a través de '',
+  // así que `rnc ?? contacto` devolvía '' y ocultaba el contacto aunque el label
+  // dijera "Contacto". Trim → '' explícito permite tratar vacío como ausente.
+  const rncCli      = (cliente?.rnc ?? '').toString().trim()
+  const contactoCli = (cliente?.contacto ?? '').toString().trim()
+  const telCli      = (cliente?.telefono ?? '').toString().trim()
 
   const watermark = isNotaCredito
     ? '<div class="watermark notacredito">Nota de Crédito</div>'
@@ -777,9 +784,10 @@ function renderDocumento(opts) {
         ${cliente?.noCliente ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">${escape(cliente.noCliente)}</div>` : ''}
       </div>
       <div class="client-cell">
-        <div class="lbl">${cliente?.rnc ? 'RNC' : 'Contacto'}</div>
-        <div class="val${cliente?.rnc ? ' mono' : ''}">${escape(cliente?.rnc ?? cliente?.contacto ?? '—')}</div>
-        ${cliente?.telefono ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">Tel. ${escape(cliente.telefono)}</div>` : ''}
+        <div class="lbl">${rncCli ? 'RNC' : 'Contacto'}</div>
+        <div class="val${rncCli ? ' mono' : ''}">${escape(rncCli || contactoCli || '—')}</div>
+        ${rncCli && contactoCli ? `<div class="val normal" style="margin-top:3px; color:#475569;">Contacto: ${escape(contactoCli)}</div>` : ''}
+        ${telCli ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">Tel. ${escape(telCli)}</div>` : ''}
       </div>
       <div class="client-cell">
         <div class="lbl">Dirección</div>
