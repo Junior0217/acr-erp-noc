@@ -37,10 +37,27 @@
 
 const { renderDocumento, fmtMoney, fechaCorta } = require('../../../services/pdf-templates');
 const { facturaVerifyHash } = require('../../../shared/services/verify-hash.service');
+const { escapeHtml } = require('../../../shared/html-escape');
 
 const NOMBRE_EMPRESA_DEFAULT  = 'ACR Networks & Solutions';
 const TAGLINE_DEFAULT         = 'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica';
 const WEBSITE_DEFAULT         = 'https://acrnetworks.do';
+
+// Margen vertical del PDF. DEBE coincidir EXACTO entre la regla @page del HTML y
+// el margin de Puppeteer, o el body se solapa con el header/footer template.
+// 35mm top sube el title-bar respecto al 38mm histórico; el header se compactó
+// (padding 4/2mm) para conservar holgura sin clipping. Cambiar SOLO aquí.
+const PAGE_MARGIN_TOP    = '35mm';
+const PAGE_MARGIN_BOTTOM = '35mm';
+
+// Validación de data URI de foto — mismo patrón que schema.js (defensa en
+// profundidad antes de inyectar el src en el HTML del anexo). Un dataUri
+// corrupto que burle la compresión frontend se descarta en vez de reventar
+// el render de Puppeteer a mitad del PDF.
+const _DATA_URI_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
+function _esDataUriFotoValida(s) {
+  return typeof s === 'string' && _DATA_URI_RE.test(s);
+}
 
 // Resolver idéntico al de `modules/ventas/pdf/service` (las facturas). Si
 // divergen, los QRs apuntan a hosts distintos y solo uno funciona. Cascada:
@@ -66,18 +83,36 @@ class CotizadorLibreError extends Error {
   }
 }
 
-// Local escape — duplicado intencional del helper de pdf-templates.js que NO
-// se exporta. Mantenerlo local nos da independencia del módulo oficial.
-function _esc(s) {
-  if (s == null) return '';
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-}
+// Alias local al helper compartido (shared/html-escape) — antes era una copia
+// duplicada; centralizado para que la política de escape no diverja del template.
+const _esc = escapeHtml;
 
 function createCotizadorLibreService(deps) {
   const { generarPdfDocumento, QRCode, repo, inlineAssets } = deps;
   if (typeof generarPdfDocumento !== 'function') throw new Error('createCotizadorLibreService: generarPdfDocumento required');
+
+  // ─── Cache de EmpresaPerfil (singleton id=1) ──────────────────────────────
+  // findEmpresaPerfil se consulta hasta 2x por PDF (_renderHtml + generarPdf) y
+  // un PDF suele dispararse en ráfaga (preview + descarga). El perfil cambia
+  // rarísimo (logo/RNC/eslogan), así que un TTL de 60s elimina round-trips
+  // redundantes a BD sin riesgo de servir datos rancios. Cachea también el
+  // resultado null (no hay empresa) para no reconsultar en ambientes vacíos.
+  const _EMPRESA_TTL_MS = 60_000;
+  let _empresaCache = { value: null, at: 0 };
+  async function _getEmpresaPerfilCached() {
+    if (!repo || typeof repo.findEmpresaPerfil !== 'function') return null;
+    const now = Date.now();
+    if (_empresaCache.at > 0 && (now - _empresaCache.at) < _EMPRESA_TTL_MS) {
+      return _empresaCache.value;
+    }
+    try {
+      const perfil = await repo.findEmpresaPerfil();
+      _empresaCache = { value: perfil, at: now };
+      return perfil;
+    } catch {
+      return _empresaCache.value;  // degrada al último valor conocido (o null)
+    }
+  }
 
   // ─── Helpers de cálculo (defensa-en-profundidad) ──────────────────────────
   function _calcularTotales(dto) {
@@ -543,7 +578,7 @@ function createCotizadorLibreService(deps) {
     lineas.forEach((l, i) => {
       const fotos = Array.isArray(l.fotos) ? l.fotos : [];
       fotos.forEach((f, j) => {
-        if (!f?.dataUri) return;
+        if (!_esDataUriFotoValida(f?.dataUri)) return;  // descarta corruptos
         tiles.push({
           dataUri:      f.dataUri,
           nombre:       f.nombre ?? '',
@@ -599,10 +634,7 @@ function createCotizadorLibreService(deps) {
     // defaults hardcoded. Esto da paridad visual con facturas oficiales en
     // prod (logo + RNC + dirección reales) y degrada limpio si no hay BD
     // (tests, ambientes vacíos).
-    let empresaPerfil = null;
-    if (repo && typeof repo.findEmpresaPerfil === 'function') {
-      try { empresaPerfil = await repo.findEmpresaPerfil(); } catch { /* sin BD */ }
-    }
+    const empresaPerfil = await _getEmpresaPerfilCached();
 
     const empresa = empresaPerfil
       ? {
@@ -711,7 +743,7 @@ function createCotizadorLibreService(deps) {
     // browser respete los margins que reserva Puppeteer.
     html = html.replace(
       /@page\s*\{[^}]*\}/g,
-      '@page { size: Letter; margin: 35mm 0 35mm 0; }',
+      `@page { size: Letter; margin: ${PAGE_MARGIN_TOP} 0 ${PAGE_MARGIN_BOTTOM} 0; }`,
     );
     // Sheet ya no necesita overflow:hidden ni position:relative para anclar
     // footer absolute. Sobre-escribimos para liberar el flow natural. Body
@@ -839,10 +871,7 @@ function createCotizadorLibreService(deps) {
 
     // Empresa para header/footer template (fetch ya hecho dentro de _renderHtml
     // — re-fetch aquí para evitar dependencia de cache. Falla → defaults).
-    let empresaTpl = null;
-    if (repo && typeof repo.findEmpresaPerfil === 'function') {
-      try { empresaTpl = await repo.findEmpresaPerfil(); } catch {}
-    }
+    const empresaTpl = await _getEmpresaPerfilCached();
     const empresaFinal = empresaTpl
       ? { ...empresaTpl, assets: typeof inlineAssets === 'function' ? await inlineAssets(empresaTpl.assets ?? {}) : (empresaTpl.assets ?? {}) }
       : { razonSocial: dto.empresaNombre?.trim() || NOMBRE_EMPRESA_DEFAULT, rnc: null, telefono: null, email: null, website: dto.empresaWebsite?.trim() || WEBSITE_DEFAULT, eslogan: dto.empresaTagline?.trim() || TAGLINE_DEFAULT, assets: {} };
@@ -861,7 +890,7 @@ function createCotizadorLibreService(deps) {
       //   al 38mm previo — pedido del usuario "un poco más arriba" — manteniendo
       //   holgura de header (≥3mm) sin clipping del headerTemplate.
       // 35mm bottom: 28mm footer + 7mm aire.
-      margin: { top: '35mm', right: '0mm', bottom: '35mm', left: '0mm' },
+      margin: { top: PAGE_MARGIN_TOP, right: '0mm', bottom: PAGE_MARGIN_BOTTOM, left: '0mm' },
       displayHeaderFooter: true,
       headerTemplate,
       footerTemplate,

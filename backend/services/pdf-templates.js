@@ -20,6 +20,7 @@
 
 const { marked } = require('marked')
 const sanitizeHtml = require('sanitize-html')
+const { escapeHtml } = require('../shared/html-escape')
 
 // Markdown ligero -> HTML seguro para incrustar en filas de la tabla del PDF.
 // Permite: **negrita**, *cursiva*, listas con - / 1., saltos de línea.
@@ -171,12 +172,9 @@ function fechaLarga(d) {
   return new Date(d).toLocaleDateString('es-DO', { day: 'numeric', month: 'long', year: 'numeric' })
 }
 
-function escape(s) {
-  if (s == null) return ''
-  return String(s)
-    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
-}
+// Alias local al helper compartido (shared/html-escape) — preserva el nombre
+// `escape` usado en todo este archivo sin duplicar la implementación.
+const escape = escapeHtml
 
 function buildDireccion(parts) {
   return parts.filter(Boolean).map(p => String(p).trim()).filter(Boolean).join(', ')
