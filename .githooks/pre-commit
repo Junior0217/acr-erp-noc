@@ -1,0 +1,9 @@
+#!/bin/sh
+# Hook de pre-commit VERSIONADO. Activar una vez por clon:
+#   git config core.hooksPath .githooks
+#
+# Rechaza bytes null (0x00) en archivos de código fuente staged — evita que
+# reaparezca el problema de diffs binarios (ver backend/scripts/security/
+# check-null-bytes.cjs). Añadir aquí futuros checks rápidos pre-commit.
+
+node backend/scripts/security/check-null-bytes.cjs || exit 1

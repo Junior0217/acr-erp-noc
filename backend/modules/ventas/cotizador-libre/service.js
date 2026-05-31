@@ -35,9 +35,12 @@
  *   inlineAssets? })
  */
 
-const { renderDocumento, fmtMoney, fechaCorta } = require('../../../services/pdf-templates');
+const { renderDocumento } = require('../../../services/pdf-templates');
+const { fmtMoney, fechaCorta } = require('../../../shared/format');
 const { facturaVerifyHash } = require('../../../shared/services/verify-hash.service');
 const { escapeHtml } = require('../../../shared/html-escape');
+const { isFotoDataUri } = require('../../../shared/data-uri');
+const { getEmpresaPerfilCached } = require('../../../shared/empresa-perfil-cache');
 
 const NOMBRE_EMPRESA_DEFAULT  = 'ACR Networks & Solutions';
 const TAGLINE_DEFAULT         = 'Infraestructura de Redes · Seguridad Electrónica · Fibra Óptica';
@@ -50,14 +53,9 @@ const WEBSITE_DEFAULT         = 'https://acrnetworks.do';
 const PAGE_MARGIN_TOP    = '35mm';
 const PAGE_MARGIN_BOTTOM = '35mm';
 
-// Validación de data URI de foto — mismo patrón que schema.js (defensa en
-// profundidad antes de inyectar el src en el HTML del anexo). Un dataUri
-// corrupto que burle la compresión frontend se descarta en vez de reventar
-// el render de Puppeteer a mitad del PDF.
-const _DATA_URI_RE = /^data:image\/(jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/;
-function _esDataUriFotoValida(s) {
-  return typeof s === 'string' && _DATA_URI_RE.test(s);
-}
+// Validación de data URI de foto (defensa en profundidad antes de inyectar el
+// src en el HTML del anexo). El patrón vive en shared/data-uri.js, reutilizado
+// por el validador Zod del schema — una sola definición de "foto válida".
 
 // Resolver idéntico al de `modules/ventas/pdf/service` (las facturas). Si
 // divergen, los QRs apuntan a hosts distintos y solo uno funciona. Cascada:
@@ -91,27 +89,15 @@ function createCotizadorLibreService(deps) {
   const { generarPdfDocumento, QRCode, repo, inlineAssets } = deps;
   if (typeof generarPdfDocumento !== 'function') throw new Error('createCotizadorLibreService: generarPdfDocumento required');
 
-  // ─── Cache de EmpresaPerfil (singleton id=1) ──────────────────────────────
+  // ─── EmpresaPerfil cacheado (shared/empresa-perfil-cache) ─────────────────
   // findEmpresaPerfil se consulta hasta 2x por PDF (_renderHtml + generarPdf) y
-  // un PDF suele dispararse en ráfaga (preview + descarga). El perfil cambia
-  // rarísimo (logo/RNC/eslogan), así que un TTL de 60s elimina round-trips
-  // redundantes a BD sin riesgo de servir datos rancios. Cachea también el
-  // resultado null (no hay empresa) para no reconsultar en ambientes vacíos.
-  const _EMPRESA_TTL_MS = 60_000;
-  let _empresaCache = { value: null, at: 0 };
+  // un PDF suele dispararse en ráfaga (preview + descarga). El cache (TTL 60s)
+  // vive en shared para que el endpoint de update de EmpresaPerfil
+  // (admin/empresa.actualizarPerfil) pueda invalidarlo y no servir logo/RNC
+  // viejo. Aquí solo pasamos el loader (fetch a BD del repo).
   async function _getEmpresaPerfilCached() {
     if (!repo || typeof repo.findEmpresaPerfil !== 'function') return null;
-    const now = Date.now();
-    if (_empresaCache.at > 0 && (now - _empresaCache.at) < _EMPRESA_TTL_MS) {
-      return _empresaCache.value;
-    }
-    try {
-      const perfil = await repo.findEmpresaPerfil();
-      _empresaCache = { value: perfil, at: now };
-      return perfil;
-    } catch {
-      return _empresaCache.value;  // degrada al último valor conocido (o null)
-    }
+    return getEmpresaPerfilCached(() => repo.findEmpresaPerfil());
   }
 
   // ─── Helpers de cálculo (defensa-en-profundidad) ──────────────────────────
@@ -578,7 +564,7 @@ function createCotizadorLibreService(deps) {
     lineas.forEach((l, i) => {
       const fotos = Array.isArray(l.fotos) ? l.fotos : [];
       fotos.forEach((f, j) => {
-        if (!_esDataUriFotoValida(f?.dataUri)) return;  // descarta corruptos
+        if (!isFotoDataUri(f?.dataUri)) return;  // descarta corruptos
         tiles.push({
           dataUri:      f.dataUri,
           nombre:       f.nombre ?? '',

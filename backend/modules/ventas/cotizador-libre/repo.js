@@ -162,41 +162,42 @@ function createCotizadorLibreRepo(prisma) {
       count:      r._count?._all ?? 0,
     }));
 
-    // 3) Por estado + drafter más antiguo: 1 fetch con select mínimo. Prisma
-    // no soporta groupBy en JSONB path nativo; agrupar en JS sobre rows
-    // ligeros (solo meta + 4 campos) es <50ms aún con 10K drafts. El índice
-    // GIN sobre meta acelera el read del JSON. Refactor futuro: raw SQL
-    // `SELECT meta->>'estado', COUNT(*) FROM ... GROUP BY 1` cuando volumen
-    // pase 50K.
-    const ligeros = await prisma.cotizacionLibreDraft.findMany({
-      select: {
-        id:              true,
-        empleadoId:      true,
-        numeroDocumento: true,
-        updatedAt:       true,
-        createdAt:       true,
-        meta:            true,
-      },
-    });
-
+    // 3) Por estado: GROUP BY raw sobre meta->>'estado' — Postgres agrega del
+    //    lado del servidor (usa el índice de expresión meta_estado_idx) en vez
+    //    de transportar TODAS las filas a memoria y agrupar en JS. COUNT(*)::int
+    //    evita BigInt. estado NULL/'' → 'Borrador' (semántica histórica).
+    const porEstadoRows = await prisma.$queryRaw`
+      SELECT "meta"->>'estado' AS estado, COUNT(*)::int AS count
+      FROM "CotizacionLibreDraft"
+      GROUP BY "meta"->>'estado'
+    `;
     const porEstado = { Borrador: 0, Enviada: 0, Aprobada: 0, Convertida: 0, Perdida: 0 };
+    for (const row of porEstadoRows) {
+      const estado = row.estado || 'Borrador';
+      if (porEstado[estado] != null) porEstado[estado] += Number(row.count);
+    }
+
+    // 4) Drafter más antiguo en Borrador: 1 fila vía ORDER BY updatedAt ASC
+    //    LIMIT 1 (índice meta_estado_idx + updatedAt). estado NULL = Borrador.
+    const oldestRows = await prisma.$queryRaw`
+      SELECT "id", "empleadoId", "numeroDocumento", "updatedAt", "createdAt"
+      FROM "CotizacionLibreDraft"
+      WHERE COALESCE("meta"->>'estado', 'Borrador') = 'Borrador'
+      ORDER BY "updatedAt" ASC
+      LIMIT 1
+    `;
     let drafterMasAntiguo = null;
-    for (const d of ligeros) {
-      const estado = (d.meta && typeof d.meta === 'object' && d.meta.estado) || 'Borrador';
-      if (porEstado[estado] != null) porEstado[estado]++;
-      if (estado === 'Borrador') {
-        if (!drafterMasAntiguo || d.updatedAt < drafterMasAntiguo.updatedAt) {
-          drafterMasAntiguo = {
-            id:              d.id,
-            empleadoId:      d.empleadoId,
-            empleadoNombre:  empMap.get(d.empleadoId) ?? null,
-            numeroDocumento: d.numeroDocumento,
-            updatedAt:       d.updatedAt,
-            createdAt:       d.createdAt,
-            diasInactividad: Math.floor((Date.now() - d.updatedAt.getTime()) / (1000 * 60 * 60 * 24)),
-          };
-        }
-      }
+    if (oldestRows.length) {
+      const d = oldestRows[0];
+      drafterMasAntiguo = {
+        id:              d.id,
+        empleadoId:      d.empleadoId,
+        empleadoNombre:  empMap.get(d.empleadoId) ?? null,
+        numeroDocumento: d.numeroDocumento,
+        updatedAt:       d.updatedAt,
+        createdAt:       d.createdAt,
+        diasInactividad: Math.floor((Date.now() - new Date(d.updatedAt).getTime()) / (1000 * 60 * 60 * 24)),
+      };
     }
 
     return {

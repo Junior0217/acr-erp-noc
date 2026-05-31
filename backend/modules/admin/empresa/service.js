@@ -9,6 +9,7 @@
  */
 
 const crypto = require('crypto');
+const { invalidateEmpresaPerfilCache } = require('../../../shared/empresa-perfil-cache');
 
 class EmpresaError extends Error {
   constructor(status, code, message) {
@@ -132,6 +133,10 @@ function createEmpresaService(deps) {
       data.assets = { ...(prevAssets ?? {}), ...data.assets };
     }
     const e = await repo.upsertEmpresa(data);
+    // Invalida el cache compartido de EmpresaPerfil — los PDFs (facturas,
+    // cotizaciones, cotizador libre) tomarán el logo/RNC/eslogan nuevo al
+    // instante en vez de servir el viejo hasta que expire el TTL.
+    invalidateEmpresaPerfilCache();
     auditReq('empresa:perfil_update', reqStub, { campos: Object.keys(data) });
 
     if (prevAssets && supabase && SUPABASE_BUCKET && typeof pathFromSupabaseUrl === 'function') {

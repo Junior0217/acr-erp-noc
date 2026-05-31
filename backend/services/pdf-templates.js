@@ -21,6 +21,7 @@
 const { marked } = require('marked')
 const sanitizeHtml = require('sanitize-html')
 const { escapeHtml } = require('../shared/html-escape')
+const { fmtMoney, fechaCorta, fechaLarga } = require('../shared/format')
 
 // Markdown ligero -> HTML seguro para incrustar en filas de la tabla del PDF.
 // Permite: **negrita**, *cursiva*, listas con - / 1., saltos de línea.
@@ -156,21 +157,9 @@ function parseDescripcionEstructurada(descRaw, detalleRaw) {
   }
 }
 
-function fmtMoney(n) {
-  return new Intl.NumberFormat('es-DO', {
-    minimumFractionDigits: 2, maximumFractionDigits: 2,
-  }).format(Number(n) || 0)
-}
-
-function fechaCorta(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
-}
-
-function fechaLarga(d) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('es-DO', { day: 'numeric', month: 'long', year: 'numeric' })
-}
+// fmtMoney / fechaCorta / fechaLarga ahora viven en shared/format.js (importados
+// arriba). Se mantienen en el module.exports de este archivo como re-export para
+// no romper imports existentes (cotizador-libre los toma de shared directamente).
 
 // Alias local al helper compartido (shared/html-escape) — preserva el nombre
 // `escape` usado en todo este archivo sin duplicar la implementación.

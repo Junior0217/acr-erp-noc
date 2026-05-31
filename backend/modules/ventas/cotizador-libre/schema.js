@@ -13,6 +13,7 @@
  */
 
 const { z } = require('zod');
+const { FOTO_DATA_URI_RE } = require('../../../shared/data-uri');
 
 const MAX_LINEAS        = 200;
 const MAX_TEXT          = 2000;
@@ -20,6 +21,28 @@ const MAX_FOTOS_X_ITEM  = 5;
 const MAX_FOTO_BYTES    = 320 * 1024;   // 320 KB por foto (≈240KB JPEG real tras base64)
 const MAX_LUGAR_LEN     = 300;
 const MAX_MODELO_LEN    = 120;
+// Tope server-side del payload TOTAL de fotos (defensa en profundidad: el
+// guardrail client-side puede omitirse). Bajo el límite de body de Express
+// (~25MB) para rechazar con mensaje claro antes de tocar BD.
+const MAX_TOTAL_FOTOS_BYTES = 22 * 1024 * 1024;
+
+// superRefine compartido: suma el largo base64 de todas las fotos del payload
+// y rechaza si excede el tope. Se aplica al schema de PDF y al de draft.
+function _refineTotalFotos(obj, ctx) {
+  let total = 0;
+  for (const it of obj.items ?? []) {
+    for (const f of it.fotos ?? []) {
+      total += (typeof f?.dataUri === 'string' ? f.dataUri.length : 0);
+    }
+  }
+  if (total > MAX_TOTAL_FOTOS_BYTES) {
+    ctx.addIssue({
+      code:    z.ZodIssueCode.custom,
+      path:    ['items'],
+      message: `Borrador demasiado grande: ${Math.round(total / 1048576)}MB en fotos (máx ${Math.round(MAX_TOTAL_FOTOS_BYTES / 1048576)}MB). Elimina algunas fotos.`,
+    });
+  }
+}
 
 // Helper: tolera "0" / "" / null en cantidades/precios y normaliza a número.
 const numero = z.preprocess(
@@ -32,10 +55,9 @@ const numero = z.preprocess(
 //   - tamaño bruto ≤ MAX_FOTO_BYTES (la string base64 sin contar el prefix)
 // El frontend ya comprime — esto es el guardrail server-side. Si alguien intenta
 // inyectar 10MB de base64, Zod lo rechaza antes de tocar BD/PDF.
-const DATA_URI_RE = /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/=]+)$/;
 const fotoSchema = z.object({
   dataUri: z.string().refine((s) => {
-    const m = DATA_URI_RE.exec(s);
+    const m = FOTO_DATA_URI_RE.exec(s);
     if (!m) return false;
     // Tamaño aproximado del binario original = base64.length * 3 / 4 (sin padding).
     return m[2].length <= MAX_FOTO_BYTES;
@@ -132,7 +154,7 @@ const cotizadorLibreSchema = z.object({
   mostrarResumen:       z.boolean().optional().default(false),
   // Estado del documento (cambia badge + watermark en el PDF).
   estado:               z.enum(ESTADOS_VALIDOS).optional().default('Borrador'),
-});
+}).superRefine(_refineTotalFotos);
 
 // Schema del PUT draft. Reutiliza la estructura del PDF schema pero relaja
 // items (permite cantidad 0 / precio 0 — el cajero puede guardar borradores
@@ -156,7 +178,7 @@ const draftPayloadSchema = z.object({
   // pasar este campo. El controller valida y lo ignora si el caller no tiene
   // permiso global — fail-closed por defecto.
   targetEmpleadoId: z.coerce.number().int().positive().optional().nullable(),
-});
+}).superRefine(_refineTotalFotos);
 
 const numeroParamSchema = z.string().min(1).max(40);
 

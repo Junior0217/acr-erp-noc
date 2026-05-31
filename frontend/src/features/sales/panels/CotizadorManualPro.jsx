@@ -170,6 +170,21 @@ async function _generarFotoPlaceholder({ titulo, subtitulo = '', glyph = '◉', 
   return dataUri
 }
 
+// Detección memoizada de soporte WebP en canvas. Chrome/Firefox/Safari 16+
+// codifican WebP (~30% menos bytes que JPEG a igual calidad → drafts más
+// livianos). Si el navegador NO lo soporta, canvas.toBlob caería a PNG, así que
+// feature-detectamos y usamos JPEG como fallback explícito.
+let _webpSupport = null
+function _canvasSoportaWebp() {
+  if (_webpSupport !== null) return _webpSupport
+  try {
+    const c = document.createElement('canvas')
+    c.width = 1; c.height = 1
+    _webpSupport = c.toDataURL('image/webp').startsWith('data:image/webp')
+  } catch { _webpSupport = false }
+  return _webpSupport
+}
+
 async function comprimirImagen(file) {
   if (!file || !file.type?.startsWith('image/')) {
     throw new Error('No es una imagen')
@@ -189,13 +204,14 @@ async function comprimirImagen(file) {
   ctx.drawImage(bitmap, 0, 0, w, h)
   bitmap.close?.()
 
-  // Encode to JPEG. Si el resultado pasa el cap, reintentar con quality
-  // menor (escalado lineal entre 0.5 y 0.7).
+  // Encode a WebP (si el navegador lo soporta) o JPEG fallback. Si el resultado
+  // pasa el cap, reintentar con quality menor (escalado lineal entre 0.45 y 0.7).
+  const mime  = _canvasSoportaWebp() ? 'image/webp' : 'image/jpeg'
   let quality = FOTO_QUALITY
-  let blob    = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality))
+  let blob    = await new Promise((res) => canvas.toBlob(res, mime, quality))
   while (blob && blob.size > MAX_FOTO_BYTES && quality > 0.45) {
     quality -= 0.1
-    blob = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality))
+    blob = await new Promise((res) => canvas.toBlob(res, mime, quality))
   }
   if (!blob) throw new Error('Falló la codificación de la imagen')
   if (blob.size > MAX_FOTO_BYTES) {
