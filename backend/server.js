@@ -1087,7 +1087,9 @@ async function ensureSchemaColumns() {
       END $$`)
     } catch {}
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ItemCatalogo_productoId_idx" ON "ItemCatalogo"("productoId")`)
-    console.log('[DB] Schema columns verified (terms + cache + snapshot + pos images + catalog->producto link).')
+    // Cliente.tipoServicio (giro/servicio — persiste el dropdown "Tipo Servicio").
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS "tipoServicio" TEXT`)
+    console.log('[DB] Schema columns verified (terms + cache + snapshot + pos images + catalog->producto link + cliente.tipoServicio).')
   } catch (e) {
     console.error('[DB] ensureSchemaColumns FAILED:', e.message)
   }

@@ -59,6 +59,7 @@ const clienteBaseShape = z.object({
   email:               z.string().email().trim(),
   website:             nullStr(100),
   tipoCliente:         z.string().min(1).max(50),
+  tipoServicio:        nullStr(60),
   itbis:               z.boolean().default(true),
   promHorasMes:        z.number().int().min(0).max(744).optional(),
   latitud:             nullStr(20),

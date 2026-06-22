@@ -367,6 +367,10 @@ model Cliente {
   email               String
   website             String?
   tipoCliente         String
+  // Giro/servicio del cliente (ej. "CCTV & Videovigilancia"). Persiste el
+  // dropdown "Tipo Servicio" del formulario, antes cosmético. Nullable para
+  // clientes legacy. Catálogo en frontend TIPOS_SERVICIO.
+  tipoServicio        String?
   itbis               Boolean             @default(true)
   promHorasMes        Int?
   activo              Boolean             @default(true)
