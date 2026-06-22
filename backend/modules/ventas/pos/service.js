@@ -590,7 +590,7 @@ function createPosService(deps) {
       const itbisAmt     = dto.itbis ? Math.round(subtotal * 0.18 * 100) / 100 : 0;
       const total        = Math.round((subtotal + itbisAmt) * 100) / 100;
 
-      let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado;
+      let ncf = null, noFactura, tipoNcf = 'Consumidor Final', estado, ncfVencimiento = null;
       if (dto.esCotizacion) {
         noFactura = await generarSiguienteCodigo('cotizacion', tx);
         estado    = 'Borrador';
@@ -602,6 +602,9 @@ function createPosService(deps) {
         const row = await repo.nextNcfSeqTx(tx, tipoNcf);
         if (!row) throw new PosError(422, 'NCF_DEPLETED', `Sin secuencia NCF disponible para "${tipoNcf}". Verifica Configuración NCF.`);
         ncf       = `${row.prefijo}${String(row.secuenciaActual).padStart(8, '0')}`;
+        // Fecha de vencimiento de la autorización NCF (DGII) — se imprime en
+        // el comprobante (obligatorio para B01/B11/B15). Snapshot inmutable.
+        ncfVencimiento = row.vencimiento ? new Date(row.vencimiento).toISOString() : null;
         noFactura = await generarSiguienteCodigo('factura', tx);
         estado    = 'Emitida';
       }
@@ -612,6 +615,7 @@ function createPosService(deps) {
         const empresa = await repo.findEmpresaPerfilFull(tx);
         snapshot = {
           emitidoEn: new Date().toISOString(),
+          ncfVencimiento,
           empresa: empresa ? {
             razonSocial:           empresa.razonSocial,
             nombreComercial:       empresa.nombreComercial,

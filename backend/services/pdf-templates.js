@@ -601,6 +601,7 @@ function renderDocumento(opts) {
     numero,          // string ej. 'COT-2026-0512-001'
     ncf,             // factura NCF (opt)
     tipoNcf,         // 'B01' / 'B02' / 'B03' (ND) / 'B04' (NC) ...
+    ncfVencimiento,  // fecha vencimiento autorización NCF (DGII) — opt
     tipoComposicion, // 'Artículos' | 'Servicio' | 'Mixto' — calculado en buildPdfData
     empresa,         // EmpresaPerfil row (NO defaults: si falta algo, oculta esa sección)
     cliente,         // { razonSocial, rnc, direccion, sector, provincia, telefono, email }
@@ -753,9 +754,10 @@ function renderDocumento(opts) {
     <div class="doc-meta">
       <div class="num mono">${escape(numero)}</div>
       ${isFactura && ncf ? `<div class="ncf-line"><span class="lbl">NCF${tipoNcf ? ` · ${escape(tipoNcf)}` : ''}</span><span class="val">${escape(ncf)}</span></div>` : ''}
+      ${isFactura && ncf && ncfVencimiento ? `<div class="ncf-line"><span class="lbl">NCF Válido hasta</span><span class="val">${fechaCorta(ncfVencimiento)}</span></div>` : ''}
       <div style="margin-top:6px; font-size:9px; opacity:0.85;">
         Emisión: <strong>${fechaCorta(fechaEmision)}</strong>
-        ${fechaVence ? ` · ${isFactura ? 'Vence' : 'Válida hasta'}: <strong>${fechaCorta(fechaVence)}</strong>` : ''}
+        ${fechaVence ? ` · ${isFactura ? 'Vence pago' : 'Válida hasta'}: <strong>${fechaCorta(fechaVence)}</strong>` : ''}
       </div>
       ${estado ? `<span class="estado-stamp estado-${escape(estado)}">${escape(estado)}</span>` : ''}
     </div>

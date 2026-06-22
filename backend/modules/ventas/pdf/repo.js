@@ -92,6 +92,17 @@ function createPdfRepo(prisma) {
     });
   }
 
+  // Fallback de vencimiento NCF para facturas sin snapshot (legacy / pos-venta /
+  // preview). Las nuevas emisiones lo congelan en snapshot.ncfVencimiento.
+  async function findNcfVencimiento(tipoNcf) {
+    if (!tipoNcf) return null;
+    const row = await prisma.configuracionNCF.findUnique({
+      where:  { tipoNcf },
+      select: { vencimiento: true },
+    });
+    return row?.vencimiento ?? null;
+  }
+
   async function setEmpresaSecuenciasConfig(secuenciasConfig) {
     return prisma.empresaPerfil.update({
       where: { id: 1 },
@@ -147,6 +158,7 @@ function createPdfRepo(prisma) {
     findFacturaCacheInfo,
     findEmpresaPerfil,
     findEmpresaSecuenciasConfig,
+    findNcfVencimiento,
     setEmpresaSecuenciasConfig,
     invalidateAllCachedPdfs,
     findFacturasForPrerender,

@@ -23,7 +23,7 @@
 const crypto       = require('crypto');
 const { LRUCache } = require('lru-cache');
 
-const PDF_TEMPLATE_VERSION = 'v11-2026-05-17-qr-url-natural-wrap';
+const PDF_TEMPLATE_VERSION = 'v12-2026-06-22-ncf-vencimiento';
 const PDF_CACHE_BUCKET     = process.env.SUPABASE_PDF_BUCKET ?? 'documentos-pdf';
 
 const PREDER_BATCH        = 15;
@@ -251,6 +251,9 @@ function createPdfService(deps) {
       tipoComposicion: _composicionFactura(lineasFiltered),
       ncf:          f.ncf ?? null,
       tipoNcf:      f.tipoNcf ?? null,
+      // Vencimiento de la autorización NCF (DGII) — congelado en snapshot al
+      // emitir; fallback a ConfiguracionNCF para facturas sin snapshot.
+      ncfVencimiento: snap?.ncfVencimiento ?? (f.ncf ? await repo.findNcfVencimiento(f.tipoNcf) : null),
       subtotal:     Number(f.subtotal),
       itbis:        Number(f.itbis ?? 0),
       total:        Number(f.total),
