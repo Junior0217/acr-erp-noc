@@ -43,10 +43,11 @@ function createClientesService(deps) {
     if (query.activo !== undefined) where.activo = query.activo === 'true';
     if (query.search) {
       where.OR = [
-        { razonSocial:    { contains: query.search, mode: 'insensitive' } },
-        { rnc:            { contains: query.search, mode: 'insensitive' } },
-        { noCliente:      { contains: query.search, mode: 'insensitive' } },
-        { nombreContacto: { contains: query.search, mode: 'insensitive' } },
+        { razonSocial:     { contains: query.search, mode: 'insensitive' } },
+        { nombreComercial: { contains: query.search, mode: 'insensitive' } },
+        { rnc:             { contains: query.search, mode: 'insensitive' } },
+        { noCliente:       { contains: query.search, mode: 'insensitive' } },
+        { nombreContacto:  { contains: query.search, mode: 'insensitive' } },
       ];
     }
     const [clientes, total] = await repo.listClientes(where, take, skip);
