@@ -22,6 +22,22 @@ import {
 
 const FACTURA_ESTADOS_REALES = FACTURA_ESTADOS.filter(e => e !== 'Borrador')
 
+// Mapeo tipoNcf (single source of truth del cliente) → código DGII + label.
+// Debe coincidir con ConfiguracionNCF del backend. Antes el badge derivaba
+// de tipoEmpresa con lista parcial (['PYME','Empresa']) → una SRL/SA salía
+// B02 por error. Ahora usa cliente.tipoNcf directo.
+const NCF_BADGE = {
+  'Crédito Fiscal':   { code: 'B01', label: 'NCF Fiscal (B01)' },
+  'Consumidor Final': { code: 'B02', label: 'Consumidor Final (B02)' },
+  'Régimen Especial': { code: 'B14', label: 'Régimen Especial (B14)' },
+  'Gubernamental':    { code: 'B15', label: 'Gubernamental (B15)' },
+  'Exportaciones':    { code: 'B16', label: 'Exportaciones (B16)' },
+}
+function ncfBadge(cliente) {
+  const b = NCF_BADGE[cliente?.tipoNcf] || NCF_BADGE['Consumidor Final']
+  return { ...b, esFiscal: b.code !== 'B02' }
+}
+
 const INPUT = 'w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500/30 transition-colors'
 const LABEL = 'block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-1'
 
@@ -273,8 +289,8 @@ function ModalFacturaManual({ onClose, onSuccess }) {
                         {c.noCliente}
                         {c.rnc ? ` · RNC ${c.rnc}` : ''}
                         {' · '}
-                        <span className={['PYME','Empresa'].includes(c.tipoEmpresa) ? 'text-amber-400' : 'text-slate-600'}>
-                          {['PYME','Empresa'].includes(c.tipoEmpresa) ? 'NCF Fiscal (B01)' : 'Consumidor Final (B02)'}
+                        <span className={ncfBadge(c).esFiscal ? 'text-amber-400' : 'text-slate-600'}>
+                          {ncfBadge(c).label}
                         </span>
                       </div>
                     </button>
@@ -291,8 +307,8 @@ function ModalFacturaManual({ onClose, onSuccess }) {
                 <span className="text-slate-600">·</span>
                 <span>{clienteSel.noCliente}</span>
                 {clienteSel.rnc && <><span className="text-slate-600">·</span><span>RNC {clienteSel.rnc}</span></>}
-                <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${['PYME','Empresa'].includes(clienteSel.tipoEmpresa) ? 'bg-amber-600/10 border-amber-600/30 text-amber-400' : 'bg-slate-700/50 border-slate-600/30 text-slate-500'}`}>
-                  {['PYME','Empresa'].includes(clienteSel.tipoEmpresa) ? 'NCF Fiscal B01' : 'B02'}
+                <span className={`ml-1 px-1.5 py-0.5 rounded text-[10px] font-semibold border ${ncfBadge(clienteSel).esFiscal ? 'bg-amber-600/10 border-amber-600/30 text-amber-400' : 'bg-slate-700/50 border-slate-600/30 text-slate-500'}`}>
+                  {ncfBadge(clienteSel).code === 'B01' ? 'NCF Fiscal B01' : ncfBadge(clienteSel).code}
                 </span>
                 <button onClick={() => seleccionarCliente(null)} className="ml-auto text-slate-500 hover:text-slate-300"><X size={10} /></button>
               </div>

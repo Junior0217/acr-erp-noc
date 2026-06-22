@@ -328,7 +328,12 @@ function createPosService(deps) {
         noFactura = await generarSiguienteCodigo('cotizacion', tx);
         estado    = 'Borrador';
       } else {
-        tipoNcf = dto.tipoNcf || (['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final');
+        // tipoNcf es el del cliente (single source of truth, ya derivado por
+        // el CRM: SRL/SA/EIRL/SAS → "Crédito Fiscal" B01, etc.). Override
+        // explícito desde el dto solo si viene. NUNCA derivar de tipoEmpresa
+        // con lista parcial — y el string DEBE coincidir con ConfiguracionNCF
+        // ("Crédito Fiscal", no "Fiscal").
+        tipoNcf = dto.tipoNcf || cliente.tipoNcf || 'Consumidor Final';
         const row = await repo.nextNcfSeqTx(tx, tipoNcf);
         if (!row) throw new PosError(422, 'NCF_DEPLETED', `Sin secuencia NCF para "${tipoNcf}". Verifica Config NCF.`);
         ncf       = `${row.prefijo}${String(row.secuenciaActual).padStart(8, '0')}`;
@@ -590,7 +595,10 @@ function createPosService(deps) {
         noFactura = await generarSiguienteCodigo('cotizacion', tx);
         estado    = 'Borrador';
       } else {
-        tipoNcf = (['PYME', 'Empresa'].includes(cliente.tipoEmpresa) ? 'Fiscal' : 'Consumidor Final');
+        // tipoNcf del cliente (single source of truth derivado por el CRM).
+        // String DEBE coincidir con ConfiguracionNCF ("Crédito Fiscal"→B01,
+        // "Consumidor Final"→B02, "Régimen Especial"→B14, etc.).
+        tipoNcf = dto.tipoNcf || cliente.tipoNcf || 'Consumidor Final';
         const row = await repo.nextNcfSeqTx(tx, tipoNcf);
         if (!row) throw new PosError(422, 'NCF_DEPLETED', `Sin secuencia NCF disponible para "${tipoNcf}". Verifica Configuración NCF.`);
         ncf       = `${row.prefijo}${String(row.secuenciaActual).padStart(8, '0')}`;
