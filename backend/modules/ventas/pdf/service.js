@@ -23,7 +23,7 @@
 const crypto       = require('crypto');
 const { LRUCache } = require('lru-cache');
 
-const PDF_TEMPLATE_VERSION = 'v12-2026-06-22-ncf-vencimiento';
+const PDF_TEMPLATE_VERSION = 'v13-2026-06-22-sin-nocliente';
 const PDF_CACHE_BUCKET     = process.env.SUPABASE_PDF_BUCKET ?? 'documentos-pdf';
 
 const PREDER_BATCH        = 15;

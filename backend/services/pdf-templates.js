@@ -770,7 +770,6 @@ function renderDocumento(opts) {
       <div class="client-cell">
         <div class="lbl">Razón Social</div>
         <div class="val">${escape(cliente?.razonSocial ?? 'Consumidor Final')}</div>
-        ${cliente?.noCliente ? `<div class="val normal mono" style="margin-top:3px; color:#475569;">${escape(cliente.noCliente)}</div>` : ''}
       </div>
       <div class="client-cell">
         <div class="lbl">${rncCli ? 'RNC' : 'Contacto'}</div>
