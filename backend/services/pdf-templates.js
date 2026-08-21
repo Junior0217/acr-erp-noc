@@ -330,6 +330,7 @@ html, body {
 .items thead th.col-cod  { width: 86px; text-align: left; }
 .items thead th.col-cant { width: 56px; text-align: center; }
 .items thead th.col-pu   { width: 90px; text-align: right; }
+.items thead th.col-dto  { width: 52px; text-align: center; }
 .items thead th.col-amt  { width: 100px; text-align: right; }
 .items tbody td.codigo   { font-family: 'SF Mono', 'JetBrains Mono', 'Consolas', monospace; color: #1e293b; font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em; }
 .items tbody td {
@@ -653,8 +654,15 @@ function renderDocumento(opts) {
         ? '<div class="watermark">Anulada</div>'
         : (!isFactura ? '<div class="watermark cotizacion">Cotización</div>' : '')
 
+  // Columna "Dto. %" — solo se renderiza si ALGUNA línea trae descuento. Así los
+  // documentos sin descuento conservan el layout de 6 columnas de siempre.
+  const hayDescuento = (items ?? []).some(it => Number(it.descuentoPorcentaje ?? 0) > 0)
+
   const itemsRows = (items ?? []).map((it, idx) => {
-    const importe = Number(it.cantidad) * Number(it.precioUnitario)
+    const pct     = Number(it.descuentoPorcentaje ?? 0)
+    // Importe = precio unitario BRUTO menos el % de descuento, por la cantidad.
+    const unitEfectivo = Math.round(Number(it.precioUnitario) * (1 - pct / 100) * 100) / 100
+    const importe = Math.round(unitEfectivo * Number(it.cantidad) * 100) / 100
     const { main, sub, sku: skuParsed } = parseDescripcionEstructurada(it.descripcion, it.detalle)
     // Código del artículo: prioridad explícita > SKU del producto > sku parseado de la descripción.
     // Si no hay nada, deja un guion para que la columna no quede en blanco visualmente.
@@ -668,6 +676,7 @@ function renderDocumento(opts) {
       </td>
       <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
       <td class="right mono">${fmtMoney(it.precioUnitario)}</td>
+      ${hayDescuento ? `<td class="center mono">${pct > 0 ? pct.toLocaleString('es-DO') + '%' : '—'}</td>` : ''}
       <td class="right mono"><strong>${fmtMoney(importe)}</strong></td>
     </tr>`
   }).join('')
@@ -800,10 +809,11 @@ function renderDocumento(opts) {
           <th>Descripción</th>
           <th class="col-cant center">Cant.</th>
           <th class="col-pu right">Precio Unit.</th>
+          ${hayDescuento ? `<th class="col-dto center">Dto. %</th>` : ''}
           <th class="col-amt right">Importe</th>
         </tr>
       </thead>
-      <tbody>${itemsRows || `<tr><td colspan="6" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
+      <tbody>${itemsRows || `<tr><td colspan="${hayDescuento ? 7 : 6}" style="text-align:center; padding:20px; color:#94a3b8;">Sin líneas de detalle.</td></tr>`}</tbody>
     </table>
 
     <div class="doc-footer">
