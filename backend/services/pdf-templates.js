@@ -408,6 +408,9 @@ html, body {
 .tot-row:last-child { border-bottom: none; }
 .tot-row .lbl { color: #475569; font-weight: 600; text-transform: uppercase; font-size: 9px; letter-spacing: 0.08em; }
 .tot-row .val { color: #0f172a; font-weight: 700; }
+/* Fila de descuento: verde para que el ahorro salte a la vista. */
+.tot-row--dto .lbl { color: #15803d; }
+.tot-row--dto .val { color: #15803d; }
 /* Grand Total: fondo claro + borde superior fuerte. Antes navy oscuro
    (#0f172a) — desperdiciaba tinta y rompía la unificación factura/cotización.
    Ahora idéntico tratamiento al resto del template. */
@@ -658,6 +661,21 @@ function renderDocumento(opts) {
   // documentos sin descuento conservan el layout de 6 columnas de siempre.
   const hayDescuento = (items ?? []).some(it => Number(it.descuentoPorcentaje ?? 0) > 0)
 
+  // Desglose del descuento en el bloque de totales: Subtotal BRUTO (sin
+  // descontar) → Descuento (−RD$) → ITBIS → Total. El `subtotal` que llega en
+  // opts ya viene NETO (con el descuento aplicado), así que el bruto se
+  // reconstruye desde las líneas. Si todas comparten el mismo %, se etiqueta
+  // "Descuento (10%)"; si son mixtos, solo "Descuento".
+  const subtotalBruto = Math.round((items ?? []).reduce(
+    (s, it) => s + Number(it.precioUnitario) * Number(it.cantidad), 0) * 100) / 100
+  const descuentoTotal = Math.round((subtotalBruto - Number(subtotal)) * 100) / 100
+  const pctsUnicos = [...new Set((items ?? [])
+    .filter(it => Number(it.descuentoPorcentaje ?? 0) > 0)
+    .map(it => Number(it.descuentoPorcentaje)))]
+  const descuentoLabel = pctsUnicos.length === 1
+    ? `Descuento (${pctsUnicos[0].toLocaleString('es-DO')}%)`
+    : 'Descuento'
+
   const itemsRows = (items ?? []).map((it, idx) => {
     const pct     = Number(it.descuentoPorcentaje ?? 0)
     // Importe = precio unitario BRUTO menos el % de descuento, por la cantidad.
@@ -822,8 +840,17 @@ function renderDocumento(opts) {
         <div class="totals">
           <div class="tot-row">
             <span class="lbl">Subtotal</span>
-            <span class="val mono">RD$ ${fmtMoney(subtotal)}</span>
+            <span class="val mono">RD$ ${fmtMoney(hayDescuento && descuentoTotal > 0 ? subtotalBruto : subtotal)}</span>
           </div>
+          ${hayDescuento && descuentoTotal > 0 ? `
+          <div class="tot-row tot-row--dto">
+            <span class="lbl">${descuentoLabel}</span>
+            <span class="val mono">− RD$ ${fmtMoney(descuentoTotal)}</span>
+          </div>
+          <div class="tot-row">
+            <span class="lbl">Subtotal neto</span>
+            <span class="val mono">RD$ ${fmtMoney(subtotal)}</span>
+          </div>` : ''}
           ${Number(itbis) > 0 ? `
           <div class="tot-row">
             <span class="lbl">ITBIS (18%)</span>
