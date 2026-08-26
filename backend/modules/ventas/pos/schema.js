@@ -69,6 +69,9 @@ const facturaManualSchema = z.object({
   itbis:        z.boolean().optional().default(true),
   diasVence:    z.number().int().min(0).max(365).optional().default(30),
   esCotizacion: z.boolean().optional().default(false),
+  // Cotización de la que deriva este documento (ej. la misma cotización con
+  // descuento aplicado). Solo se persiste cuando esCotizacion=true.
+  cotizacionOrigenId: z.string().uuid().optional(),
   lineas:       z.array(lineaPOSSchema).min(1, 'Se requiere al menos una línea.'),
 });
 

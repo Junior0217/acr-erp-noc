@@ -657,6 +657,8 @@ function createPosService(deps) {
       const f = await repo.crearFacturaManual(tx, {
         noFactura, clienteId: cliente.id, estado, subtotal, itbis: itbisAmt, total,
         ncf, tipoNcf, esCotizacion: dto.esCotizacion,
+        // Vínculo a la cotización origen (versión derivada con descuento).
+        ...(dto.esCotizacion && dto.cotizacionOrigenId ? { cotizacionOrigenId: dto.cotizacionOrigenId } : {}),
         empleadoId:  user?.sub ?? null,
         snapshot,
         notas:       notasFinales,
@@ -688,7 +690,29 @@ function createPosService(deps) {
     await persistirVerifyHash(factura);
     auditReq(dto.esCotizacion ? 'cotizacion:crear' : 'factura:manual', _fakeReqForAudit(reqMeta, user), {
       facturaId: factura.id, ncf: factura.ncf, total: Number(factura.total), lineas: factura.lineas.length,
+      ...(dto.cotizacionOrigenId ? { cotizacionOrigenId: dto.cotizacionOrigenId } : {}),
     });
+
+    // Audit-trail de descuentos por línea. Documenta cuánto se rebajó y sobre
+    // qué documento — necesario para revisar márgenes y reclamos de precio.
+    const _lineasConDto = dto.lineas.filter(l => Number(l.descuentoPorcentaje ?? 0) > 0 || Number(l.descuentoMonto ?? 0) > 0);
+    if (_lineasConDto.length > 0) {
+      const brutoTotal = dto.lineas.reduce((s, l) => {
+        const pu = l.precioUnitario != null ? Number(l.precioUnitario) : 0;
+        return s + pu * l.cantidad;
+      }, 0);
+      const descuentoRD = Math.round((brutoTotal - Number(factura.subtotal)) * 100) / 100;
+      const pcts = [...new Set(_lineasConDto.map(l => Number(l.descuentoPorcentaje ?? 0)).filter(Boolean))];
+      auditReq('documento:descuento_aplicado', _fakeReqForAudit(reqMeta, user), {
+        facturaId:    factura.id,
+        noFactura:    factura.noFactura,
+        esCotizacion: dto.esCotizacion,
+        lineasConDescuento: _lineasConDto.length,
+        porcentajes:  pcts,
+        descuentoRD:  descuentoRD > 0 ? descuentoRD : 0,
+        totalFinal:   Number(factura.total),
+      });
+    }
 
     return { status: 201, body: factura };
   }

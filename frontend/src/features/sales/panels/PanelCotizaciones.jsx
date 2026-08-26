@@ -17,6 +17,17 @@ import PinAuthModal     from '@shared/components/PinAuthModal'
 import EditorCondiciones from './_shared/EditorCondiciones'
 import useCondicionesDoc from './_shared/useCondicionesDoc'
 
+
+// % de descuento del documento: si TODAS las líneas con descuento comparten el
+// mismo porcentaje devuelve ese valor; si son mixtos devuelve el mayor. 0 = sin
+// descuento. Se usa para el badge del listado.
+function dtoPct(cot) {
+  const pcts = (cot?.lineas ?? [])
+    .map(l => Number(l.descuentoPorcentaje ?? 0))
+    .filter(n => n > 0)
+  if (!pcts.length) return 0
+  return Math.max(...pcts)
+}
 const fmt     = n => Number(n).toLocaleString('es-DO', { minimumFractionDigits: 2 })
 const fmtDate = d => new Date(d).toLocaleDateString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric' })
 const fmtFull = d => new Date(d).toLocaleString('es-DO', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
@@ -734,6 +745,14 @@ export default function PanelCotizaciones({ onIrPOS, canPOS }) {
                   <span className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-mono font-bold border bg-amber-600/15 text-amber-300 border-amber-600/40 tracking-wide shadow-sm shadow-amber-600/10">
                     {c.noFactura}
                   </span>
+                  {/* Badge de descuento: identifica de un vistazo las versiones
+                      rebajadas de una cotización (negociación con el cliente). */}
+                  {dtoPct(c) > 0 && (
+                    <span title={`Documento con ${dtoPct(c)}% de descuento aplicado`}
+                      className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold border bg-emerald-600/15 text-emerald-300 border-emerald-600/40">
+                      -{dtoPct(c)}%
+                    </span>
+                  )}
                 </td>
                 <td className={TD}>
                   <div className="text-slate-200 leading-tight">{c.cliente?.razonSocial ?? 'Consumidor Final'}</div>

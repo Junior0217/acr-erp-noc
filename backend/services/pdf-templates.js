@@ -659,7 +659,8 @@ function renderDocumento(opts) {
 
   // Columna "Dto. %" — solo se renderiza si ALGUNA línea trae descuento. Así los
   // documentos sin descuento conservan el layout de 6 columnas de siempre.
-  const hayDescuento = (items ?? []).some(it => Number(it.descuentoPorcentaje ?? 0) > 0)
+  const hayDescuento = (items ?? []).some(it =>
+    Number(it.descuentoPorcentaje ?? 0) > 0 || Number(it.descuentoMonto ?? 0) > 0)
 
   // Desglose del descuento en el bloque de totales: Subtotal BRUTO (sin
   // descontar) → Descuento (−RD$) → ITBIS → Total. El `subtotal` que llega en
@@ -672,14 +673,18 @@ function renderDocumento(opts) {
   const pctsUnicos = [...new Set((items ?? [])
     .filter(it => Number(it.descuentoPorcentaje ?? 0) > 0)
     .map(it => Number(it.descuentoPorcentaje)))]
-  const descuentoLabel = pctsUnicos.length === 1
+  const hayMontoFijo = (items ?? []).some(it => Number(it.descuentoMonto ?? 0) > 0)
+  const descuentoLabel = (pctsUnicos.length === 1 && !hayMontoFijo)
     ? `Descuento (${pctsUnicos[0].toLocaleString('es-DO')}%)`
     : 'Descuento'
 
   const itemsRows = (items ?? []).map((it, idx) => {
     const pct     = Number(it.descuentoPorcentaje ?? 0)
-    // Importe = precio unitario BRUTO menos el % de descuento, por la cantidad.
-    const unitEfectivo = Math.round(Number(it.precioUnitario) * (1 - pct / 100) * 100) / 100
+    const mon     = Number(it.descuentoMonto ?? 0)
+    // Importe = precio unitario BRUTO menos el % y luego el monto fijo, por la
+    // cantidad. Mismo orden que totalLinea() de pos/service.js (descuentos
+    // secuenciales) para que el PDF cuadre con el subtotal calculado en backend.
+    const unitEfectivo = Math.round(Math.max(0, Number(it.precioUnitario) * (1 - pct / 100) - mon) * 100) / 100
     const importe = Math.round(unitEfectivo * Number(it.cantidad) * 100) / 100
     const { main, sub, sku: skuParsed } = parseDescripcionEstructurada(it.descripcion, it.detalle)
     // Código del artículo: prioridad explícita > SKU del producto > sku parseado de la descripción.
@@ -694,7 +699,7 @@ function renderDocumento(opts) {
       </td>
       <td class="center mono">${Number(it.cantidad).toLocaleString('es-DO')}</td>
       <td class="right mono">${fmtMoney(it.precioUnitario)}</td>
-      ${hayDescuento ? `<td class="center mono">${pct > 0 ? pct.toLocaleString('es-DO') + '%' : '—'}</td>` : ''}
+      ${hayDescuento ? `<td class="center mono">${pct > 0 ? pct.toLocaleString('es-DO') + '%' : (mon > 0 ? '-' + fmtMoney(mon) : '—')}</td>` : ''}
       <td class="right mono"><strong>${fmtMoney(importe)}</strong></td>
     </tr>`
   }).join('')

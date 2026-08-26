@@ -762,6 +762,13 @@ model Factura {
   // Null para cotizaciones (no fiscal) y facturas pre-rollout.
   snapshot                 Json?
   esCotizacion             Boolean        @default(false)
+  // Cotización de la que deriva este documento (self-relation). Se usa cuando
+  // se genera una versión con descuento a partir de otra cotización: la nueva
+  // apunta a la original para trazar la negociación (COT-000219 → COT-000217).
+  // Distinto de facturaOrigenId, que es exclusivo de NC/ND fiscales.
+  cotizacionOrigenId       String?
+  cotizacionOrigen         Factura?       @relation("CotizacionDerivada", fields: [cotizacionOrigenId], references: [id], onDelete: SetNull)
+  cotizacionesDerivadas    Factura[]      @relation("CotizacionDerivada")
   // Etapa del pipeline Kanban para cotizaciones:
   // Borrador → Enviada → Negociacion → Aceptada → Convertida → Perdida
   // Facturas reales (esCotizacion=false) lo mantienen en 'Convertida'.
@@ -804,6 +811,7 @@ model Factura {
   @@index([facturaOrigenId])
   @@index([esNotaCredito])
   @@index([esNotaDebito])
+  @@index([cotizacionOrigenId])
 }
 
 model LineaFactura {

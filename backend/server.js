@@ -1089,6 +1089,17 @@ async function ensureSchemaColumns() {
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "ItemCatalogo_productoId_idx" ON "ItemCatalogo"("productoId")`)
     // Cliente.tipoServicio (giro/servicio — persiste el dropdown "Tipo Servicio").
     await prisma.$executeRawUnsafe(`ALTER TABLE "Cliente" ADD COLUMN IF NOT EXISTS "tipoServicio" TEXT`)
+    // Factura.cotizacionOrigenId — versiones derivadas (cotización con descuento).
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura" ADD COLUMN IF NOT EXISTS "cotizacionOrigenId" TEXT`)
+    await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_cotizacionOrigenId_idx" ON "Factura"("cotizacionOrigenId")`)
+    try {
+      await prisma.$executeRawUnsafe(`DO $$ BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Factura_cotizacionOrigenId_fkey') THEN
+          ALTER TABLE "Factura" ADD CONSTRAINT "Factura_cotizacionOrigenId_fkey"
+            FOREIGN KEY ("cotizacionOrigenId") REFERENCES "Factura"(id) ON DELETE SET NULL;
+        END IF;
+      END $$`)
+    } catch {}
     console.log('[DB] Schema columns verified (terms + cache + snapshot + pos images + catalog->producto link + cliente.tipoServicio).')
   } catch (e) {
     console.error('[DB] ensureSchemaColumns FAILED:', e.message)
