@@ -1,0 +1,58 @@
+name: Backup BD
+
+# Backup real de la base de datos con pg_dump. El script db-ops/backup.js es un
+# stub que solo valida config (la implementacion S3 nunca se conecto), asi que
+# este workflow cubre el hueco: dump comprimido guardado como artifact de
+# GitHub con 90 dias de retencion.
+#
+# CRITICO: la BD contiene facturas fiscales emitidas (NCF B01) que la DGII
+# exige conservar 10 anios (Norma 06-2018 art. 7). Sin backup, una perdida del
+# proyecto Supabase es irrecuperable.
+#
+# Requiere el secret DATABASE_URL en Settings -> Secrets -> Actions.
+# Para restaurar:  gunzip -c backup.sql.gz | psql "$DATABASE_URL"
+
+on:
+  schedule:
+    # 07:00 UTC (03:00 RD) todos los dias.
+    - cron: '0 7 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Instalar cliente de PostgreSQL 16
+        run: |
+          sudo sh -c 'echo "deb https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16
+
+      - name: Generar dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL no configurada en los secrets del repo."
+            exit 1
+          fi
+          STAMP=$(date -u +%Y%m%d-%H%M)
+          pg_dump --no-owner --no-acl --format=plain "$DATABASE_URL" | gzip -9 > "backup-${STAMP}.sql.gz"
+          ls -lh backup-*.sql.gz
+          # Un dump valido de esta BD pesa bastante mas que 1KB; si no, algo fallo.
+          SIZE=$(stat -c%s backup-*.sql.gz)
+          if [ "$SIZE" -lt 1024 ]; then
+            echo "::error::El dump pesa ${SIZE} bytes — backup invalido."
+            exit 1
+          fi
+          echo "BACKUP_NAME=backup-${STAMP}" >> "$GITHUB_ENV"
+
+      - name: Subir artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.BACKUP_NAME }}
+          path: backup-*.sql.gz
+          retention-days: 90
+          if-no-files-found: error

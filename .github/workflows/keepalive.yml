@@ -1,0 +1,42 @@
+name: Keepalive Supabase
+
+# Evita la auto-pausa por inactividad del plan free de Supabase. Si el proyecto
+# se duerme, el pooler responde "tenant/user not found" y el backend en Render
+# queda caído — este workflow lo previene tocando la BD cada 3 días.
+#
+# Requiere el secret DATABASE_URL en Settings → Secrets → Actions.
+# Opcional: BACKEND_URL para mantener despierto también el backend de Render.
+
+on:
+  schedule:
+    # 08:00 UTC (04:00 RD) los días 1, 4, 7, ... de cada mes → cada 3 días.
+    - cron: '0 8 */3 * *'
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Instalar dependencias (backend)
+        working-directory: backend
+        run: npm ci --omit=dev --ignore-scripts || npm install --omit=dev --ignore-scripts
+
+      - name: Generar Prisma Client
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npx prisma generate
+
+      - name: Ping a la base de datos
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          BACKEND_URL: ${{ secrets.BACKEND_URL }}
+        run: node scripts/ops/keepalive.js

@@ -1,4 +1,7 @@
 const BASE = import.meta.env.VITE_API_URL
+// Timeout por defecto de cada request. Render (plan free) puede tardar ~60s en
+// cold start, por eso no bajamos de 45s: cortar antes daria falsos negativos.
+const DEFAULT_TIMEOUT_MS = Number(import.meta.env.VITE_API_TIMEOUT_MS ?? 45000)
 if (!BASE) console.error('[ACR ERP] VITE_API_URL is not set — all API calls will fail. Add it to .env.local (dev) or Vercel env vars (prod).')
 
 // ─── Version sync ────────────────────────────────────────────────────────────
@@ -106,16 +109,46 @@ export async function apiFetch(path, options = {}) {
   // Para mutaciones, asegurar que el token CSRF está cargado (race con AuthContext).
   if (mutating && !_csrfToken) { await ensureCsrf() }
 
-  const doFetch = () => fetch(`${BASE}${path}`, {
-    ...rest,
-    body,
-    credentials: 'include',
-    headers: {
-      ...(skipContentType ? {} : { 'Content-Type': 'application/json' }),
-      ...(mutating && _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {}),
-      ...headers,
-    },
-  })
+  // Timeout duro por request. Sin esto, si el backend queda colgado (BD pausada,
+  // Render en crash-loop) el navegador espera indefinido y la UI se queda
+  // girando sin decir nada. Con AbortController falla rapido y legible.
+  // Override por llamada: apiFetch(path, { timeoutMs: 60000 }).
+  const timeoutMs = Number(rest.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+  delete rest.timeoutMs
+
+  const doFetch = async () => {
+    const ctrl = new AbortController()
+    const t = setTimeout(() => ctrl.abort(), timeoutMs)
+    try {
+      return await fetch(`${BASE}${path}`, {
+        ...rest,
+        body,
+        credentials: 'include',
+        signal: rest.signal ?? ctrl.signal,
+        headers: {
+          ...(skipContentType ? {} : { 'Content-Type': 'application/json' }),
+          ...(mutating && _csrfToken ? { 'X-CSRF-Token': _csrfToken } : {}),
+          ...headers,
+        },
+      })
+    } catch (err) {
+      // AbortError por timeout -> error de red con mensaje entendible para el
+      // usuario final (lo consumen Login.jsx y los toasts de los paneles).
+      if (err?.name === 'AbortError') {
+        const e = new Error('El servidor no responde. Puede estar iniciando o fuera de servicio — intenta de nuevo en un minuto.')
+        e.code = 'BACKEND_TIMEOUT'
+        throw e
+      }
+      if (err instanceof TypeError) {
+        const e = new Error('Sin conexion con el servidor. Verifica tu internet e intenta de nuevo.')
+        e.code = 'NETWORK_ERROR'
+        throw e
+      }
+      throw err
+    } finally {
+      clearTimeout(t)
+    }
+  }
 
   let res = await doFetch()
   checkVersionDrift(res)

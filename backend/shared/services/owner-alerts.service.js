@@ -44,6 +44,9 @@ const TIPOS_VALIDOS = new Set([
   'stock.ajustado_manual',
   'login.sospechoso',
   'pin.bloqueado',
+  // Infraestructura: la BD dejo de responder (Supabase pausado, red caida).
+  // La emite el reconector de server.js al recuperar la conexion.
+  'infra.db_caida',
 ]);
 
 const SEVERIDADES = new Set(['info', 'warn', 'critical']);

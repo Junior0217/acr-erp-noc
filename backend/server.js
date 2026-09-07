@@ -1322,10 +1322,85 @@ async function applyPendingMigrations() {
   }
 }
 
+/**
+ * Conexion a Prisma con reintento exponencial. CRITICO: antes esto hacia
+ * process.exit(1) al primer fallo, lo que provocaba crash-loop en Render
+ * cuando Supabase estaba pausado (plan free se auto-pausa por inactividad) y
+ * el backend NO revivia solo aunque la BD despertara — exigia restart manual.
+ *
+ * Ahora reintenta con backoff (2s, 4s, 8s, 16s, 32s, 60s...) hasta
+ * DB_CONNECT_MAX_RETRIES. Si igual no conecta, arranca el servidor de todos
+ * modos: /api/health responde con dbConnected:false (observabilidad) y un
+ * reconector en background sigue intentando. Asi el proceso sobrevive al
+ * unpause de Supabase sin intervencion humana.
+ */
+const DB_CONNECT_MAX_RETRIES = Number(process.env.DB_CONNECT_MAX_RETRIES ?? 8);
+const DB_RECONNECT_INTERVAL_MS = Number(process.env.DB_RECONNECT_INTERVAL_MS ?? 60_000);
+
+async function connectWithRetry(maxRetries = DB_CONNECT_MAX_RETRIES) {
+  for (let intento = 1; intento <= maxRetries; intento++) {
+    try {
+      await prisma.$connect();
+      await prisma.$queryRaw`SELECT 1`;
+      if (intento > 1) console.log(`[DB] Conectado tras ${intento} intentos.`);
+      return true;
+    } catch (err) {
+      const pausado = /tenant|not found|ENOTFOUND|Can't reach/i.test(err.message ?? '');
+      const espera = Math.min(2000 * 2 ** (intento - 1), 60_000);
+      console.error(`[DB] Intento ${intento}/${maxRetries} fallo${pausado ? ' (BD pausada/inalcanzable)' : ''}: ${String(err.message).split('\n')[0]}`);
+      if (intento < maxRetries) {
+        console.log(`[DB] Reintentando en ${Math.round(espera / 1000)}s...`);
+        await new Promise(r => setTimeout(r, espera));
+      }
+    }
+  }
+  return false;
+}
+
+/** Reconector en background: si el boot arranco sin BD, sigue intentando. */
+function startDbReconnector() {
+  const caidaDesde = Date.now();
+  const timer = setInterval(async () => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      const minutosCaida = Math.round((Date.now() - caidaDesde) / 60000);
+      console.log(`[DB] Reconectado tras ~${minutosCaida} min. Ejecutando bootstrap diferido...`);
+      clearInterval(timer);
+      // Alerta al owner: la BD estuvo caida y se recupero sola. Deja rastro para
+      // detectar pausas recurrentes de Supabase (plan free) sin depender de que
+      // alguien mire los logs de Render.
+      try {
+        _ownerAlerts.tryEmit({
+          tipo:         'infra.db_caida',
+          severity:     minutosCaida >= 15 ? 'critical' : 'warn',
+          resourceType: 'infraestructura',
+          payload: {
+            minutosSinConexion: minutosCaida,
+            recuperadaEn:       new Date().toISOString(),
+            causaProbable:      'Supabase pausado por inactividad (plan free) o corte de red',
+          },
+        });
+      } catch {}
+      try { await ensureSchemaColumns(); } catch (e) { console.error('[DB] ensureSchemaColumns:', e.message); }
+      try { await ensureRowLevelSecurity(); } catch (e) { console.error('[DB] ensureRowLevelSecurity:', e.message); }
+      try { await ensureStorageBuckets(); } catch (e) { console.error('[DB] ensureStorageBuckets:', e.message); }
+      try { await seedNomenclaturas(); } catch (e) { console.error('[DB] seedNomenclaturas:', e.message); }
+      console.log('[DB] Bootstrap diferido completado.');
+    } catch { /* sigue esperando */ }
+  }, DB_RECONNECT_INTERVAL_MS);
+  timer.unref?.();
+}
+
 async function startServer() {
   await applyPendingMigrations();
+  const conectado = await connectWithRetry();
+  if (!conectado) {
+    console.error('[DB] Sin conexion tras todos los reintentos. El servidor arranca igual;');
+    console.error('[DB] /api/health reportara dbConnected:false y un reconector reintentara en background.');
+    startDbReconnector();
+  }
   try {
-    await prisma.$connect();
+    if (!conectado) throw new Error('__SKIP_BOOTSTRAP__');
     console.log('[DB] Prisma connected to Supabase successfully.');
     await ensureSchemaColumns();
     await ensureRowLevelSecurity();
@@ -1340,8 +1415,9 @@ async function startServer() {
     } catch {}
     await seedNomenclaturas();
   } catch (err) {
-    console.error('[DB] CRITICAL: Prisma failed to connect to database:', err.message);
-    process.exit(1);
+    if (err.message !== '__SKIP_BOOTSTRAP__') {
+      console.error('[DB] Bootstrap parcial fallo:', err.message);
+    }
   }
 
   // Warm-up Puppeteer/Chromium + page pool en background. Sin await: el servidor
