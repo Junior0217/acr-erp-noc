@@ -72,7 +72,15 @@ const facturaManualSchema = z.object({
   // Cotización de la que deriva este documento (ej. la misma cotización con
   // descuento aplicado). Solo se persiste cuando esCotizacion=true.
   cotizacionOrigenId: z.string().uuid().optional(),
+  // Los precioUnitario que vienen en `lineas` YA traen el ITBIS incluido
+  // (el cliente pactó "21,600 con todo"). El service los desglosa a base
+  // imponible con desglosarItbis() antes de calcular, de modo que el TOTAL
+  // del documento cierre exacto contra lo pactado. Requiere itbis=true.
+  preciosIncluyenItbis: z.boolean().optional().default(false),
   lineas:       z.array(lineaPOSSchema).min(1, 'Se requiere al menos una línea.'),
+}).refine(d => !d.preciosIncluyenItbis || d.itbis !== false, {
+  message: 'preciosIncluyenItbis requiere itbis=true: no se puede desglosar un impuesto que el documento no aplica.',
+  path: ['preciosIncluyenItbis'],
 });
 
 // ─── /pos/verificar-pin ───────────────────────────────────────────────────

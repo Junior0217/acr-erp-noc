@@ -11,7 +11,10 @@
     "audit:orphans": "node prisma/seeds/_audit.js",
     "seed:prefs-pos": "node prisma/seeds/usuario-preferencias-pos.js",
     "health": "node scripts/ops/keepalive.js",
-    "db:backup": "node scripts/db-ops/backup.js"
+    "db:backup": "node scripts/db-ops/backup.js",
+    "test:fiscal": "node services/__tests__/pdf-descuento.test.cjs && node modules/ventas/__tests__/desglose-itbis.test.cjs",
+    "db:export-fiscal": "node scripts/db-ops/export-fiscal.js",
+    "ops:duplicados": "node scripts/ops/duplicados-catalogo.js"
   },
   "type": "commonjs",
   "dependencies": {

@@ -26,7 +26,7 @@
  */
 
 const crypto = require('crypto');
-const { assertCondicionesPagoCompatibles } = require('../_lib');
+const { assertCondicionesPagoCompatibles, desglosarItbis } = require('../_lib');
 
 class PosError extends Error {
   constructor(status, code, message, extra) {
@@ -540,6 +540,12 @@ function createPosService(deps) {
       throw new PosError(400, 'CLIENTE_REQUIRED', 'clienteId es obligatorio — vincula el documento a un cliente real.');
     }
 
+    // Declarado FUERA de la transacción a propósito: el bloque de auditoría
+    // que lo consume corre después del commit. Si viviera dentro del callback
+    // de $transaction sería ReferenceError en cada emisión — exactamente el
+    // tipo de bug de scope que dejó el POS caído 36 días (ver _lib.js).
+    let desgloseItbisMeta = null;
+
     const factura = await prisma.$transaction(async (tx) => {
       const cliente = await repo.findClienteByIdTx(tx, dto.clienteId);
       if (!cliente) throw new PosError(404, 'CLIENTE_NOT_FOUND', 'Cliente no encontrado en la base de datos.');
@@ -584,6 +590,44 @@ function createPosService(deps) {
           _tipoItem: 'SERVICIO',
         };
       });
+
+      // Precios pactados CON ITBIS incluido: se desglosan a base imponible
+      // ANTES de totalizar, repartiendo los centavos de redondeo para que el
+      // total del documento cierre exacto contra lo que se le prometió al
+      // cliente. Solo aplica sin descuentos de línea: mezclar un descuento con
+      // el desglose haría ambiguo cuál de los dos movió el precio, así que en
+      // ese caso se respeta el precio tal cual vino.
+      if (dto.preciosIncluyenItbis && dto.itbis) {
+        // A01 — control de acceso. Desglosar baja el precio efectivo ~15%, así
+        // que es una forma de override de precio y exige el mismo permiso. Sin
+        // este guard, un cajero sin `pos:override_precio` manda el flag, el
+        // service ignora su precioUnitario y usa el del catálogo (que NO trae
+        // ITBIS), y el desglose lo rebaja igual: descuento encubierto del 15%.
+        if (!puedeOverridePrecio) {
+          throw new PosError(403, 'DESGLOSE_SIN_PERMISO',
+            'Desglosar ITBIS de precios con impuesto incluido requiere permiso de override de precio.');
+        }
+        // Y el flag solo tiene sentido si TODAS las líneas traen precio propio:
+        // si alguna cae al precio de catálogo, esa se desglosaría sin deberlo.
+        const sinPrecioPropio = dto.lineas.filter(l => l.precioUnitario == null).length;
+        if (sinPrecioPropio > 0) {
+          throw new PosError(422, 'DESGLOSE_SIN_PRECIO',
+            `${sinPrecioPropio} línea(s) sin precio propio: con "precios incluyen ITBIS" cada línea debe traer su precio pactado, no el del catálogo.`);
+        }
+        const conDescuento = lineasEnriquecidas.some(l =>
+          Number(l.descuentoPorcentaje) > 0 || Number(l.descuentoMonto) > 0);
+        if (conDescuento) {
+          throw new PosError(422, 'DESGLOSE_CON_DESCUENTO',
+            'No se puede desglosar ITBIS en líneas que además llevan descuento. Captura el precio sin ITBIS o quita el descuento de línea.');
+        }
+        const d = desglosarItbis(
+          lineasEnriquecidas.map(l => ({ precioConItbis: l.precioUnitario, cantidad: l.cantidad })), 0.18);
+        d.lineas.forEach((dl, i) => { lineasEnriquecidas[i].precioUnitario = dl.precioUnitario; });
+        desgloseItbisMeta = {
+          totalPactado: d.totalPactado, exacto: d.exacto, diferencia: d.diferencia,
+          ajustes: d.lineas.map(l => l.ajuste),
+        };
+      }
 
       const subtotalBruto = Math.round(lineasEnriquecidas.reduce((s, l) => s + totalLinea(l.precioUnitario, l.descuentoPorcentaje, l.descuentoMonto, l.cantidad), 0) * 100) / 100;
       const subtotal     = subtotalBruto;
@@ -659,6 +703,9 @@ function createPosService(deps) {
         ncf, tipoNcf, esCotizacion: dto.esCotizacion,
         // Vínculo a la cotización origen (versión derivada con descuento).
         ...(dto.esCotizacion && dto.cotizacionOrigenId ? { cotizacionOrigenId: dto.cotizacionOrigenId } : {}),
+        // Procedencia del precio: los unitarios guardados son base imponible,
+        // pero se capturaron con el ITBIS incluido.
+        preciosIncluyenItbis: !!desgloseItbisMeta,
         empleadoId:  user?.sub ?? null,
         snapshot,
         notas:       notasFinales,
@@ -714,7 +761,25 @@ function createPosService(deps) {
       });
     }
 
-    return { status: 201, body: factura };
+    // Audit-trail del desglose de ITBIS. Deja constancia de que los unitarios
+    // guardados son base imponible derivada de un precio pactado CON impuesto,
+    // y de los centavos movidos para cuadrar. `exacto:false` significa que el
+    // total quedó a 1-7 centavos del pactado porque ese total no es
+    // representable como base+ITBIS — se registra en vez de esconderse.
+    if (desgloseItbisMeta) {
+      auditReq('documento:itbis_desglosado', _fakeReqForAudit(reqMeta, user), {
+        facturaId:    factura.id,
+        noFactura:    factura.noFactura,
+        esCotizacion: dto.esCotizacion,
+        totalPactado: desgloseItbisMeta.totalPactado,
+        totalFinal:   Number(factura.total),
+        exacto:       desgloseItbisMeta.exacto,
+        diferencia:   desgloseItbisMeta.diferencia,
+        ajustes:      desgloseItbisMeta.ajustes.filter(Boolean).length,
+      });
+    }
+
+    return { status: 201, body: { ...factura, ...(desgloseItbisMeta ? { desgloseItbis: desgloseItbisMeta } : {}) } };
   }
 
   return {

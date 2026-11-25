@@ -174,6 +174,8 @@ function ModalFacturaManual({ onClose, onSuccess }) {
   const [clienteSel, setClienteSel] = useState(null)
   const [showDrop,   setShowDrop]   = useState(false)
   const [applyItbis, setApplyItbis] = useState(false)
+  // Los precios que se escriben YA incluyen el ITBIS (se desglosan al guardar).
+  const [precioConItbis, setPrecioConItbis] = useState(false)
   const [diasVence,  setDiasVence]  = useState(30)
   const [lineas,     setLineas]     = useState([{ producto: null, cantidad: 1, precioOverride: '' }])
   const [submitting, setSubmitting] = useState(null)
@@ -202,6 +204,7 @@ function ModalFacturaManual({ onClose, onSuccess }) {
     setBusqueda(c ? c.razonSocial : '')
     setShowDrop(false)
     setApplyItbis(c ? c.itbis : false)
+    if (!c?.itbis) setPrecioConItbis(false)
   }
 
   function addLinea()        { setLineas(p => [...p, { producto: null, cantidad: 1, precioOverride: '' }]) }
@@ -214,8 +217,28 @@ function ModalFacturaManual({ onClose, onSuccess }) {
     acc.subtotal += sub
     return acc
   }, { subtotal: 0 })
-  const itbisAmt = applyItbis ? Math.round(totales.subtotal * 0.18 * 100) / 100 : 0
-  const total    = Math.round((totales.subtotal + itbisAmt) * 100) / 100
+  // Dos modos de captura:
+  //  - normal: el precio escrito es la BASE y el ITBIS se suma encima.
+  //  - precioConItbis: el precio escrito YA trae el impuesto (el cliente pactó
+  //    "21,600 con todo"), así que el total es la suma directa y lo que se
+  //    deriva hacia atrás es la base. El desglose EXACTO (reparto de centavos
+  //    para que cierre clavado) lo hace el backend con desglosarItbis(); aquí
+  //    solo se previsualiza. El total mostrado sí es exacto en ambos modos.
+  const sumaLineas = Math.round(totales.subtotal * 100) / 100
+  let subtotalPrev, itbisAmt, total
+  if (applyItbis && precioConItbis) {
+    total        = sumaLineas
+    subtotalPrev = Math.round((total / 1.18) * 100) / 100
+    itbisAmt     = Math.round((total - subtotalPrev) * 100) / 100
+  } else {
+    subtotalPrev = sumaLineas
+    itbisAmt     = applyItbis ? Math.round(sumaLineas * 0.18 * 100) / 100 : 0
+    total        = Math.round((sumaLineas + itbisAmt) * 100) / 100
+  }
+  // El desglose no convive con descuentos de línea (el backend lo rechaza):
+  // sería ambiguo cuál de los dos movió el precio.
+  const hayDescuentoLinea = (Array.isArray(lineas) ? lineas : [])
+    .some(l => Number(l.descuentoPorcentaje ?? 0) > 0 || Number(l.descuentoMonto ?? 0) > 0)
 
   const canSubmit = lineas.length > 0 && lineas.every(l => l.producto !== null && parseInt(l.cantidad) > 0)
 
@@ -228,6 +251,8 @@ function ModalFacturaManual({ onClose, onSuccess }) {
         itbis:        applyItbis,
         diasVence:    parseInt(diasVence) || 30,
         esCotizacion,
+        // Solo se manda cuando aplica: el backend valida que exija itbis=true.
+        ...(applyItbis && precioConItbis ? { preciosIncluyenItbis: true } : {}),
         lineas: (Array.isArray(lineas) ? lineas : []).map(l => ({
           productoId: l.producto.id,
           cantidad:   parseInt(l.cantidad),
@@ -238,6 +263,15 @@ function ModalFacturaManual({ onClose, onSuccess }) {
       const j = await r.json()
       if (!r.ok) { toast.error(j.error ?? 'Error.'); return }
       toast.success(esCotizacion ? `Cotización guardada · ${j.noFactura}` : `Factura emitida · NCF ${j.ncf}`)
+      // Al desglosar ITBIS hay totales que no son representables como
+      // base + impuesto redondeado (~15% de los casos): el documento queda a
+      // 1-7 centavos del precio pactado. Se avisa en vez de dejarlo pasar en
+      // silencio, porque es un número que el cliente va a comparar.
+      if (j.desgloseItbis && j.desgloseItbis.exacto === false) {
+        const d = j.desgloseItbis
+        toast(`Total ${formatCurrency(d.totalPactado)} no es exacto con ITBIS desglosado: quedó en ${formatCurrency(j.total)} (${d.diferencia > 0 ? '+' : ''}${d.diferencia.toFixed(2)}).`,
+          { icon: '⚠️', duration: 7000 })
+      }
       onSuccess(j)
     } catch { toast.error('Error de conexión.') }
     finally { setSubmitting(null) }
@@ -345,7 +379,8 @@ function ModalFacturaManual({ onClose, onSuccess }) {
           {/* Opciones */}
           <div className="flex flex-wrap gap-4 items-center">
             <label className="flex items-center gap-2 cursor-pointer select-none">
-              <input type="checkbox" checked={applyItbis} onChange={e => setApplyItbis(e.target.checked)}
+              <input type="checkbox" checked={applyItbis}
+                onChange={e => { setApplyItbis(e.target.checked); if (!e.target.checked) setPrecioConItbis(false) }}
                 className="w-4 h-4 accent-blue-500 rounded" />
               <span className="text-sm text-slate-300">Aplicar ITBIS <span className="text-slate-500 text-xs">(18%)</span></span>
             </label>
@@ -358,15 +393,38 @@ function ModalFacturaManual({ onClose, onSuccess }) {
             </div>
           </div>
 
+          {/* Precios con ITBIS incluido — se desglosan a base imponible al guardar */}
+          {applyItbis && (
+            <label className={`flex items-start gap-2 px-1 ${hayDescuentoLinea ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}>
+              <input type="checkbox" checked={precioConItbis} disabled={hayDescuentoLinea}
+                onChange={e => setPrecioConItbis(e.target.checked)}
+                className="mt-0.5 w-4 h-4 rounded bg-slate-800 border-slate-700 text-blue-600 focus:ring-blue-500 focus:ring-offset-slate-900" />
+              <span className="text-xs leading-snug">
+                <span className="text-slate-300">Los precios ya incluyen ITBIS</span>
+                <span className="block text-slate-500">
+                  {hayDescuentoLinea
+                    ? 'No disponible con descuentos por línea.'
+                    : 'Se desglosa la base imponible al guardar; el total cierra exacto.'}
+                </span>
+              </span>
+            </label>
+          )}
+
           {/* Totales */}
           <div className="bg-slate-800/60 border border-slate-700/40 rounded-xl p-4 space-y-1.5">
+            {applyItbis && precioConItbis && (
+              <div className="flex justify-between text-xs text-slate-500 pb-1 mb-1 border-b border-slate-700/40">
+                <span>Suma de líneas (con ITBIS)</span>
+                <span className="font-mono">{formatCurrency(sumaLineas)}</span>
+              </div>
+            )}
             <div className="flex justify-between text-sm text-slate-400">
-              <span>Subtotal</span>
-              <span className="font-mono">{formatCurrency(totales.subtotal)}</span>
+              <span>Subtotal{applyItbis && precioConItbis ? ' (base imponible)' : ''}</span>
+              <span className="font-mono">{formatCurrency(subtotalPrev)}</span>
             </div>
             {applyItbis && (
               <div className="flex justify-between text-sm text-amber-400">
-                <span>ITBIS (18%)</span>
+                <span>ITBIS (18%){applyItbis && precioConItbis ? ' · incluido' : ''}</span>
                 <span className="font-mono">{formatCurrency(itbisAmt)}</span>
               </div>
             )}

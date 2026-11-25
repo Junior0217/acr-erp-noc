@@ -762,6 +762,13 @@ model Factura {
   // Null para cotizaciones (no fiscal) y facturas pre-rollout.
   snapshot                 Json?
   esCotizacion             Boolean        @default(false)
+  // El cliente pactó precios que YA incluían el ITBIS (ej. "el panel son 21,600
+  // con todo"). El documento igual guarda la BASE imponible por línea —esto es
+  // solo la procedencia del precio— pero sin el flag no hay forma de saber, al
+  // reabrir COT-000220 meses después, si los unitarios se capturaron con o sin
+  // impuesto, ni de re-editarla sin recalcular a mano. Ver desglosarItbis() en
+  // modules/ventas/_lib.js. Default false = captura normal (precio sin ITBIS).
+  preciosIncluyenItbis     Boolean        @default(false)
   // Cotización de la que deriva este documento (self-relation). Se usa cuando
   // se genera una versión con descuento a partir de otra cotización: la nueva
   // apunta a la original para trazar la negociación (COT-000219 → COT-000217).

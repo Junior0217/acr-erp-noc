@@ -1092,6 +1092,10 @@ async function ensureSchemaColumns() {
     // Factura.cotizacionOrigenId — versiones derivadas (cotización con descuento).
     await prisma.$executeRawUnsafe(`ALTER TABLE "Factura" ADD COLUMN IF NOT EXISTS "cotizacionOrigenId" TEXT`)
     await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "Factura_cotizacionOrigenId_idx" ON "Factura"("cotizacionOrigenId")`)
+    // Factura.preciosIncluyenItbis — procedencia del precio capturado. El
+    // documento guarda la base imponible igual; esto registra que el precio
+    // pactado venía CON ITBIS y fue desglosado (ver desglosarItbis en _lib.js).
+    await prisma.$executeRawUnsafe(`ALTER TABLE "Factura" ADD COLUMN IF NOT EXISTS "preciosIncluyenItbis" BOOLEAN NOT NULL DEFAULT false`)
     try {
       await prisma.$executeRawUnsafe(`DO $$ BEGIN
         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'Factura_cotizacionOrigenId_fkey') THEN

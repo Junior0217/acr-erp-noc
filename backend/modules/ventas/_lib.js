@@ -163,6 +163,8 @@ function totalLinea(pu, pct, monto, cant) {
 // — service.js / carrito lo importan como named export directo. Ver final del
 // archivo.
 
+// desglosarItbis vive a nivel de módulo por la misma razón. Ver final del archivo.
+
 function formatCarrito(c) {
   if (!c) return null
   const lineas = (c.lineas ?? []).map(l => {
@@ -256,3 +258,147 @@ function assertCondicionesPagoCompatibles(cliente, condicionesOverride, opts = {
   throw err
 }
 module.exports.assertCondicionesPagoCompatibles = assertCondicionesPagoCompatibles
+
+// ─── Desglose de ITBIS: precio CON impuesto → base imponible (TOP-LEVEL) ─────
+//
+// Caso de uso real: un suplidor/cliente pacta precios que YA incluyen el ITBIS
+// ("el panel son 21,600 con todo"). El documento fiscal, en cambio, debe
+// imprimir la BASE imponible por línea y el ITBIS desglosado al pie. Dividir
+// cada unitario entre 1.18 y redondear a 2 decimales NO cierra: la suma de los
+// redondeos se desvía del precio pactado (en COT-000220 daba 3 centavos de más).
+//
+// Este helper calcula el subtotal objetivo y reparte la diferencia en centavos
+// sobre los precios unitarios, de modo que se cumpla el INVARIANTE:
+//
+//   subtotal + round(subtotal * tasa) === Σ (precioConItbis * cantidad)
+//
+// Debe vivir a nivel de módulo (NO dentro del factory createVentasLib) por la
+// misma razón que assertCondicionesPagoCompatibles: se importa como named
+// export plano desde pos/service.js. Es pura — no toca deps ni Prisma.
+//
+// Entrada: [{ precioConItbis, cantidad }]  ·  tasa en fracción (0.18 = 18%)
+// Salida:  { lineas: [{ precioUnitario, ajuste, precioConItbis, cantidad }],
+//            subtotal, itbis, total, totalPactado, residuo }
+//   - ajuste  : centavos movidos en ese unitario para cuadrar (0 si no hizo falta)
+//   - residuo : centavos que NO se pudieron repartir. Debe ser 0; si no lo es,
+//               el llamador tiene un descuadre que DEBE reportar, no esconder.
+function desglosarItbis(lineasIn, tasa = 0.18) {
+  if (!Array.isArray(lineasIn)) throw new Error('desglosarItbis: se esperaba un array de líneas.')
+  if (!Number.isFinite(tasa) || tasa < 0 || tasa > 1) {
+    throw new Error(`desglosarItbis: tasa inválida (${tasa}). Debe ser fracción entre 0 y 1 (0.18 = 18%).`)
+  }
+  // Todo el cálculo ocurre en CENTAVOS enteros: evita que el error de punto
+  // flotante (0.1 + 0.2 !== 0.3) contamine un documento fiscal.
+  const aCent = n => Math.round(n * 100)
+
+  const lineas = lineasIn.map((l, i) => {
+    const pci  = Number(l.precioConItbis)
+    const cant = Number(l.cantidad)
+    if (!Number.isFinite(pci) || pci < 0)  throw new Error(`desglosarItbis: línea ${i + 1} con precioConItbis inválido (${l.precioConItbis}).`)
+    if (!Number.isInteger(cant) || cant <= 0) throw new Error(`desglosarItbis: línea ${i + 1} con cantidad inválida (${l.cantidad}). Debe ser entero positivo.`)
+    return { ...l, _pciC: aCent(pci), _cant: cant }
+  })
+
+  if (lineas.length === 0) {
+    return { lineas: [], subtotal: 0, itbis: 0, total: 0, totalPactado: 0, residuo: 0, diferencia: 0, exacto: true }
+  }
+  const totalPactadoC = lineas.reduce((s, l) => s + l._pciC * l._cant, 0)
+
+  // 1) Precio base por línea y subtotal de partida (todo en centavos).
+  for (const l of lineas) l._puC = Math.round(l._pciC / (1 + tasa))
+  const subBaseC = lineas.reduce((s, l) => s + l._puC * l._cant, 0)
+
+  // 2) ¿Qué subtotales son ALCANZABLES? Mover 1 centavo en un unitario de
+  //    cantidad N desplaza el subtotal en N centavos, así que el conjunto
+  //    alcanzable es { subBase + k*g }, con g = gcd(cantidades). Se elige el k
+  //    cuyo total quede más cerca del pactado — y se prefiere el |k| menor,
+  //    para no deformar los unitarios más de lo imprescindible.
+  //    OJO: no siempre existe cuadre exacto. Con una sola línea de cantidad 3
+  //    el subtotal solo salta de 3 en 3, y el objetivo puede caer entre dos
+  //    escalones. En ese caso se devuelve el mejor posible y `exacto:false`;
+  //    mentir con un total que no cierra sería peor que reportarlo.
+  const mcd = (a, b) => (b === 0 ? a : mcd(b, a % b))
+  const g = lineas.reduce((acc, l) => mcd(acc, l._cant), 0) || 1
+  // CRÍTICO: el ITBIS se calcula con la MISMA aritmética que pos/service.js
+  // (`Math.round(subtotalEnPesos * tasa * 100) / 100`), no con enteros. Da el
+  // mismo valor salvo cuando el impuesto cae exactamente en medio centavo:
+  // ahí el orden de operaciones decide el redondeo y las dos vías divergen 1
+  // centavo. Este helper existe para PREDECIR lo que el service va a guardar,
+  // así que replica su aritmética aunque sea la menos elegante.
+  const itbisDe = SC => Math.round((SC / 100) * tasa * 100)
+  const totalDe = SC => SC + itbisDe(SC)
+  let mejorK = 0, mejorDif = Math.abs(totalDe(subBaseC) - totalPactadoC)
+  for (let paso = 1; paso <= 40 && mejorDif !== 0; paso++) {
+    for (const k of [-paso, paso]) {
+      const S = subBaseC + k * g
+      if (S < 0) continue
+      const dif = Math.abs(totalDe(S) - totalPactadoC)
+      if (dif < mejorDif) { mejorDif = dif; mejorK = k }
+    }
+  }
+  const objetivoC = subBaseC + mejorK * g
+
+  // 3) Repartir el desplazamiento entre los unitarios. Greedy primero (resuelve
+  //    el caso común en una pasada); si deja resto, DP acotada sobre coeficientes
+  //    pequeños, que sí encuentra combinaciones mixtas tipo 6*(+1) + 4*(-1) = +2
+  //    donde el greedy se queda corto.
+  let resto = objetivoC - subBaseC;
+  for (const l of [...lineas].sort((a, b) => b._cant - a._cant)) {
+    if (resto === 0) break
+    const paso = Math.trunc(resto / l._cant)
+    if (paso !== 0 && l._puC + paso >= 0) { l._puC += paso; resto -= paso * l._cant }
+  }
+  if (resto !== 0) {
+    const combo = _repartirCentavos(lineas.map(l => l._cant), resto)
+    if (combo) {
+      combo.forEach((a, i) => { lineas[i]._puC += a })
+      resto = 0
+    }
+  }
+
+  // 4) Totales recalculados EXACTAMENTE como lo hace pos/service.js, para que
+  //    lo que promete este helper sea lo que la factura termine guardando.
+  const subtotalC = lineas.reduce((s, l) => s + Math.round(l._puC * l._cant), 0)
+  const itbisC    = itbisDe(subtotalC)
+  const totalC    = subtotalC + itbisC
+  return {
+    lineas: lineas.map(l => ({
+      ...Object.fromEntries(Object.entries(l).filter(([k]) => !k.startsWith('_'))),
+      precioUnitario: l._puC / 100,
+      ajuste: Math.round(l._puC - l._pciC / (1 + tasa)) / 100,
+    })),
+    subtotal:     subtotalC / 100,
+    itbis:        itbisC / 100,
+    total:        totalC / 100,
+    totalPactado: totalPactadoC / 100,
+    residuo:      resto,
+    diferencia:   (totalC - totalPactadoC) / 100,
+    exacto:       totalC === totalPactadoC,
+  }
+}
+
+// Busca coeficientes enteros pequeños a_i tales que Σ a_i * cant_i === objetivo.
+// DP por capas sobre las sumas alcanzables, acotada en magnitud para que el
+// costo sea trivial (los ajustes reales son de pocos centavos). Devuelve null
+// si no hay combinación dentro de las cotas.
+function _repartirCentavos(cants, objetivo, maxCoef = 4, maxSuma = 400) {
+  if (objetivo === 0) return cants.map(() => 0)
+  if (Math.abs(objetivo) > maxSuma) return null
+  let dp = new Map([[0, cants.map(() => 0)]])
+  for (let i = 0; i < cants.length; i++) {
+    const siguiente = new Map(dp)
+    for (const [suma, coefs] of dp) {
+      for (let a = -maxCoef; a <= maxCoef; a++) {
+        if (a === 0) continue
+        const nueva = suma + a * cants[i]
+        if (Math.abs(nueva) > maxSuma || siguiente.has(nueva)) continue
+        const nc = [...coefs]; nc[i] = a
+        siguiente.set(nueva, nc)
+      }
+    }
+    dp = siguiente
+    if (dp.has(objetivo)) return dp.get(objetivo)
+  }
+  return dp.get(objetivo) ?? null
+}
+module.exports.desglosarItbis = desglosarItbis

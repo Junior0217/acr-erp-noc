@@ -67,6 +67,24 @@ function extraerSku(text) {
 
 // Delimitadores inline reconocidos como separador título/detalles cuando NO hay
 // saltos de línea. Orden importa: el PRIMERO encontrado parte el título.
+//
+// CONSECUENCIA AL REDACTAR DESCRIPCIONES (sorprende si no se sabe): cualquiera
+// de estos separadores PARTE la descripción en dos renglones — título en negrita
+// arriba, resto en gris debajo. No es decorativo, cambia el layout:
+//
+//   "Panel de alarma Hub 2 Plus blanco — AJAX"
+//        → título: "Panel de alarma Hub 2 Plus blanco"
+//        → detalle: "AJAX"
+//
+// Aprovecharlo es lo normal (producto arriba, marca/modelo abajo). Pero una
+// descripción con guiones por otro motivo ("Cable 2-4 hilos - 100m") se parte
+// en un lugar raro. Si NO se quiere el corte, hay que evitar estos separadores
+// rodeados de espacios: "Cable 2-4 hilos 100m" no se parte, "Cable - 100m" sí.
+//
+// Ojo también con el "detalle" que agrega modules/ventas/pdf/service.js:246:
+// cuando la descripción de la línea difiere del nombre del producto, imprime
+// AMBOS. Si se quiere una sola línea, la descripción debe coincidir exacto con
+// el nombre del producto.
 const INLINE_SEPS = [' — ', ' – ', ' · ', ' - ', ' | ', ': ']
 
 function splitInlineTituloDetalles(text) {
